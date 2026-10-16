@@ -33,8 +33,8 @@
 #            with $CC, default cc) with the allow/ lists, as the installer runs it on a device; for a java base every jar
 #            carries classes.dex, and every java lib/*.so keeps the stock-tree build's dynamic exports (none removed)
 #            and its NEEDED list (identical); for a base with a libcore series, once per base on the patched tree:
-#            check_tls_lists.py --base <base> (groups openssl and libcore) and check_jni_signatures.py (Java natives vs
-#            the JNI table and C functions, with patches/jb/<base>/jni-signature-allow.txt); summary in
+#            check_tls_lists.py --base <base> (groups openssl, libcore and libcore.net.http) and check_jni_signatures.py
+#            (Java natives vs the JNI table and C functions, with patches/jb/<base>/jni-signature-allow.txt); summary in
 #            WORK/out/kktls-jb/checks.tsv
 #
 # Options:
@@ -443,10 +443,10 @@ do_check() {
     fi
   done < <(rows_of "$b")
   if libcore_series "$b"; then
-    # the source checks of the libcore series, once per base on the patched tree (groups openssl and libcore; the
-    # libcore.net.http group joins once the series carries the HttpsURLConnection fallback fix)
+    # the source checks of the libcore series, once per base on the patched tree (groups openssl, libcore and
+    # libcore.net.http: a series must carry the HttpsURLConnection TLSv1 + SCSV fallback, check http-fallback)
     local l=$d/logs r=PASS
-    $PY "$INPUTS/tools/check_tls_lists.py" "$d/src" --base "$b" --group openssl --group libcore \
+    $PY "$INPUTS/tools/check_tls_lists.py" "$d/src" --base "$b" --group openssl --group libcore --group libcore.net.http \
       > "$l/tls-lists.log" 2>&1 || { r=FAIL; rc=1; }
     printf '%s\t%s\tcheck-tls-lists\t%s\t%s\n' "$b" all "$r" "$l/tls-lists.log" >> "$sum"
     echo "  check_tls_lists.py --base $b: $r ($(tail -n1 "$l/tls-lists.log"))"
