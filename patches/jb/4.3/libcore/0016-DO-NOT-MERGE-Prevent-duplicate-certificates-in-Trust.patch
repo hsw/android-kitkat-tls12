@@ -1,0 +1,46 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Chad Brubaker <cbrubaker@google.com>
+Date: Sun, 20 Dec 2015 20:49:24 -0800
+Subject: [PATCH 16/30] DO NOT MERGE Prevent duplicate certificates in
+ TrustedCertificateIndex
+
+With the separate caching of intermediate certificates in
+TrustManagerImpl a given intermediate may be passed into .index multiple
+times. Avoid adding the certificate to the list each time.
+
+(cherry-picked from commit d080e064abba665e2dde2a8c113f837ba4d9a85e)
+Bug: 26232830
+Change-Id: I6bed2c65d9e42e052b9b1b129200a997e7dca745
+(cherry picked from commit 129c0584885effd7f99a22550c0a5f2b789f967e)
+(cherry picked from commit 5549787079e6efc433c5020c7ac3800119f117a8)
+
+Android 4.3 port (android-4.3_r3) of patch 0016 of the 4.4 series. Paths
+and names: libcore/crypto of 4.4 (org.conscrypt,
+org_conscrypt_NativeCrypto.cpp in libjavacrypto) is libcore/luni on 4.3
+(org.apache.harmony.xnet.provider.jsse,
+org_apache_harmony_xnet_provider_jsse_NativeCrypto.cpp in libjavacore).
+Otherwise the same change; only line offsets differ.
+---
+ .../xnet/provider/jsse/TrustedCertificateIndex.java      | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/TrustedCertificateIndex.java b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/TrustedCertificateIndex.java
+index 0b1f098f6..479a261b4 100644
+--- a/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/TrustedCertificateIndex.java
++++ b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/TrustedCertificateIndex.java
+@@ -69,6 +69,15 @@ public final class TrustedCertificateIndex {
+             if (anchors == null) {
+                 anchors = new ArrayList<TrustAnchor>(1);
+                 subjectToTrustAnchors.put(subject, anchors);
++            } else {
++                // Avoid indexing the same certificate multiple times
++                if (cert != null) {
++                    for (TrustAnchor entry : anchors) {
++                        if (cert.equals(entry.getTrustedCert())) {
++                            return;
++                        }
++                    }
++                }
+             }
+             anchors.add(anchor);
+         }

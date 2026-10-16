@@ -1,0 +1,141 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: android-kitkat-tls12 <android-kitkat-tls12@users.noreply.github.com>
+Date: Fri, 9 Oct 2026 12:00:00 +0000
+Subject: [PATCH 20/30] Port of 4314dcb: time out TLS/SSL sessions after 8
+ hours by default
+
+Android 5.1 behaviour. Before this change the
+client and server session contexts had timeout 0, so a cached session
+(and its master secret) stayed resumable for as long as the process
+lived. Now both contexts default to 8 h, as in conscrypt 4314dcb
+(= e5992c84, Bug 18369043/18370076), and OpenSSLSessionImpl.isValid()
+treats a session as expired once its age reaches the timeout, or when
+its age is negative (system clock moved backwards).
+
+The conscrypt patch (src/main/java/...) applies to crypto/src/main/java
+except the isValid() hunk, whose 5.x context has an @Override line the
+4.4 file lacks; that hunk is taken verbatim by hand. setSessionTimeout()
+and timeout 0 (no expiry) work as before.
+
+The CTS expectation is libcore 571815deb (TestSSLContext
+EXPECTED_DEFAULT_SSL_SESSION_CACHE_TIMEOUT = 8 * 3600), picked before
+this commit.
+
+Android 4.3 port (android-4.3_r3) of patch 0020 of the 4.4 series. Paths
+and names: libcore/crypto of 4.4 (org.conscrypt,
+org_conscrypt_NativeCrypto.cpp in libjavacrypto) is libcore/luni on 4.3
+(org.apache.harmony.xnet.provider.jsse,
+org_apache_harmony_xnet_provider_jsse_NativeCrypto.cpp in libjavacore).
+Otherwise the same change; only line offsets differ.
+---
+ .../provider/jsse/AbstractSessionContext.java | 12 ++++---
+ .../provider/jsse/ClientSessionContext.java   |  2 +-
+ .../provider/jsse/OpenSSLSessionImpl.java     | 32 +++++++++++++++----
+ .../provider/jsse/ServerSessionContext.java   |  2 +-
+ 4 files changed, 36 insertions(+), 12 deletions(-)
+
+diff --git a/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/AbstractSessionContext.java b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/AbstractSessionContext.java
+index 0d9b4fbac..79ef67220 100644
+--- a/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/AbstractSessionContext.java
++++ b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/AbstractSessionContext.java
+@@ -38,8 +38,14 @@ import org.apache.harmony.security.provider.cert.X509CertImpl;
+  */
+ abstract class AbstractSessionContext implements SSLSessionContext {
+ 
++    /**
++     * Maximum lifetime of a session (in seconds) after which it's considered invalid and should not
++     * be used to for new connections.
++     */
++    private static final int DEFAULT_SESSION_TIMEOUT_SECONDS = 8 * 60 * 60;
++
+     volatile int maximumSize;
+-    volatile int timeout;
++    volatile int timeout = DEFAULT_SESSION_TIMEOUT_SECONDS;
+ 
+     final long sslCtxNativePointer = NativeCrypto.SSL_CTX_new();
+ 
+@@ -64,11 +70,9 @@ abstract class AbstractSessionContext implements SSLSessionContext {
+      * Constructs a new session context.
+      *
+      * @param maximumSize of cache
+-     * @param timeout for cache entries
+      */
+-    AbstractSessionContext(int maximumSize, int timeout) {
++    AbstractSessionContext(int maximumSize) {
+         this.maximumSize = maximumSize;
+-        this.timeout = timeout;
+     }
+ 
+     /**
+diff --git a/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/ClientSessionContext.java b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/ClientSessionContext.java
+index 0b358aa2a..5437be0e6 100644
+--- a/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/ClientSessionContext.java
++++ b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/ClientSessionContext.java
+@@ -36,7 +36,7 @@ public class ClientSessionContext extends AbstractSessionContext {
+     private SSLClientSessionCache persistentCache;
+ 
+     public ClientSessionContext() {
+-        super(10, 0);
++        super(10);
+     }
+ 
+     public int size() {
+diff --git a/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/OpenSSLSessionImpl.java b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/OpenSSLSessionImpl.java
+index 1465027e1..d628ea5ab 100644
+--- a/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/OpenSSLSessionImpl.java
++++ b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/OpenSSLSessionImpl.java
+@@ -344,15 +344,35 @@ public class OpenSSLSessionImpl implements SSLSession {
+      * @return true if this session may be resumed.
+      */
+     public boolean isValid() {
++        if (!isValid) {
++            return false;
++        }
++        // The session has't yet been invalidated -- check whether it timed out.
++
+         SSLSessionContext context = sessionContext;
+-        if (isValid
+-                && context != null
+-                && context.getSessionTimeout() != 0
+-                && getCreationTime() + (context.getSessionTimeout() * 1000)
+-                    < System.currentTimeMillis()) {
++        if (context == null) {
++            // Session not associated with a context -- no way to tell what its timeout should be.
++            return true;
++        }
++
++        int timeoutSeconds = context.getSessionTimeout();
++        if (timeoutSeconds == 0) {
++            // Infinite timeout -- session still valid
++            return true;
++        }
++
++        long creationTimestampMillis = getCreationTime();
++        long ageSeconds = (System.currentTimeMillis() - creationTimestampMillis) / 1000;
++        // NOTE: The age might be negative if something was/is wrong with the system clock. We time
++        // out such sessions to be safe.
++        if ((ageSeconds >= timeoutSeconds) || (ageSeconds < 0)) {
++            // Session timed out -- no longer valid
+             isValid = false;
++            return false;
+         }
+-        return isValid;
++
++        // Session still valid
++        return true;
+     }
+ 
+     /**
+diff --git a/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/ServerSessionContext.java b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/ServerSessionContext.java
+index f5716c1de..8c5446b14 100644
+--- a/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/ServerSessionContext.java
++++ b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/ServerSessionContext.java
+@@ -27,7 +27,7 @@ public class ServerSessionContext extends AbstractSessionContext {
+     private SSLServerSessionCache persistentCache;
+ 
+     public ServerSessionContext() {
+-        super(100, 0);
++        super(100);
+ 
+         // TODO make sure SSL_CTX does not automaticaly clear sessions we want it to cache
+         // SSL_CTX_set_session_cache_mode(sslCtxNativePointer, SSL_SESS_CACHE_NO_AUTO_CLEAR);

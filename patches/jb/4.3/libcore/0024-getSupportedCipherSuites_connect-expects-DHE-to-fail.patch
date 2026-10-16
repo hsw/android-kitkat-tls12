@@ -1,0 +1,52 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: android-kitkat-tls12 <android-kitkat-tls12@users.noreply.github.com>
+Date: Fri, 9 Oct 2026 12:00:00 +0000
+Subject: [PATCH 24/30] getSupportedCipherSuites_connect expects DHE to fail
+ from OpenSSL to the Harmony server
+
+Since OpenSSL 1.0.1n (Logjam, CVE-2015-4000) the client rejects a
+Diffie-Hellman group of fewer than 768 bits for a non-export DHE suite
+(SSL3_CHECK_CERT_AND_ALGORITHM "dh key too small"). The Harmony JSSE
+server (org.conscrypt.ServerHandshakeImpl) always uses the fixed 512-bit
+prime of DHParameters, so with OpenSSL 1.0.1u an AndroidOpenSSL client
+cannot connect to a HarmonyJSSE server over the 8 non-export DHE suites
+(SSL_DHE_{RSA,DSS}_WITH_{DES,3DES_EDE}_CBC_SHA,
+TLS_DHE_{RSA,DSS}_WITH_AES_{128,256}_CBC_SHA). Export DHE suites keep
+the 512-bit export limit and still connect.
+
+Android 5.0 removed the Harmony provider, so upstream never tests this
+pair. The test now expects these handshakes to fail, the way it already
+expects SHA-256 suites to fail on the RI, so it checks that the client
+refuses the weak group. The other provider pairs are unchanged, and DHE
+stays out of the default cipher suites.
+
+Android 4.3 port (android-4.3_r3) of patch 0024 of the 4.4 series. The
+same change; only line offsets differ.
+---
+ .../java/libcore/javax/net/ssl/SSLSocketTest.java   | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/luni/src/test/java/libcore/javax/net/ssl/SSLSocketTest.java b/luni/src/test/java/libcore/javax/net/ssl/SSLSocketTest.java
+index 823036dc2..0d6d5f662 100644
+--- a/luni/src/test/java/libcore/javax/net/ssl/SSLSocketTest.java
++++ b/luni/src/test/java/libcore/javax/net/ssl/SSLSocketTest.java
+@@ -169,6 +169,19 @@ public class SSLSocketTest extends TestCase {
+ 
+         for (String cipherSuite : cipherSuites) {
+             boolean errorExpected = StandardNames.IS_RI && cipherSuite.endsWith("_SHA256");
++            /*
++             * kktls (OpenSSL 1.0.1u): since 1.0.1n (Logjam) the OpenSSL client rejects a DH group
++             * of fewer than 768 bits for a non-export DHE suite ("dh key too small"), and the
++             * Harmony JSSE server always uses a 512-bit group (DHParameters). Android 5.0
++             * removed the Harmony provider, so upstream has no such pair.
++             */
++            if (!StandardNames.IS_RI
++                    && clientProvider.equals("AndroidOpenSSL")
++                    && serverProvider.equals("HarmonyJSSE")
++                    && (cipherSuite.startsWith("SSL_DHE_") || cipherSuite.startsWith("TLS_DHE_"))
++                    && !cipherSuite.contains("_EXPORT_")) {
++                errorExpected = true;
++            }
+             try {
+                 /*
+                  * TLS_EMPTY_RENEGOTIATION_INFO_SCSV cannot be used on

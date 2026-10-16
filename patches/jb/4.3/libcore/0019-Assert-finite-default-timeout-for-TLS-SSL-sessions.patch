@@ -1,0 +1,36 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Alex Klyubin <klyubin@google.com>
+Date: Fri, 21 Nov 2014 14:42:37 -0800
+Subject: [PATCH 19/30] Assert finite default timeout for TLS/SSL sessions.
+
+This makes CTS tests expect 8 hours as the default timeout for TLS/SSL
+sessions. Prior to this change, sessions were expected to not time out
+by default.
+
+(cherry picked from commit 4e1404f2017dc7db05b69ecad241f78c5bb1a4ee)
+
+Bug: 18369043
+Bug: 18370076
+Change-Id: I09ae9ee91df2fb4bb2e8cc812127dc9f05a14696
+(cherry picked from commit 571815deb03bd0e3ed8497160e489c16c72d67a2)
+
+Android 4.3 port (android-4.3_r3) of patch 0019 of the 4.4 series. The
+same change; only line offsets differ.
+---
+ .../src/test/java/libcore/javax/net/ssl/TestSSLContext.java    | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/support/src/test/java/libcore/javax/net/ssl/TestSSLContext.java b/support/src/test/java/libcore/javax/net/ssl/TestSSLContext.java
+index 5c424bc5a..9b07a32c8 100644
+--- a/support/src/test/java/libcore/javax/net/ssl/TestSSLContext.java
++++ b/support/src/test/java/libcore/javax/net/ssl/TestSSLContext.java
+@@ -54,7 +54,8 @@ public final class TestSSLContext extends Assert {
+     private static final boolean IS_RI = StandardNames.IS_RI;
+     public static final int EXPECTED_DEFAULT_CLIENT_SSL_SESSION_CACHE_SIZE = (IS_RI) ? 0 : 10;
+     public static final int EXPECTED_DEFAULT_SERVER_SSL_SESSION_CACHE_SIZE = (IS_RI) ? 0 : 100;
+-    public static final int EXPECTED_DEFAULT_SSL_SESSION_CACHE_TIMEOUT = (IS_RI) ? 86400 : 0;
++    public static final int EXPECTED_DEFAULT_SSL_SESSION_CACHE_TIMEOUT =
++            (IS_RI) ? 24 * 3600 : 8 * 3600;
+ 
+     /**
+      * The Android SSLSocket and SSLServerSocket implementations are
