@@ -24,7 +24,7 @@
 #   --image NAME      build image (default: tools/docker-image.sh aosp-build); --sync-image NAME (default aosp-sync)
 #   --runner docker|direct   direct = already inside the build image: no docker
 #
-# Inputs come from `git archive HEAD` (patches/jb, tools) and must be committed (exit 4); a tree is only built further
+# Inputs come from `git archive HEAD` (patches/jb, patches/build, tools) and must be committed (exit 4); a tree is only built further
 # while patches/jb at HEAD equals what it was patched with. Exit codes: 0 ok, 1 a failed step or check, 2 usage,
 # 3 missing image or tool, 4 uncommitted inputs or a series change since apply.
 # SPDX-License-Identifier: Apache-2.0
@@ -33,7 +33,7 @@ set -euo pipefail
 ME=$(readlink -f "$0"); HERE=$(dirname "$ME"); REPO_ROOT=$(dirname "$HERE")
 MIRROR=https://android.googlesource.com/platform/manifest
 REPO_REV=v2.69
-INPUT_PATHS="patches/jb tools"
+INPUT_PATHS="patches/jb patches/build tools"
 STEPS_ALL="sync stock apply build collect check"
 FILES="lib/libssl.so lib/libcrypto.so"
 
