@@ -17,6 +17,7 @@ project 4.3  abi/cpp
 project 4.3  system/core
 project 4.3  external/openssl
 project 4.3  external/zlib
+project 4.3  external/safe-iop
 project 4.3  external/stlport
 project 4.3  external/clang
 project 4.3  external/llvm
@@ -36,6 +37,7 @@ rev  android-4.3_r3    bionic                                                  7
 rev  android-4.3_r3    abi/cpp                                                 eb789ea833d8d800662b67914d9c1785a58c2caa
 rev  android-4.3_r3    system/core                                             821678e1c7bd0af12fa4adc314c9024def9ba7c0
 rev  android-4.3_r3    external/openssl                                        4d2199ecb112f77bd1897047a75277c1d43d1aa9
+rev  android-4.3_r3    external/safe-iop                                       aa0725fb1da35e47676b6da30009322eb5ed59be
 rev  android-4.3_r3    external/zlib                                           6a396b358e97fdbcb2dc181e52d36a9d8b5ea752
 rev  android-4.3_r3    external/stlport                                        c7253d88b7fa6f7ba115f167a59b1e9f857db728
 rev  android-4.3_r3    external/clang                                          177982bea7e4ccffd2577c8f63a5872eebebe54b
