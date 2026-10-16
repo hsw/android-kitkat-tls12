@@ -1,7 +1,8 @@
 # Release build on GitHub-hosted runners: host tests, the build image (docker/Dockerfile.build, cached in GHCR under the
 # repository owner, tagged by the Dockerfile's hash; the build jobs pull it by the digest the image job saw), one
 # partial AOSP build per tag (both ABIs in one out/, every step of tools/kktls-release-build.sh inside the image with
-# --runner direct), then the recovery zips (tools/mkzips.sh) with the installer tests on the real output. release.yml calls this workflow for a tag and publishes the zips.
+# --runner direct), one OpenSSL build per Jelly Bean base (tools/kktls-jb-openssl-build.sh, same image), then the
+# recovery zips (tools/mkzips.sh) with the installer tests on the real output. release.yml calls this workflow for a tag and publishes the zips.
 name: build
 
 on:
@@ -178,8 +179,73 @@ jobs:
             ${{ runner.temp }}/kktls/out/kktls/checks.tsv
           retention-days: 14
 
+  build-jb:
+    needs: image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        base: ['4.3', '4.2', '4.1']
+    env:
+      IMG: ${{ needs.image.outputs.ref }}
+      PINNED: ${{ needs.image.outputs.pinned }}
+    steps:
+      - name: free disk
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL \
+            /usr/local/share/boost /usr/local/share/powershell /usr/local/julia* /opt/microsoft
+          docker system prune -af > /dev/null
+          df -h /
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: image
+        run: |
+          if [ -n "$PINNED" ]; then
+            docker pull -q "$PINNED"
+            docker tag "$PINNED" "$IMG"
+          else
+            docker build -q --build-arg UID="$(id -u)" -t "$IMG" -f docker/Dockerfile.build docker
+          fi
+      - name: build
+        run: |
+          mkdir -p "$RUNNER_TEMP/kktls"
+          docker run --rm --ulimit nofile=1024:524288 -v "$GITHUB_WORKSPACE:/src" -v "$RUNNER_TEMP/kktls:/work" "$IMG" \
+            bash /src/tools/kktls-jb-openssl-build.sh --runner direct --work /work --bases "${{ matrix.base }}" \
+            --jobs "$(nproc)" all
+      - name: stock libraries (the old side of the installer tests)
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/jbstock"
+          cp -a "$RUNNER_TEMP"/kktls/android-*/stock-openssl/. "$RUNNER_TEMP/jbstock/" || true
+      - name: disk use
+        if: always()
+        run: df -h / && du -sh "$RUNNER_TEMP/kktls" || true
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: jb-${{ matrix.base }}
+          path: ${{ runner.temp }}/kktls/out/kktls-jb/${{ matrix.base }}/
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: jbstock-${{ matrix.base }}
+          path: ${{ runner.temp }}/jbstock/
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure()
+        with:
+          name: logs-jb-${{ matrix.base }}
+          path: |
+            ${{ runner.temp }}/kktls/android-*/logs/
+            ${{ runner.temp }}/kktls/out/kktls-jb/checks.tsv
+          retention-days: 14
+
   zips:
-    needs: build
+    needs: [build, build-jb]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -194,6 +260,10 @@ jobs:
         with:
           pattern: stock-*
           path: ${{ runner.temp }}/dl
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: jb*-*
+          path: ${{ runner.temp }}/dl
       - name: packages
         run: |
           sudo apt-get update -q
@@ -205,13 +275,16 @@ jobs:
           mkdir -p "$in" "$RUNNER_TEMP/stock"
           for d in "$dl"/release-*; do mv "$d" "$in/${d##*/release-}"; done
           for d in "$dl"/stock-*; do mv "$d" "$RUNNER_TEMP/stock/${d##*/stock-}"; done
-          tools/mkzips.sh --in "$in" --release "$RELEASE" --cacerts cacerts/files --conscrypt-notice conscrypt/NOTICE \
-            --out "$RUNNER_TEMP/zips"
+          mkdir -p "$RUNNER_TEMP/jb" "$RUNNER_TEMP/jbstock"
+          for d in "$dl"/jb-*; do mv "$d" "$RUNNER_TEMP/jb/${d##*/jb-}"; done
+          for d in "$dl"/jbstock-*; do mv "$d" "$RUNNER_TEMP/jbstock/${d##*/jbstock-}"; done
+          tools/mkzips.sh --in "$in" --jb "$RUNNER_TEMP/jb" --release "$RELEASE" --cacerts cacerts/files \
+            --conscrypt-notice conscrypt/NOTICE --out "$RUNNER_TEMP/zips"
           (cd "$RUNNER_TEMP/zips" && sha256sum -c --quiet SHA256SUMS && cat SHA256SUMS)
       - name: installer tests on the release output
         run: |
           installer/test/run-tests.sh --real "$RUNNER_TEMP/in" cacerts/files conscrypt/NOTICE \
-            "$RUNNER_TEMP/stock/android-4.4.2_r2/x86"
+            "$RUNNER_TEMP/stock/android-4.4.2_r2/x86" --jb "$RUNNER_TEMP/jb" "$RUNNER_TEMP/jbstock"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: zips
