@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # mkzips.sh: pack the kktls release recovery zips (+ SHA256SUMS) from the release build output.
 #
-#   mkzips.sh --in DIR --release NAME --cacerts DIR --conscrypt-notice FILE --out DIR [--base-tag TAG] [--mtime EPOCH]
+#   mkzips.sh --in DIR --release NAME --cacerts DIR --conscrypt-notice FILE --out DIR [--jb DIR] [--base-tag TAG]
+#             [--mtime EPOCH]
 #
 #   --in DIR       release build output: DIR/<tag>/<abi>/{lib,framework}/... + SHA256SUMS + BUILD-INFO.txt,
 #                  DIR/<tag>/helpers/<abi>/{kktls-symcheck,kktls-util} + allow-missing-libssl.txt + SHA256SUMS,
@@ -11,12 +12,17 @@
 #   --cacerts DIR  the CA store: <hash>.<n> files in the Android 4.x format (installed as /system/etc/security/cacerts)
 #   --conscrypt-notice FILE  the NOTICE of the Conscrypt/BoringSSL build in the layer D files
 #   --out DIR      output directory (created; existing kktls-*.zip and SHA256SUMS in it are replaced)
+#   --jb DIR       Jelly Bean openssl build output (tools/kktls-jb-openssl-build.sh WORK/out/kktls-jb): DIR/<base>/<abi>/
+#                  {lib/libssl.so,lib/libcrypto.so,SHA256SUMS,BUILD-INFO.txt}, DIR/<base>/notice/openssl.NOTICE,
+#                  DIR/<base>/allow/allow-missing-lib{ssl,crypto}.txt (each with SHA256SUMS), base = 4.1|4.2|4.3: one
+#                  openssl zip per base and ABI (helpers and the bionic notice from the 4.4 base tag)
 #   --base-tag TAG the tag whose openssl, layer D and helper files go into the ABI-independent zips and the
 #                  openssl/conscrypt zips (default: the first tag in sort order; those files are the same for every tag)
 #   --mtime EPOCH  timestamp of every zip entry (default 1230768000 = 2009-01-01 UTC)
 #
-# Zips (Android version from the tag name android-<ver>_rN):
-#   kktls-openssl-<abi>-<rel>.zip           system/lib/{libssl,libcrypto}.so
+# Zips (Android version from the tag name android-<ver>_rN; the openssl zips name the Android version they install on):
+#   kktls-openssl-4.4-<abi>-<rel>.zip       system/lib/{libssl,libcrypto}.so (any 4.4.x)
+#   kktls-openssl-<base>-<abi>-<rel>.zip    the same for Android <base>.x, with --jb (4.1, 4.2, 4.3)
 #   kktls-cacerts-<rel>.zip                 system/etc/security/cacerts/* (replaces the directory)
 #   kktls-java-<ver>-<abi>-<rel>.zip        system/framework/{core,core-libart,conscrypt,okhttp}.jar, system/lib/libjavacrypto.so
 #   kktls-conscrypt-<abi>-<rel>.zip         system/framework/kktls-{conscrypt,sslfilter}.jar, system/lib/libkktls_conscrypt_jni.so
@@ -29,16 +35,16 @@ export LC_ALL=C
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 die() { echo "mkzips: $*" >&2; exit "${2:-1}"; }
-IN='' REL='' CACERTS='' CNOTICE='' OUT='' BASE='' MTIME=1230768000
+IN='' REL='' CACERTS='' CNOTICE='' OUT='' BASE='' MTIME=1230768000 JB=''
 while [ $# -gt 0 ]; do
   case $1 in
-    --in|--release|--cacerts|--conscrypt-notice|--out|--base-tag|--mtime)
+    --in|--release|--cacerts|--conscrypt-notice|--out|--base-tag|--mtime|--jb)
       [ $# -ge 2 ] || die "$1 needs a value" 2
       case $1 in
         --in) IN=$2 ;; --release) REL=$2 ;; --cacerts) CACERTS=$2 ;; --conscrypt-notice) CNOTICE=$2 ;;
-        --out) OUT=$2 ;; --base-tag) BASE=$2 ;; --mtime) MTIME=$2 ;;
+        --out) OUT=$2 ;; --base-tag) BASE=$2 ;; --mtime) MTIME=$2 ;; --jb) JB=$2 ;;
       esac; shift 2 ;;
-    -h|--help) sed -n '3,27p' "$0"; exit 0 ;;
+    -h|--help) sed -n '3,33p' "$0"; exit 0 ;;
     *) die "unknown argument $1" 2 ;;
   esac
 done
@@ -60,12 +66,31 @@ TAGS=$(cd "$IN" && ls -d android-4.4* 2> /dev/null | sort) || true
 [ -n "$BASE" ] || BASE=$(echo "$TAGS" | head -n 1)
 echo "$TAGS" | grep -qx "$BASE" || die "--base-tag $BASE is not in $IN"
 
+JBASES=''
+if [ -n "$JB" ]; then
+  [ -d "$JB" ] || die "--jb $JB: no such directory"
+  JBASES=$(cd "$JB" && ls -d 4.[0-3] 2> /dev/null | sort -r) || true
+  [ -n "$JBASES" ] || die "--jb $JB: no 4.1-4.3 base directories"
+fi
+jb_tag() { # base -> the AOSP tag its libraries were built from (BUILD-INFO.txt of every ABI, which must agree)
+  local t; t=$(cat "$JB/$1"/*/BUILD-INFO.txt | sed -n 's/^tag //p' | sort -u)
+  case $t in android-"$1"*) echo "$t" ;; *) die "$JB/$1: BUILD-INFO tag '$t' is not one android-$1 tag" ;; esac
+}
+
 # every input directory is checked against its SHA256SUMS first
 for t in $TAGS; do
   for d in $ABIS helpers notice; do
     [ -f "$IN/$t/$d/SHA256SUMS" ] || die "$IN/$t/$d/SHA256SUMS missing"
     (cd "$IN/$t/$d" && sha256sum -c --quiet SHA256SUMS) || die "$IN/$t/$d: SHA256SUMS mismatch"
   done
+done
+for b in $JBASES; do
+  for d in $ABIS notice allow; do
+    [ -f "$JB/$b/$d/SHA256SUMS" ] || die "$JB/$b/$d/SHA256SUMS missing"
+    (cd "$JB/$b/$d" && sha256sum -c --quiet SHA256SUMS) || die "$JB/$b/$d: SHA256SUMS mismatch"
+  done
+  [ -f "$JB/$b/allow/allow-missing-libssl.txt" ] || die "$JB/$b/allow/allow-missing-libssl.txt missing"
+  jb_tag "$b" > /dev/null
 done
 
 mkdir -p "$OUT"
@@ -76,14 +101,14 @@ rm -f "$OUT"/kktls-*.zip "$OUT/SHA256SUMS"
 rule() { printf '%s\n' "============================================================================="; }
 section() { echo; rule; echo "$1"; rule; echo; cat "$2"; }
 
-notice() { # kind tag -> NOTICE text
-  local kind=$1 t=$2 n=$IN/$2/notice
+notice() { # kind tag [openssl-tag openssl-notice-dir] -> NOTICE text (the JB openssl zips: OpenSSL from their own tag)
+  local kind=$1 t=$2 n=$IN/$2/notice ot=${3:-$2} on=${4:-$IN/$2/notice}
   echo "Notices for the kktls $kind zip ($REL)"
   echo
   echo "The installer scripts (META-INF/, kktls/*.sh) and the helpers kktls-symcheck and kktls-util are licensed under"
   echo "the Apache License 2.0. The helpers are linked statically with the Android bionic C library (notice below)."
   case $kind in
-    openssl) echo "lib/libssl.so and lib/libcrypto.so are OpenSSL 1.0.1u with backported fixes, built from AOSP $t"
+    openssl) echo "lib/libssl.so and lib/libcrypto.so are OpenSSL 1.0.1u with backported fixes, built from AOSP $ot"
              echo "external/openssl; they are under the OpenSSL and SSLeay licences below." ;;
     java) echo "framework/core.jar, core-libart.jar, conscrypt.jar and lib/libjavacrypto.so are built from AOSP $t libcore"
           echo "(Apache License 2.0; Apache Harmony, Bouncy Castle and other notices below), framework/okhttp.jar from"
@@ -95,7 +120,7 @@ notice() { # kind tag -> NOTICE text
     restore) ;;
   esac
   case $kind in
-    openssl) section "OpenSSL (AOSP $t external/openssl/NOTICE)" "$n/openssl.NOTICE" ;;
+    openssl) section "OpenSSL (AOSP $ot external/openssl/NOTICE)" "$on/openssl.NOTICE" ;;
     java) section "libcore (AOSP $t libcore/NOTICE)" "$n/libcore.NOTICE" ;;
     conscrypt) section "Conscrypt and BoringSSL" "$CNOTICE" ;;
     cacerts) section "Mozilla Public License 2.0" "$LIC/MPL-2.0.txt" ;;
@@ -105,7 +130,8 @@ notice() { # kind tag -> NOTICE text
 }
 
 stage() { # name kind abi android tag helper-abis... -> $ST/name/ with everything but the payload
-  local kind=$2 abi=$3 android=$4 t=$5 s=$ST/$1 a; shift 5
+  # (helpers and notices from tag; HTAG=<4.4 tag> NOTICE_ARGS="<tag> <dir>": a JB zip, helpers from the 4.4 base tag)
+  local kind=$2 abi=$3 android=$4 t=$5 s=$ST/$1 a ht=${HTAG:-$5}; shift 5
   mkdir -p "$s/META-INF/com/google/android" "$s/kktls"
   cp "$INST/update-binary" "$s/META-INF/com/google/android/update-binary"
   echo "# kktls: the installer is META-INF/com/google/android/update-binary (a shell script)" \
@@ -114,13 +140,14 @@ stage() { # name kind abi android tag helper-abis... -> $ST/name/ with everythin
   printf 'kind=%s\nrelease=%s\nabi=%s\nandroid=%s\ntag=%s\n' "$kind" "$REL" "$abi" "$android" "$t" > "$s/kktls/zip.conf"
   for a in "$@"; do
     mkdir -p "$s/kktls/bin/$a"
-    cp "$IN/$t/helpers/$a/kktls-symcheck" "$IN/$t/helpers/$a/kktls-util" "$s/kktls/bin/$a/"
+    cp "$IN/$ht/helpers/$a/kktls-symcheck" "$IN/$ht/helpers/$a/kktls-util" "$s/kktls/bin/$a/"
   done
-  notice "$kind" "$t" > "$s/NOTICE"
+  # shellcheck disable=SC2086
+  notice "$kind" "$ht" ${NOTICE_ARGS:-} > "$s/NOTICE"
 }
 
-payload() { # name tag abi files... (paths below <tag>/<abi>/)
-  local s=$ST/$1 src=$IN/$2/$3 f; shift 3
+payload() { # name dir files... (paths below dir, the <tag>/<abi>/ of a build output)
+  local s=$ST/$1 src=$2 f; shift 2
   for f in "$@"; do install -D -m 0644 "$src/$f" "$s/system/$f"; done
   cp "$src/BUILD-INFO.txt" "$s/kktls/BUILD-INFO.txt"
 }
@@ -150,21 +177,30 @@ EOF
 ver_of() { local v=${1#android-}; echo "${v%%_*}"; }
 
 for a in $ABIS; do
-  n=kktls-openssl-$a-$REL
+  n=kktls-openssl-4.4-$a-$REL
   stage "$n" openssl "$a" 4.4 "$BASE" "$a"
-  payload "$n" "$BASE" "$a" lib/libssl.so lib/libcrypto.so
+  payload "$n" "$IN/$BASE/$a" lib/libssl.so lib/libcrypto.so
   cp "$IN/$BASE/helpers/allow-missing-libssl.txt" "$ST/$n/kktls/"
   pack "$n"
+  for b in $JBASES; do
+    n=kktls-openssl-$b-$a-$REL jt=$(jb_tag "$b")
+    HTAG=$BASE NOTICE_ARGS="$jt $JB/$b/notice" stage "$n" openssl "$a" "$b" "$jt" "$a"
+    payload "$n" "$JB/$b/$a" lib/libssl.so lib/libcrypto.so
+    for l in libssl libcrypto; do
+      [ ! -f "$JB/$b/allow/allow-missing-$l.txt" ] || cp "$JB/$b/allow/allow-missing-$l.txt" "$ST/$n/kktls/"
+    done
+    pack "$n"
+  done
   for t in $TAGS; do
     n=kktls-java-$(ver_of "$t")-$a-$REL
     stage "$n" java "$a" "$(ver_of "$t")" "$t" "$a"
-    payload "$n" "$t" "$a" framework/core.jar framework/core-libart.jar framework/conscrypt.jar framework/okhttp.jar \
+    payload "$n" "$IN/$t/$a" framework/core.jar framework/core-libart.jar framework/conscrypt.jar framework/okhttp.jar \
       lib/libjavacrypto.so
     pack "$n"
   done
   n=kktls-conscrypt-$a-$REL
   stage "$n" conscrypt "$a" 4.4 "$BASE" "$a"
-  payload "$n" "$BASE" "$a" framework/kktls-conscrypt.jar framework/kktls-sslfilter.jar lib/libkktls_conscrypt_jni.so
+  payload "$n" "$IN/$BASE/$a" framework/kktls-conscrypt.jar framework/kktls-sslfilter.jar lib/libkktls_conscrypt_jni.so
   pack "$n"
 done
 n=kktls-cacerts-$REL

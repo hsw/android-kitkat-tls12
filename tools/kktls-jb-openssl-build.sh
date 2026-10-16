@@ -12,9 +12,12 @@
 #   apply    git am patches/jb/<base>/external_openssl/*.patch in external/openssl
 #   build    per ABI: libcrypto libssl openssl (the command-line tool is a test client, not a release file)
 #   collect  lib/libssl.so lib/libcrypto.so into WORK/out/kktls-jb/<base>/<abi>/ + SHA256SUMS + BUILD-INFO.txt;
-#            bin/openssl into WORK/out/kktls-jb/<base>/test-bin/<abi>/; external/openssl/NOTICE into .../notice/
+#            bin/openssl into WORK/out/kktls-jb/<base>/test-bin/<abi>/; external/openssl/NOTICE into .../notice/;
+#            patches/jb/<base>/allow-missing-lib{ssl,crypto}.txt (the zip's kktls-symcheck lists) into .../allow/
 #   check    per ABI: openssl-abi-check.py symbols against stock-openssl (0 removed public exports; the 4.4 allow
-#            list plus patches/jb/<base>/openssl-abi-allow.txt when present); summary in WORK/out/kktls-jb/checks.tsv
+#            list plus patches/jb/<base>/openssl-abi-allow.txt when present), and kktls-symcheck (built for this host
+#            with $CC, default cc) with the allow/ lists, as the installer runs it on a device; summary in
+#            WORK/out/kktls-jb/checks.tsv
 #
 # Options:
 #   --work DIR        scratch root (default ./kktls-jb-work)
@@ -33,7 +36,7 @@ set -euo pipefail
 ME=$(readlink -f "$0"); HERE=$(dirname "$ME"); REPO_ROOT=$(dirname "$HERE")
 MIRROR=https://android.googlesource.com/platform/manifest
 REPO_REV=v2.69
-INPUT_PATHS="patches/jb patches/build tools"
+INPUT_PATHS="patches/jb patches/build tools symcheck"
 STEPS_ALL="sync stock apply build collect check"
 FILES="lib/libssl.so lib/libcrypto.so"
 
@@ -234,6 +237,13 @@ do_collect() {
   rm -rf "$nd"; mkdir -p "$nd"
   install -m 0644 "$d/src/external/openssl/NOTICE" "$nd/openssl.NOTICE"
   (cd "$nd" && sha256sum openssl.NOTICE > SHA256SUMS)
+  local ad=$WORK/out/kktls-jb/$b/allow l
+  rm -rf "$ad"; mkdir -p "$ad"
+  [ -f "$INPUTS/patches/jb/$b/allow-missing-libssl.txt" ] || { echo "[$t] patches/jb/$b/allow-missing-libssl.txt missing" >&2; return 1; }
+  for l in libssl libcrypto; do
+    [ ! -f "$INPUTS/patches/jb/$b/allow-missing-$l.txt" ] || install -m 0644 "$INPUTS/patches/jb/$b/allow-missing-$l.txt" "$ad/"
+  done
+  (cd "$ad" && sha256sum allow-missing-*.txt > SHA256SUMS)
 }
 
 do_check() {
@@ -242,6 +252,10 @@ do_check() {
   local sum=$WORK/out/kktls-jb/checks.tsv allow=$d/abi-allow.txt
   [ -f "$sum" ] || printf 'base\tabi\tcheck\tresult\tlog\n' > "$sum"
   cat "$INPUTS/tools/openssl-abi-allow.txt" > "$allow"
+  local sc=$d/kktls-symcheck-host ad=$WORK/out/kktls-jb/$b/allow
+  (cd "$ad" && sha256sum -c --quiet SHA256SUMS) || { echo "[$t] allow/ SHA256SUMS mismatch" >&2; rc=1; }
+  ${CC:-cc} -O1 -std=gnu99 -o "$sc" "$INPUTS/symcheck/kktls-symcheck.c" > "$d/logs/symcheck-cc.log" 2>&1 ||
+    { cat "$d/logs/symcheck-cc.log" >&2; return 1; }
   [ -f "$INPUTS/patches/jb/$b/openssl-abi-allow.txt" ] && cat "$INPUTS/patches/jb/$b/openssl-abi-allow.txt" >> "$allow"
   while read -r combo abi; do
     local o=$WORK/out/kktls-jb/$b/$abi l=$d/logs r=PASS
@@ -251,6 +265,15 @@ do_check() {
       > "$l/abi-symbols-$abi.log" 2>&1 || { r=FAIL; rc=1; }
     printf '%s\t%s\topenssl-abi-symbols\t%s\t%s\n' "$b" "$abi" "$r" "$l/abi-symbols-$abi.log" >> "$sum"
     echo "  $abi openssl-abi-check symbols: $r ($(tail -n1 "$l/abi-symbols-$abi.log"))"
+    r=PASS
+    local lib args
+    for lib in libssl libcrypto; do
+      args=(); [ ! -f "$ad/allow-missing-$lib.txt" ] || args=(--allow-missing "$ad/allow-missing-$lib.txt")
+      "$sc" "${args[@]}" "$o/lib/$lib.so" "$d/stock-openssl/$abi/$lib.so" || r=FAIL
+    done > "$l/symcheck-$abi.log" 2>&1
+    [ "$r" = PASS ] && echo "libssl, libcrypto: superset (with the allow/ lists)" >> "$l/symcheck-$abi.log" || rc=1
+    printf '%s\t%s\tkktls-symcheck\t%s\t%s\n' "$b" "$abi" "$r" "$l/symcheck-$abi.log" >> "$sum"
+    echo "  $abi kktls-symcheck: $r ($(tail -n1 "$l/symcheck-$abi.log"))"
   done < <(rows_of "$b")
   return $rc
 }

@@ -9,8 +9,9 @@
 #   KK_ROOT   prefix of the device tree ("" on a device; a fake root in the tests)
 #   KK_DIR    the unpacked zip: KK_DIR/kktls/zip.conf, KK_DIR/kktls/bin/<abi>/, KK_DIR/system/... (the payload)
 # zip.conf (written by mkzips.sh): kind=openssl|cacerts|java|conscrypt|restore, release=<tag>, abi=armeabi-v7a|x86|any,
-#   android=4.4.2|4.4.4 (java: the exact ro.build.version.release it was built from), 4.4 (any 4.4.x) or a range
-#   4.1-4.4 (any 4.1.x to 4.4.x: cacerts and restore, which carry no code built against one release)
+#   android=4.4.2|4.4.4 (java: the exact ro.build.version.release it was built from), 4.N (any 4.N.x: the openssl zip
+#   built for that Android version, 4.1 to 4.4) or a range 4.1-4.4 (any 4.1.x to 4.4.x: cacerts and restore, which carry
+#   no code built against one release)
 #
 # Properties come from KK_ROOT/system/build.prop, never from getprop: in recovery getprop answers for the recovery's
 # own default.prop, not for the system that is being changed.
@@ -64,10 +65,10 @@ kk_minor() { # ro.build.version.release -> its minor number when it is 4.N or 4.
   local m=${1#4.}; echo "${m%%.*}"
 }
 
-kk_check_version() { # $1 = zip.conf android (4.4 = any 4.4.x, 4.A-4.B = any 4.A.x to 4.B.x)
+kk_check_version() { # $1 = zip.conf android (4.N = any 4.N.x, 4.A-4.B = any 4.A.x to 4.B.x)
   local rel lo hi m; rel=$(kk_prop ro.build.version.release)
   case $1 in
-    4.4) case $rel in 4.4|4.4.[0-9]*) ;; *) kk_refuse "Android '$rel' is not 4.4.x" ;; esac ;;
+    4.[0-9]) case $rel in "$1"|"$1".[0-9]*) ;; *) kk_refuse "Android '$rel' is not $1.x" ;; esac ;;
     4.[0-9]-4.[0-9])
       lo=${1%-*} hi=${1#*-} lo=${lo#4.} hi=${hi#4.} m=$(kk_minor "$rel")
       [ -n "$m" ] && [ "$m" -ge "$lo" ] && [ "$m" -le "$hi" ] || kk_refuse "Android '$rel' is not 4.$lo.x to 4.$hi.x" ;;
@@ -129,8 +130,9 @@ kk_check_symbols() { # our libssl/libcrypto must export everything the device's 
   local a l rc; a=$(kk_helper_abi)
   for l in libcrypto libssl; do
     if [ ! -f "$KK_ROOT/system/lib/$l.so" ]; then kk_refuse "/system/lib/$l.so is missing"; continue; fi
-    if [ $l = libssl ]; then
-      "$KK_DIR/kktls/bin/$a/kktls-symcheck" --allow-missing "$KK_DIR/kktls/allow-missing-libssl.txt" \
+    # allow lists: libssl in every openssl zip; libcrypto only where that base needs one (the Jelly Bean zips)
+    if [ -f "$KK_DIR/kktls/allow-missing-$l.txt" ]; then
+      "$KK_DIR/kktls/bin/$a/kktls-symcheck" --allow-missing "$KK_DIR/kktls/allow-missing-$l.txt" \
         "$KK_DIR/system/lib/$l.so" "$KK_ROOT/system/lib/$l.so"
     else
       "$KK_DIR/kktls/bin/$a/kktls-symcheck" "$KK_DIR/system/lib/$l.so" "$KK_ROOT/system/lib/$l.so"
@@ -150,10 +152,22 @@ kk_check_marker() { # name [required content]
   [ -z "${2:-}" ] || [ "$(cat "$m")" = "$2" ] || kk_refuse "$KK_MARKER_DIR/$1.version is '$(cat "$m")', this zip needs '$2'"
 }
 
+kk_ro_mount() { # dir -> 0 when /proc/mounts shows the mount that holds dir (the longest mount point that is dir or
+  # one of its parents; the last entry of an overmounted point) with the option ro; 1 otherwise or when unknown
+  local p; p=$(cd "$1" 2> /dev/null && pwd -P) || return 1
+  [ -r /proc/mounts ] || return 1
+  awk -v p="$p" '{ m = $2; gsub(/\\040/, " ", m)
+      if ((p == m || m == "/" || index(p, m "/") == 1) && length(m) >= best) { best = length(m); o = $4 } }
+    END { exit (("," o ",") ~ /,ro,/) ? 0 : 1 }' /proc/mounts
+}
+
 kk_check_writable() { # /system and /data must be mounted read-write
+  # `test -w` alone is not enough: busybox answers yes for root on a read-only mount (it does not call access())
   [ -f "$KK_ROOT/system/build.prop" ] || { kk_refuse "/system is not mounted (no build.prop)"; return; }
-  [ -w "$KK_ROOT/system" ] || kk_refuse "/system is not writable"
-  [ -d "$KK_ROOT/data" ] && [ -w "$KK_ROOT/data" ] || kk_refuse "/data is not mounted read-write"
+  if [ ! -w "$KK_ROOT/system" ] || kk_ro_mount "$KK_ROOT/system"; then kk_refuse "/system is not writable"; fi
+  if [ ! -d "$KK_ROOT/data" ] || [ ! -w "$KK_ROOT/data" ] || kk_ro_mount "$KK_ROOT/data"; then
+    kk_refuse "/data is not mounted read-write"
+  fi
 }
 
 kk_precheck() { # all checks of zip.conf's kind; returns 1 (after listing every failure) or 0
