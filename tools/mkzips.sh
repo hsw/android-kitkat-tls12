@@ -44,7 +44,7 @@ while [ $# -gt 0 ]; do
         --in) IN=$2 ;; --release) REL=$2 ;; --cacerts) CACERTS=$2 ;; --conscrypt-notice) CNOTICE=$2 ;;
         --out) OUT=$2 ;; --base-tag) BASE=$2 ;; --mtime) MTIME=$2 ;; --jb) JB=$2 ;;
       esac; shift 2 ;;
-    -h|--help) sed -n '3,33p' "$0"; exit 0 ;;
+    -h|--help) sed -n '3,32p' "$0"; exit 0 ;;
     *) die "unknown argument $1" 2 ;;
   esac
 done

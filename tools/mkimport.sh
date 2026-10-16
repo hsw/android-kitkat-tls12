@@ -10,7 +10,7 @@
 # KKTLS_WORK   the scratch root (default ./kktls-openssl-work); the container sees only this root as /aosp, so
 #              IMPORT_DIR, TARBALL and IMPORT_LOG must be under it.
 # OPENSSL_BASE the AOSP external/openssl commit the import is made on (default dd1da36, the 4.4 base; the Jelly Bean
-#              bases are listed in patches/jb/README.md). The base's own import_openssl.sh runs.
+#              bases are listed in patches/jb/targets.txt). The base's own import_openssl.sh runs.
 # IMPORT_DIR   a scratch git checkout of AOSP external/openssl at OPENSSL_BASE (default $KKTLS_WORK/openssl-import), created
 #              when it does not exist (shallow fetch of OPENSSL_BASE from AOSP_OPENSSL_URL, default android.googlesource.com).
 #              It is reset to OPENSSL_BASE and cleaned (git reset --hard, git clean -fdx), its patches/*.patch are replaced by
