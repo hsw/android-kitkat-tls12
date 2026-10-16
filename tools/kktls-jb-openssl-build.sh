@@ -269,7 +269,7 @@ do_check() {
     local lib args
     for lib in libssl libcrypto; do
       args=(); [ ! -f "$ad/allow-missing-$lib.txt" ] || args=(--allow-missing "$ad/allow-missing-$lib.txt")
-      "$sc" "${args[@]}" "$o/lib/$lib.so" "$d/stock-openssl/$abi/$lib.so" || r=FAIL
+      "$sc" ${args[@]+"${args[@]}"} "$o/lib/$lib.so" "$d/stock-openssl/$abi/$lib.so" || r=FAIL
     done > "$l/symcheck-$abi.log" 2>&1
     [ "$r" = PASS ] && echo "libssl, libcrypto: superset (with the allow/ lists)" >> "$l/symcheck-$abi.log" || rc=1
     printf '%s\t%s\tkktls-symcheck\t%s\t%s\n' "$b" "$abi" "$r" "$l/symcheck-$abi.log" >> "$sum"
