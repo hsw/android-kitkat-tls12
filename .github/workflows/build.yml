@@ -146,14 +146,9 @@ jobs:
       TAG: ${{ matrix.tag }}
       KKTLS_CCACHE_MAX: 3G   # one build of a tag leaves ~1.7 GB
     steps:
-      - name: free disk
-        run: |
-          df -h /
-          # toolchains this job does not use (the build image brings its own SDK tools)
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL \
-            /usr/local/share/boost /usr/local/share/powershell /usr/local/julia* /opt/microsoft
-          docker system prune -af > /dev/null
-          df -h /
+      - name: disk
+        # the hosted runner starts with ~86 GB free; a build job needs ~11 GB, so nothing is removed
+        run: df -h /
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -242,13 +237,9 @@ jobs:
       BASE: ${{ matrix.base }}
       KKTLS_CCACHE_MAX: 2G   # one build of a base leaves up to ~1.6 GB
     steps:
-      - name: free disk
-        run: |
-          df -h /
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL \
-            /usr/local/share/boost /usr/local/share/powershell /usr/local/julia* /opt/microsoft
-          docker system prune -af > /dev/null
-          df -h /
+      - name: disk
+        # the hosted runner starts with ~86 GB free; a build job needs ~11 GB, so nothing is removed
+        run: df -h /
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
