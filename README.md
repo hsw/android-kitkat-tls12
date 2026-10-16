@@ -141,6 +141,7 @@ tools/install-adb.sh [-s SERIAL] --restore kktls-restore-v1.zip
 | Android SDK system image 4.4.2 x86 (eng, SELinux disabled) | emulator, `install-adb.sh` | same |
 | AOSP `android-4.4.4_r2` `aosp_arm-eng` build | emulator, `install-adb.sh` | same, with the 4.4.4 java zip |
 | Refusals on the 4.4.2 ARM image: java before openssl, conscrypt before java, a CM marker in `build.prop`, an odexed apk without `classes.dex` | emulator | refused, device unchanged |
+| Android SDK system images 4.1.2, 4.2.2, 4.3.1 ARM (and 4.4.2 again), CA store and restore zips | emulator, `install-adb.sh` | install, reboot and restore; all 121 roots parse and their self-signatures verify on each release's providers (RSA-4096, P-384, SHA-384 included); real server chains to 7 roots the stock stores lack (ISRG Root X1 and X2, GTS Root R4, DigiCert Global Root G2, USERTrust ECC, Sectigo R46, Amazon Root CA 1) are trusted after the install and not before; the stock roots that are not in the new set are no longer trusted; restore gives the stock directory back byte for byte |
 | The recovery path (`update-binary`), 4.4.4 x86 java zip | host tests against fake `/system` trees, plus a real SDK 4.4.2 `/system` | pass |
 
 **Not tested yet:** a real TWRP or CWM recovery (only host tests run `update-binary`); 4.4.4 on x86 in an emulator;
