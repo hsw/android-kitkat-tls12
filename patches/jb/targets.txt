@@ -72,6 +72,7 @@ project 4.1  external/llvm
 project 4.1  external/compiler-rt
 project 4.1  prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.6
 project 4.1  prebuilts/gcc/linux-x86/x86/i686-linux-android-4.6
+project 4.1  prebuilts/gcc/linux-x86/x86/i686-android-linux-4.4.3
 project 4.1  prebuilts/gcc/linux-x86/host/i686-linux-glibc2.7-4.6
 project 4.1  prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.7-4.6
 project 4.1  prebuilts/gcc/linux-x86/host/i686-linux-glibc2.7-4.4.3
@@ -132,6 +133,7 @@ rev  android-4.1.2_r2  external/llvm                                           8
 rev  android-4.1.2_r2  external/compiler-rt                                    27590d73e7a656b92ed5789172a38468ce7b615e
 rev  android-4.1.2_r2  prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.6   c63c3b97bd3b9d37680f58b63c61027ec414ad79
 rev  android-4.1.2_r2  prebuilts/gcc/linux-x86/x86/i686-linux-android-4.6      907c92922b6f593b6d122e3e02212d589ec70ff8
+rev  android-4.1.2_r2  prebuilts/gcc/linux-x86/x86/i686-android-linux-4.4.3    286506f01f8ca64d6eb0e33bafb475a5cf10ff37
 rev  android-4.1.2_r2  prebuilts/gcc/linux-x86/host/i686-linux-glibc2.7-4.6    9e754ea754eac37d1cd20182cc5d37df85239b0d
 rev  android-4.1.2_r2  prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.7-4.6  02075080d51c371ae87b9898bf84a085e436ee27
 rev  android-4.1.2_r2  prebuilts/gcc/linux-x86/host/i686-linux-glibc2.7-4.4.3  10191e2f442c5409cb70783508658d474612a97e
