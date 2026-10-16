@@ -18,6 +18,9 @@
 # TARBALL      default: fetched by fetch-openssl.sh into $KKTLS_WORK/dl (reused when cached). Its sha256 must be the
 #              published one (pinned once, in fetch-openssl.sh).
 # IMPORT_LOG   default $KKTLS_WORK/import-u.log (import_openssl.sh output).
+# RECIPE_BUILD_FILES  space-separated top-level files also copied from RECIPE_DIR before the import (default none):
+#              the Jelly Bean 4.1/4.2 recipes carry the 4.3 build files and import_openssl.sh, e.g.
+#              "Android.mk Apps.mk Crypto.mk Ssl.mk android-config.mk import_openssl.sh check-all-builds.sh"
 # BUILD_IMAGE  the docker image import_openssl.sh runs in (default: tools/docker-image.sh aosp-build, the AOSP 4.4 build
 #              image kktls-aosp-build).
 #
@@ -35,7 +38,7 @@ BASE=${OPENSSL_BASE:-dd1da36b0baa39942f0aef42c4712ef0ad628a83}  # default: andro
 AOSP_OPENSSL_URL=${AOSP_OPENSSL_URL:-https://android.googlesource.com/platform/external/openssl}
 IMAGE=${BUILD_IMAGE:-}
 die() { echo "mkimport: $*" >&2; exit 2; }
-case ${1:-} in -h|--help) sed -n '2,28p' "$0"; exit 0 ;; -*) die "unknown option $1" ;; esac
+case ${1:-} in -h|--help) sed -n '2,31p' "$0"; exit 0 ;; -*) die "unknown option $1" ;; esac
 [ $# = 1 ] || die "usage: mkimport.sh RECIPE_DIR"
 mkdir -p "${KKTLS_WORK:-./kktls-openssl-work}" || die "cannot create KKTLS_WORK ${KKTLS_WORK:-./kktls-openssl-work}"
 W=$(cd "${KKTLS_WORK:-./kktls-openssl-work}" && pwd -P)
@@ -61,6 +64,11 @@ mkdir -p "$(dirname "$LOG")"
 [ "$(git -C "$I" rev-parse HEAD)" = "$BASE" ] || die "IMPORT_DIR $I is not at $BASE"
 [ "$(realpath "$I")" != "$(realpath "$RECIPE")" ] || die "IMPORT_DIR and RECIPE_DIR are the same directory"
 for f in openssl.config openssl.version patches/README; do [ -f "$RECIPE/$f" ] || die "no $f in $RECIPE"; done
+BUILD_FILES=${RECIPE_BUILD_FILES:-}
+for f in $BUILD_FILES; do
+  case $f in */*|.*) die "RECIPE_BUILD_FILES: $f is not a top-level file name" ;; esac
+  [ -f "$RECIPE/$f" ] || die "RECIPE_BUILD_FILES names $f, missing in $RECIPE"
+done
 patches=$(bash -c '. "$1/openssl.config"; echo $OPENSSL_PATCHES' _ "$RECIPE")
 [ -n "$patches" ] || die "OPENSSL_PATCHES is empty in $RECIPE/openssl.config"
 for p in $patches; do [ -f "$RECIPE/patches/$p" ] || die "OPENSSL_PATCHES names $p, missing in $RECIPE/patches"; done
@@ -72,6 +80,7 @@ chmod -R u+w . 2>/dev/null || true
 git reset -q --hard && git clean -fdxq
 rm -f patches/*.patch
 cp "$RECIPE/openssl.config" "$RECIPE/openssl.version" .
+for f in $BUILD_FILES; do cp -p "$RECIPE/$f" .; done
 cp "$RECIPE"/patches/*.patch "$RECIPE/patches/README" patches/
 docker run --rm -u "$(id -u):$(id -g)" -v "$W:/aosp" -w "/aosp/${I#"$W"/}" "$IMAGE" \
   bash -c "./import_openssl.sh import '/aosp/${TARBALL#"$W"/}' > '/aosp/${LOG#"$W"/}' 2>&1" && rc=0 || rc=$?

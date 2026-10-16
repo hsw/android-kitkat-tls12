@@ -1,0 +1,19 @@
+Allow OpenJDK 6 for the Jelly Bean 4.1/4.2 build when ALLOW_OPENJDK is set
+
+The 4.1/4.2 core/main.mk clears java_version for any OpenJDK; the build
+container has OpenJDK 6 only. Unset ALLOW_OPENJDK keeps the original check.
+---
+diff --git a/core/main.mk b/core/main.mk
+index 87488f4..25d0f37 100644
+--- a/core/main.mk
++++ b/core/main.mk
+@@ -124,7 +124,8 @@ endif
+ 
+ # Check for the correct version of java
+ java_version := $(shell java -version 2>&1 | head -n 1 | grep '^java .*[ "]1\.6[\. "$$]')
+-ifneq ($(shell java -version 2>&1 | grep -i openjdk),)
++# kktls: OpenJDK 6 allowed when ALLOW_OPENJDK is set (unset = original behaviour)
++ifneq ($(if $(ALLOW_OPENJDK),,$(shell java -version 2>&1 | grep -i openjdk)),)
+ java_version :=
+ endif
+ ifeq ($(strip $(java_version)),)
