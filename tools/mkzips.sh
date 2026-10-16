@@ -3,7 +3,7 @@
 # mkzips.sh: pack the kktls release recovery zips (+ SHA256SUMS) from the release build output.
 #
 #   mkzips.sh --in DIR --release NAME --cacerts DIR --conscrypt-notice FILE --out DIR [--jb DIR] [--base-tag TAG]
-#             [--mtime EPOCH]
+#             [--mtime EPOCH] [--out-unreleased DIR]
 #
 #   --in DIR       release build output: DIR/<tag>/<abi>/{lib,framework}/... + SHA256SUMS + BUILD-INFO.txt,
 #                  DIR/<tag>/helpers/<abi>/{kktls-symcheck,kktls-util} + allow-missing-libssl.txt + SHA256SUMS,
@@ -16,17 +16,23 @@
 #                  {lib/libssl.so,lib/libcrypto.so,SHA256SUMS,BUILD-INFO.txt}, DIR/<base>/notice/openssl.NOTICE,
 #                  DIR/<base>/allow/allow-missing-lib{ssl,crypto}.txt (each with SHA256SUMS), base = 4.1|4.2|4.3: one
 #                  openssl zip per base and ABI (helpers and the bionic notice from the 4.4 base tag). A base built with
-#                  java lines also has framework/core.jar, lib/libjavacore.so in <abi>/ and notice/libcore.NOTICE: checked
-#                  by the SHA256SUMS, not packed yet
+#                  java lines (BUILD-INFO `java <module> <path>` and `gate <release>...`, equal for every ABI) also has
+#                  those files in <abi>/ and notice/{libcore,fdlibm}.NOTICE: one java zip per base and ABI, released only
+#                  for the ABIs in JB_JAVA_ABIS below (the others go to --out-unreleased)
 #   --base-tag TAG the tag whose openssl, layer D and helper files go into the ABI-independent zips and the
 #                  openssl/conscrypt zips (default: the first tag in sort order; those files are the same for every tag)
 #   --mtime EPOCH  timestamp of every zip entry (default 1230768000 = 2009-01-01 UTC)
+#   --out-unreleased DIR  also pack the Jelly Bean java zips of the ABIs outside JB_JAVA_ABIS into DIR (+ SHA256SUMS);
+#                  without it they are not packed. Never part of the --out set (the release)
 #
 # Zips (Android version from the tag name android-<ver>_rN; the openssl zips name the Android version they install on):
 #   kktls-openssl-4.4-<abi>-<rel>.zip       system/lib/{libssl,libcrypto}.so (any 4.4.x)
 #   kktls-openssl-<base>-<abi>-<rel>.zip    the same for Android <base>.x, with --jb (4.1, 4.2, 4.3)
 #   kktls-cacerts-<rel>.zip                 system/etc/security/cacerts/* (replaces the directory)
 #   kktls-java-<ver>-<abi>-<rel>.zip        system/framework/{core,core-libart,conscrypt,okhttp}.jar, system/lib/libjavacrypto.so
+#   kktls-java-<base>-<abi>-<rel>.zip       system/framework/core.jar, system/lib/libjavacore.so (the base's java lines),
+#                                           with --jb; installs on the releases of its gate line (zip.conf android: one
+#                                           release, or <base> = every AOSP <base>.x) over that base's openssl zip
 #   kktls-conscrypt-<abi>-<rel>.zip         system/framework/kktls-{conscrypt,sslfilter}.jar, system/lib/libkktls_conscrypt_jni.so
 #   kktls-restore-<rel>.zip                 no payload
 # Each holds META-INF/com/google/android/{update-binary,updater-script}, kktls/{zip.conf,checks.sh,install.sh},
@@ -37,16 +43,19 @@ export LC_ALL=C
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 die() { echo "mkzips: $*" >&2; exit "${2:-1}"; }
-IN='' REL='' CACERTS='' CNOTICE='' OUT='' BASE='' MTIME=1230768000 JB=''
+# ABIs whose Jelly Bean java zips are released: libjavacore.so carries all of libcore's natives (a bad one stops the
+# boot), so an ABI joins once its zip has booted on an emulator of the base (x86 needs KVM, not tested yet)
+JB_JAVA_ABIS="armeabi-v7a"
+IN='' REL='' CACERTS='' CNOTICE='' OUT='' BASE='' MTIME=1230768000 JB='' UNREL=''
 while [ $# -gt 0 ]; do
   case $1 in
-    --in|--release|--cacerts|--conscrypt-notice|--out|--base-tag|--mtime|--jb)
+    --in|--release|--cacerts|--conscrypt-notice|--out|--base-tag|--mtime|--jb|--out-unreleased)
       [ $# -ge 2 ] || die "$1 needs a value" 2
       case $1 in
         --in) IN=$2 ;; --release) REL=$2 ;; --cacerts) CACERTS=$2 ;; --conscrypt-notice) CNOTICE=$2 ;;
-        --out) OUT=$2 ;; --base-tag) BASE=$2 ;; --mtime) MTIME=$2 ;; --jb) JB=$2 ;;
+        --out) OUT=$2 ;; --base-tag) BASE=$2 ;; --mtime) MTIME=$2 ;; --jb) JB=$2 ;; --out-unreleased) UNREL=$2 ;;
       esac; shift 2 ;;
-    -h|--help) sed -n '3,32p' "$0"; exit 0 ;;
+    -h|--help) sed -n '3,40p' "$0"; exit 0 ;;
     *) die "unknown argument $1" 2 ;;
   esac
 done
@@ -78,6 +87,29 @@ jb_tag() { # base -> the AOSP tag its libraries were built from (BUILD-INFO.txt 
   local t; t=$(cat "$JB/$1"/*/BUILD-INFO.txt | sed -n 's/^tag //p' | sort -u)
   case $t in android-"$1"*) echo "$t" ;; *) die "$JB/$1: BUILD-INFO tag '$t' is not one android-$1 tag" ;; esac
 }
+jb_info() { # base key -> the values of the BUILD-INFO lines "key ...", one per line; every ABI must have the same
+  local a v x='' first=1
+  for a in $ABIS; do
+    v=$(sed -n "s/^$2 //p" "$JB/$1/$a/BUILD-INFO.txt")
+    if [ $first = 1 ]; then x=$v first=0; elif [ "$v" != "$x" ]; then die "$JB/$1: BUILD-INFO '$2' lines differ between ABIs"; fi
+  done
+  [ -z "$x" ] || printf '%s\n' "$x"
+}
+jb_java_files() { # base -> the java payload (paths below <abi>/), nothing for an openssl-only base
+  jb_info "$1" java | awk '{ print $2 }'
+}
+jb_android() { # base -> zip.conf android of its java zip, from the gate line. checks.sh compares one release exactly
+  # and takes 4.N as any 4.N.x, so a gate is either one point release or every AOSP release string of the base
+  local g all
+  g=$(jb_info "$1" gate | tr ' ' '\n' | sed '/^$/d' | sort -u | tr '\n' ' '); g=${g% }
+  case $1 in 4.1) all='4.1 4.1.1 4.1.2' ;; 4.2) all='4.2 4.2.1 4.2.2' ;; 4.3) all='4.3 4.3.1' ;; *) all='' ;; esac
+  case $g in
+    '') die "$JB/$1: java lines without a gate line" ;;
+    "$all") echo "$1" ;;
+    "$1".[0-9]|"$1".[0-9][0-9]) echo "$g" ;;
+    *) die "$JB/$1: gate '$g' cannot be expressed by the installer (one $1.x release, or all of '$all')" ;;
+  esac
+}
 
 # every input directory is checked against its SHA256SUMS first
 for t in $TAGS; do
@@ -93,10 +125,27 @@ for b in $JBASES; do
   done
   [ -f "$JB/$b/allow/allow-missing-libssl.txt" ] || die "$JB/$b/allow/allow-missing-libssl.txt missing"
   jb_tag "$b" > /dev/null
+  jf=$(jb_java_files "$b")
+  [ -n "$jf" ] || continue
+  jb_android "$b" > /dev/null
+  for f in $jf; do
+    case $f in framework/*.jar|lib/*.so) ;; *) die "$JB/$b: java file '$f' is not framework/*.jar or lib/*.so" ;; esac
+    for a in $ABIS; do
+      awk -v f="$f" '$2 == f { ok = 1 } END { exit !ok }' "$JB/$b/$a/SHA256SUMS" || die "$JB/$b/$a/SHA256SUMS does not list $f"
+    done
+  done
+  for f in libcore fdlibm; do
+    grep -q " $f.NOTICE\$" "$JB/$b/notice/SHA256SUMS" || die "$JB/$b/notice/SHA256SUMS does not list $f.NOTICE"
+  done
 done
 
 mkdir -p "$OUT"
 OUT=$(cd "$OUT" && pwd)
+if [ -n "$UNREL" ]; then
+  mkdir -p "$UNREL"; UNREL=$(cd "$UNREL" && pwd)
+  [ "$UNREL" != "$OUT" ] || die "--out-unreleased must not be the --out directory" 2
+  rm -f "$UNREL"/kktls-*.zip "$UNREL/SHA256SUMS"
+fi
 ST=$(mktemp -d); trap 'rm -rf "$ST"' EXIT
 rm -f "$OUT"/kktls-*.zip "$OUT/SHA256SUMS"
 
@@ -112,9 +161,14 @@ notice() { # kind tag [openssl-tag openssl-notice-dir] -> NOTICE text (the JB op
   case $kind in
     openssl) echo "lib/libssl.so and lib/libcrypto.so are OpenSSL 1.0.1u with backported fixes, built from AOSP $ot"
              echo "external/openssl; they are under the OpenSSL and SSLeay licences below." ;;
-    java) echo "framework/core.jar, core-libart.jar, conscrypt.jar and lib/libjavacrypto.so are built from AOSP $t libcore"
-          echo "(Apache License 2.0; Apache Harmony, Bouncy Castle and other notices below), framework/okhttp.jar from"
-          echo "AOSP $t external/okhttp (Apache License 2.0)." ;;
+    java) if [ -n "${3:-}" ]; then # Jelly Bean: libcore of the base's tag, libfdlibm linked into libjavacore.so
+            echo "framework/core.jar and lib/libjavacore.so are built from AOSP $ot libcore (Apache License 2.0; Apache"
+            echo "Harmony, ICU and other notices below); lib/libjavacore.so contains AOSP $ot external/fdlibm (notice below)."
+          else
+            echo "framework/core.jar, core-libart.jar, conscrypt.jar and lib/libjavacrypto.so are built from AOSP $t libcore"
+            echo "(Apache License 2.0; Apache Harmony, Bouncy Castle and other notices below), framework/okhttp.jar from"
+            echo "AOSP $t external/okhttp (Apache License 2.0)."
+          fi ;;
     conscrypt) echo "framework/kktls-sslfilter.jar is own code under the Apache License 2.0; framework/kktls-conscrypt.jar"
                echo "and lib/libkktls_conscrypt_jni.so are Conscrypt with BoringSSL (notice below)." ;;
     cacerts) echo "etc/security/cacerts/* hold the certificates of the Mozilla CA root store (as published by curl,"
@@ -123,7 +177,12 @@ notice() { # kind tag [openssl-tag openssl-notice-dir] -> NOTICE text (the JB op
   esac
   case $kind in
     openssl) section "OpenSSL (AOSP $ot external/openssl/NOTICE)" "$on/openssl.NOTICE" ;;
-    java) section "libcore (AOSP $t libcore/NOTICE)" "$n/libcore.NOTICE" ;;
+    java) if [ -n "${3:-}" ]; then
+            section "libcore (AOSP $ot libcore/NOTICE)" "$on/libcore.NOTICE"
+            section "fdlibm (AOSP $ot external/fdlibm/NOTICE)" "$on/fdlibm.NOTICE"
+          else
+            section "libcore (AOSP $t libcore/NOTICE)" "$n/libcore.NOTICE"
+          fi ;;
     conscrypt) section "Conscrypt and BoringSSL" "$CNOTICE" ;;
     cacerts) section "Mozilla Public License 2.0" "$LIC/MPL-2.0.txt" ;;
   esac
@@ -154,8 +213,9 @@ payload() { # name dir files... (paths below dir, the <tag>/<abi>/ of a build ou
   cp "$src/BUILD-INFO.txt" "$s/kktls/BUILD-INFO.txt"
 }
 
-pack() { # name: $ST/name -> $OUT/name.zip (sorted entries, fixed time, 0755 for update-binary and helpers)
-  python3 -I - "$ST/$1" "$OUT/$1.zip" "$MTIME" <<'EOF'
+pack() { # name [dir]: $ST/name -> dir/name.zip (default $OUT; sorted entries, fixed time, 0755 for update-binary and helpers)
+  local o=${2:-$OUT}
+  python3 -I - "$ST/$1" "$o/$1.zip" "$MTIME" <<'EOF'
 import os, sys, time, zipfile
 src, out, epoch = sys.argv[1], sys.argv[2], int(sys.argv[3])
 dt = max(time.gmtime(epoch)[:6], (1980, 1, 1, 0, 0, 0))
@@ -173,7 +233,7 @@ with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
         with open(os.path.join(src, n), "rb") as fh:
             z.writestr(zi, fh.read())
 EOF
-  echo "  $1.zip"
+  echo "  $1.zip${2:+ (unreleased: $2)}"
 }
 
 ver_of() { local v=${1#android-}; echo "${v%%_*}"; }
@@ -192,6 +252,15 @@ for a in $ABIS; do
       [ ! -f "$JB/$b/allow/allow-missing-$l.txt" ] || cp "$JB/$b/allow/allow-missing-$l.txt" "$ST/$n/kktls/"
     done
     pack "$n"
+    jf=$(jb_java_files "$b")
+    [ -n "$jf" ] || continue
+    n=kktls-java-$b-$a-$REL zo=$OUT
+    case " $JB_JAVA_ABIS " in *" $a "*) ;; *) zo=$UNREL ;; esac
+    if [ -z "$zo" ]; then echo "  $n.zip: not packed (not released for $a; --out-unreleased packs it)"; continue; fi
+    HTAG=$BASE NOTICE_ARGS="$jt $JB/$b/notice" stage "$n" java "$a" "$(jb_android "$b")" "$jt" "$a"
+    # shellcheck disable=SC2086
+    payload "$n" "$JB/$b/$a" $jf
+    if [ "$zo" = "$OUT" ]; then pack "$n"; else pack "$n" "$zo"; fi
   done
   for t in $TAGS; do
     n=kktls-java-$(ver_of "$t")-$a-$REL
@@ -218,3 +287,8 @@ pack "$n"
 
 (cd "$OUT" && sha256sum kktls-*.zip > SHA256SUMS)
 echo "mkzips: $(wc -l < "$OUT/SHA256SUMS") zips in $OUT (SHA256SUMS)"
+if [ -n "$UNREL" ]; then
+  : > "$UNREL/SHA256SUMS"
+  ! ls "$UNREL"/kktls-*.zip > /dev/null 2>&1 || (cd "$UNREL" && sha256sum kktls-*.zip > SHA256SUMS)
+  echo "mkzips: $(wc -l < "$UNREL/SHA256SUMS") unreleased zips in $UNREL (SHA256SUMS)"
+fi
