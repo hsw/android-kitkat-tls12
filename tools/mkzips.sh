@@ -15,7 +15,9 @@
 #   --jb DIR       Jelly Bean openssl build output (tools/kktls-jb-openssl-build.sh WORK/out/kktls-jb): DIR/<base>/<abi>/
 #                  {lib/libssl.so,lib/libcrypto.so,SHA256SUMS,BUILD-INFO.txt}, DIR/<base>/notice/openssl.NOTICE,
 #                  DIR/<base>/allow/allow-missing-lib{ssl,crypto}.txt (each with SHA256SUMS), base = 4.1|4.2|4.3: one
-#                  openssl zip per base and ABI (helpers and the bionic notice from the 4.4 base tag)
+#                  openssl zip per base and ABI (helpers and the bionic notice from the 4.4 base tag). A base built with
+#                  java lines also has framework/core.jar, lib/libjavacore.so in <abi>/ and notice/libcore.NOTICE: checked
+#                  by the SHA256SUMS, not packed yet
 #   --base-tag TAG the tag whose openssl, layer D and helper files go into the ABI-independent zips and the
 #                  openssl/conscrypt zips (default: the first tag in sort order; those files are the same for every tag)
 #   --mtime EPOCH  timestamp of every zip entry (default 1230768000 = 2009-01-01 UTC)

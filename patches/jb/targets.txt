@@ -1,15 +1,25 @@
-# Build inputs of tools/kktls-jb-openssl-build.sh: OpenSSL 1.0.1u (layer A, native only) for Android 4.1-4.3.
+# Build inputs of tools/kktls-jb-openssl-build.sh: OpenSSL 1.0.1u (layer A, native) for Android 4.1-4.3, and for a base
+# with `java` lines the libcore side of layer A (core.jar, libjavacore.so) built in the same tree against that OpenSSL.
 # One keyword per line, # starts a comment.
 #   base    BASE TAG          series patches/jb/BASE/ is built on AOSP TAG (the release this base stands for)
 #   target  BASE LUNCH ABI    one build: lunch combo, Android ABI name (output dir out/kktls-jb/BASE/ABI)
 #   project BASE PATH         AOSP manifest path synced (depth 1) for this base
 #   rev     TAG PATH SHA      the commit PATH must have after `sync` of TAG
+#   java    BASE MODULE FILE  a libcore-side module of BASE and its release file under system/ (FILE: framework/*.jar
+#                             or lib/*.so); a base without java lines builds OpenSSL only
+#   gate    BASE RELEASE...   the ro.build.version.release values the java files of BASE are accepted on: every AOSP tag
+#                             that reports one of them has the libcore, dalvik, libnativehelper and native library
+#                             sources of TAG or a reviewed Java-only difference (needed when BASE has java lines)
 # Modules: libcrypto libssl (the release files lib/libcrypto.so lib/libssl.so) and the openssl command-line tool
-# (a test client only, not a release file). Variant -user, as the 4.4 release build.
+# (a test client only, not a release file), plus the base's java modules. Variant -user, as the 4.4 release build;
+# make runs with WITH_DEXPREOPT=false (the jars keep classes.dex).
 
 base    4.3  android-4.3_r3
 target  4.3  full-user      armeabi-v7a
 target  4.3  full_x86-user  x86
+java    4.3  core         framework/core.jar
+java    4.3  libjavacore  lib/libjavacore.so
+gate    4.3  4.3 4.3.1
 
 base    4.2  android-4.2.2_r1
 target  4.2  full-user      armeabi-v7a
@@ -24,6 +34,13 @@ project 4.3  bionic
 project 4.3  abi/cpp
 project 4.3  system/core
 project 4.3  external/openssl
+project 4.3  libcore
+project 4.3  libnativehelper
+project 4.3  dalvik
+project 4.3  external/fdlibm
+project 4.3  external/expat
+project 4.3  external/icu4c
+project 4.3  external/proguard
 project 4.3  external/zlib
 project 4.3  external/safe-iop
 project 4.3  external/stlport
@@ -86,6 +103,13 @@ rev  android-4.3_r3    bionic                                                  7
 rev  android-4.3_r3    abi/cpp                                                 eb789ea833d8d800662b67914d9c1785a58c2caa
 rev  android-4.3_r3    system/core                                             821678e1c7bd0af12fa4adc314c9024def9ba7c0
 rev  android-4.3_r3    external/openssl                                        4d2199ecb112f77bd1897047a75277c1d43d1aa9
+rev  android-4.3_r3    libcore                                                 459a682c55c93c554ad4e822260569a204572dda
+rev  android-4.3_r3    libnativehelper                                         a7de6785939e53982e93afacf03647ff1a759b5a
+rev  android-4.3_r3    dalvik                                                  eb82cca7f4b40bfb9aada2dfa56595d9e3ff1eda
+rev  android-4.3_r3    external/fdlibm                                         0da5f683c9ddc9442af3b389b4220e91ccffb320
+rev  android-4.3_r3    external/expat                                          ee26fc15929c2a6579466063b099c7db7ba17708
+rev  android-4.3_r3    external/icu4c                                          a8f744cec5125866672e131f328cc5a6e35c9173
+rev  android-4.3_r3    external/proguard                                       3082b4a5fc45bc123067c9a984f90b7706704c59
 rev  android-4.3_r3    external/safe-iop                                       aa0725fb1da35e47676b6da30009322eb5ed59be
 rev  android-4.3_r3    external/zlib                                           6a396b358e97fdbcb2dc181e52d36a9d8b5ea752
 rev  android-4.3_r3    external/stlport                                        c7253d88b7fa6f7ba115f167a59b1e9f857db728
