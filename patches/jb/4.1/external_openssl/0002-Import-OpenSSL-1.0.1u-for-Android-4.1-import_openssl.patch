@@ -971,7 +971,7 @@ sha256 4312b4ca1215b6f2c97007503d80db80d5157f76f8f7d3febbe6b4c56ff26739
  include/openssl/sha.h                         |  208 +-
  include/openssl/srp.h                         |  157 +-
  include/openssl/srtp.h                        |   47 +-
- include/openssl/ssl.h                         | 4437 +++++-----
+ include/openssl/ssl.h                         | 4438 +++++-----
  include/openssl/ssl2.h                        |  359 +-
  include/openssl/ssl23.h                       |   33 +-
  include/openssl/ssl3.h                        | 1107 +--
@@ -1019,7 +1019,7 @@ sha256 4312b4ca1215b6f2c97007503d80db80d5157f76f8f7d3febbe6b4c56ff26739
  ssl/s3_pkt.c                                  | 2744 +++---
  ssl/s3_srvr.c                                 | 6570 +++++++-------
  ssl/srtp.h                                    |   47 +-
- ssl/ssl.h                                     | 4437 +++++-----
+ ssl/ssl.h                                     | 4438 +++++-----
  ssl/ssl2.h                                    |  359 +-
  ssl/ssl23.h                                   |   33 +-
  ssl/ssl3.h                                    | 1107 +--
@@ -1044,7 +1044,7 @@ sha256 4312b4ca1215b6f2c97007503d80db80d5157f76f8f7d3febbe6b4c56ff26739
  ssl/t1_srvr.c                                 |   50 +-
  ssl/tls1.h                                    |  980 ++-
  ssl/tls_srp.c                                 |  856 +-
- 1028 files changed, 303943 insertions(+), 259382 deletions(-)
+ 1028 files changed, 303945 insertions(+), 259382 deletions(-)
  create mode 100644 Apps-config.mk
  create mode 100644 Crypto-config.mk
  create mode 100644 Ssl-config.mk
@@ -521329,7 +521329,7 @@ index c0cf33ef2..10082c939 100644
  #endif
 -
 diff --git a/include/openssl/ssl.h b/include/openssl/ssl.h
-index d5bcead8b..9353a1b16 100644
+index d5bcead8b..b90b2605c 100644
 --- a/include/openssl/ssl.h
 +++ b/include/openssl/ssl.h
 @@ -5,21 +5,21 @@
@@ -522507,7 +522507,7 @@ index d5bcead8b..9353a1b16 100644
  
  /* see tls_srp.c */
  int SSL_SRP_CTX_init(SSL *s);
-@@ -722,1087 +778,1200 @@ int SSL_CTX_SRP_CTX_init(SSL_CTX *ctx);
+@@ -722,1087 +778,1201 @@ int SSL_CTX_SRP_CTX_init(SSL_CTX *ctx);
  int SSL_SRP_CTX_free(SSL *ctx);
  int SSL_CTX_SRP_CTX_free(SSL_CTX *ctx);
  int SSL_srp_server_param_with_username(SSL *s, int *ad);
@@ -524506,6 +524506,7 @@ index d5bcead8b..9353a1b16 100644
 +char *SSL_CIPHER_get_version(const SSL_CIPHER *c);
 +const char *SSL_CIPHER_get_name(const SSL_CIPHER *c);
 +unsigned long SSL_CIPHER_get_id(const SSL_CIPHER *c);
++const char *SSL_CIPHER_authentication_method(const SSL_CIPHER *cipher);
 +
 +int SSL_get_fd(const SSL *s);
 +int SSL_get_rfd(const SSL *s);
@@ -524688,7 +524689,7 @@ index d5bcead8b..9353a1b16 100644
  
  void SSL_CTX_set_default_passwd_cb(SSL_CTX *ctx, pem_password_cb *cb);
  void SSL_CTX_set_default_passwd_cb_userdata(SSL_CTX *ctx, void *u);
-@@ -1810,12 +1979,12 @@ void SSL_CTX_set_default_passwd_cb_userdata(SSL_CTX *ctx, void *u);
+@@ -1810,12 +1980,12 @@ void SSL_CTX_set_default_passwd_cb_userdata(SSL_CTX *ctx, void *u);
  int SSL_CTX_check_private_key(const SSL_CTX *ctx);
  int SSL_check_private_key(const SSL *ctx);
  
@@ -524706,7 +524707,7 @@ index d5bcead8b..9353a1b16 100644
  
  int SSL_CTX_set_purpose(SSL_CTX *s, int purpose);
  int SSL_set_purpose(SSL *s, int purpose);
-@@ -1825,77 +1994,81 @@ int SSL_set_trust(SSL *s, int trust);
+@@ -1825,77 +1995,81 @@ int SSL_set_trust(SSL *s, int trust);
  int SSL_CTX_set1_param(SSL_CTX *ctx, X509_VERIFY_PARAM *vpm);
  int SSL_set1_param(SSL *ssl, X509_VERIFY_PARAM *vpm);
  
@@ -524833,7 +524834,7 @@ index d5bcead8b..9353a1b16 100644
  
  STACK_OF(SSL_CIPHER) *SSL_get_ciphers(const SSL *s);
  
-@@ -1916,149 +2089,162 @@ void SSL_set_client_CA_list(SSL *s, STACK_OF(X509_NAME) *name_list);
+@@ -1916,149 +2090,162 @@ void SSL_set_client_CA_list(SSL *s, STACK_OF(X509_NAME) *name_list);
  void SSL_CTX_set_client_CA_list(SSL_CTX *ctx, STACK_OF(X509_NAME) *name_list);
  STACK_OF(X509_NAME) *SSL_get_client_CA_list(const SSL *s);
  STACK_OF(X509_NAME) *SSL_CTX_get_client_CA_list(const SSL_CTX *s);
@@ -525077,7 +525078,7 @@ index d5bcead8b..9353a1b16 100644
   * made after this point may be overwritten when the script is next run.
   */
  void ERR_load_SSL_strings(void);
-@@ -2066,526 +2252,539 @@ void ERR_load_SSL_strings(void);
+@@ -2066,526 +2253,539 @@ void ERR_load_SSL_strings(void);
  /* Error codes for the SSL functions. */
  
  /* Function codes. */
@@ -596210,7 +596211,7 @@ index c0cf33ef2..10082c939 100644
  #endif
 -
 diff --git a/ssl/ssl.h b/ssl/ssl.h
-index d5bcead8b..9353a1b16 100644
+index d5bcead8b..b90b2605c 100644
 --- a/ssl/ssl.h
 +++ b/ssl/ssl.h
 @@ -5,21 +5,21 @@
@@ -597388,7 +597389,7 @@ index d5bcead8b..9353a1b16 100644
  
  /* see tls_srp.c */
  int SSL_SRP_CTX_init(SSL *s);
-@@ -722,1087 +778,1200 @@ int SSL_CTX_SRP_CTX_init(SSL_CTX *ctx);
+@@ -722,1087 +778,1201 @@ int SSL_CTX_SRP_CTX_init(SSL_CTX *ctx);
  int SSL_SRP_CTX_free(SSL *ctx);
  int SSL_CTX_SRP_CTX_free(SSL_CTX *ctx);
  int SSL_srp_server_param_with_username(SSL *s, int *ad);
@@ -599387,6 +599388,7 @@ index d5bcead8b..9353a1b16 100644
 +char *SSL_CIPHER_get_version(const SSL_CIPHER *c);
 +const char *SSL_CIPHER_get_name(const SSL_CIPHER *c);
 +unsigned long SSL_CIPHER_get_id(const SSL_CIPHER *c);
++const char *SSL_CIPHER_authentication_method(const SSL_CIPHER *cipher);
 +
 +int SSL_get_fd(const SSL *s);
 +int SSL_get_rfd(const SSL *s);
@@ -599569,7 +599571,7 @@ index d5bcead8b..9353a1b16 100644
  
  void SSL_CTX_set_default_passwd_cb(SSL_CTX *ctx, pem_password_cb *cb);
  void SSL_CTX_set_default_passwd_cb_userdata(SSL_CTX *ctx, void *u);
-@@ -1810,12 +1979,12 @@ void SSL_CTX_set_default_passwd_cb_userdata(SSL_CTX *ctx, void *u);
+@@ -1810,12 +1980,12 @@ void SSL_CTX_set_default_passwd_cb_userdata(SSL_CTX *ctx, void *u);
  int SSL_CTX_check_private_key(const SSL_CTX *ctx);
  int SSL_check_private_key(const SSL *ctx);
  
@@ -599587,7 +599589,7 @@ index d5bcead8b..9353a1b16 100644
  
  int SSL_CTX_set_purpose(SSL_CTX *s, int purpose);
  int SSL_set_purpose(SSL *s, int purpose);
-@@ -1825,77 +1994,81 @@ int SSL_set_trust(SSL *s, int trust);
+@@ -1825,77 +1995,81 @@ int SSL_set_trust(SSL *s, int trust);
  int SSL_CTX_set1_param(SSL_CTX *ctx, X509_VERIFY_PARAM *vpm);
  int SSL_set1_param(SSL *ssl, X509_VERIFY_PARAM *vpm);
  
@@ -599714,7 +599716,7 @@ index d5bcead8b..9353a1b16 100644
  
  STACK_OF(SSL_CIPHER) *SSL_get_ciphers(const SSL *s);
  
-@@ -1916,149 +2089,162 @@ void SSL_set_client_CA_list(SSL *s, STACK_OF(X509_NAME) *name_list);
+@@ -1916,149 +2090,162 @@ void SSL_set_client_CA_list(SSL *s, STACK_OF(X509_NAME) *name_list);
  void SSL_CTX_set_client_CA_list(SSL_CTX *ctx, STACK_OF(X509_NAME) *name_list);
  STACK_OF(X509_NAME) *SSL_get_client_CA_list(const SSL *s);
  STACK_OF(X509_NAME) *SSL_CTX_get_client_CA_list(const SSL_CTX *s);
@@ -599958,7 +599960,7 @@ index d5bcead8b..9353a1b16 100644
   * made after this point may be overwritten when the script is next run.
   */
  void ERR_load_SSL_strings(void);
-@@ -2066,526 +2252,539 @@ void ERR_load_SSL_strings(void);
+@@ -2066,526 +2253,539 @@ void ERR_load_SSL_strings(void);
  /* Error codes for the SSL functions. */
  
  /* Function codes. */

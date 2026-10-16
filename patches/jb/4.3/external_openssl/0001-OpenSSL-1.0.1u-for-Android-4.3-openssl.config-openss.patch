@@ -13,7 +13,8 @@ kktls_alpn_empty.patch: stock 4.3 has no ALPN, and alpn.patch puts its
 fields in the middle of struct ssl_st, which would move SSL.renegotiate
 against the 4.3 layout. tls12_digests.patch stays (a bug fix of 4.4; its
 fields are at the tail of SSL3_STATE). kktls_channelid_state.patch: the
-SSL_new() hunk without the ALPN context lines; same changes. patches/README
+SSL_new() and both t1_lib.c hunks without the ALPN context lines, so the
+patch applies without fuzz; same changes. patches/README
 starts with a note on this base.
 
 No Ssl.mk change: 4.3 builds libssl with gcc, not clang.
@@ -54,12 +55,12 @@ No Ssl.mk change: 4.3 builds libssl with gcc, not clang.
  patches/jsse.patch                   |  782 +++++------
  patches/kktls_cert_chain.patch       |   60 +
  patches/kktls_channelid_key.patch    |   82 ++
- patches/kktls_channelid_state.patch  |   69 +
+ patches/kktls_channelid_state.patch  |   66 +
  patches/kktls_p12_npas_alg_get.patch |   20 +
  patches/progs.patch                  |   87 +-
  patches/rc4_md5_harden.patch         |   19 +
  patches/tls12_digests.patch          |  388 ++++++
- 41 files changed, 4844 insertions(+), 1627 deletions(-)
+ 41 files changed, 4841 insertions(+), 1627 deletions(-)
  create mode 100644 patches/cve-2016-8610.patch
  create mode 100644 patches/cve-2017-3735.patch
  create mode 100644 patches/cve-2017-3737.patch
@@ -6484,10 +6485,10 @@ index 000000000..bb679e589
 +         BN_bin2bn(p + 32, 32, &y) == NULL ||
 diff --git a/patches/kktls_channelid_state.patch b/patches/kktls_channelid_state.patch
 new file mode 100644
-index 000000000..41d4f821e
+index 000000000..cdcaf64e7
 --- /dev/null
 +++ b/patches/kktls_channelid_state.patch
-@@ -0,0 +1,69 @@
+@@ -0,0 +1,66 @@
 +From: android-kitkat-tls12 (fix of the channelid patch), OpenSSL 1.0.1u
 +Subject: kktls_channelid_state
 +The Channel ID settings are copied from the SSL_CTX once in SSL_new() (was
@@ -6496,10 +6497,9 @@ index 000000000..41d4f821e
 +the start of each ClientHello/ServerHello extension parse (renegotiation).
 +---
 +diff --git a/ssl/s3_lib.c b/ssl/s3_lib.c
-+index 4325204..b3d703b 100644
 +--- a/ssl/s3_lib.c
 ++++ b/ssl/s3_lib.c
-+@@ -3001,12 +3001,12 @@ int ssl3_new(SSL *s)
++@@ -3001,12 +3001,12 @@
 + #ifndef OPENSSL_NO_SRP
 +     SSL_SRP_CTX_init(s);
 + #endif
@@ -6519,13 +6519,12 @@ index 000000000..41d4f821e
 +     return (1);
 +  err:
 +diff --git a/ssl/ssl_lib.c b/ssl/ssl_lib.c
-+index 49d7c06..01508b6 100644
 +--- a/ssl/ssl_lib.c
 ++++ b/ssl/ssl_lib.c
-+@@ -378,6 +378,12 @@ SSL *SSL_new(SSL_CTX *ctx)
-+                s->ctx->alpn_client_proto_list_len);
-+         s->alpn_client_proto_list_len = s->ctx->alpn_client_proto_list_len;
-+     }
++@@ -368,6 +368,12 @@
++ # ifndef OPENSSL_NO_NEXTPROTONEG
++     s->next_proto_negotiated = NULL;
++ # endif
 ++
 ++    /* kktls: once per SSL (was in ssl3_new(), which may run again) */
 ++    s->tlsext_channel_id_enabled = ctx->tlsext_channel_id_enabled;
@@ -6536,27 +6535,26 @@ index 000000000..41d4f821e
 + 
 +     s->verify_result = X509_V_OK;
 +diff --git a/ssl/t1_lib.c b/ssl/t1_lib.c
-+index e00ad12..2414364 100644
 +--- a/ssl/t1_lib.c
 ++++ b/ssl/t1_lib.c
-+@@ -1122,6 +1122,8 @@ int ssl_parse_clienthello_tlsext(SSL *s, unsigned char **p,
++@@ -1027,6 +1027,8 @@
 + # ifndef OPENSSL_NO_NEXTPROTONEG
 +     s->s3->next_proto_neg_seen = 0;
 + # endif
 ++    /* kktls: a renegotiation must not inherit the previous Channel ID state */
 ++    s->s3->tlsext_channel_id_valid = 0;
 + 
-+     if (s->s3->alpn_selected) {
-+         OPENSSL_free(s->s3->alpn_selected);
-+@@ -1606,6 +1608,8 @@ int ssl_parse_serverhello_tlsext(SSL *s, unsigned char **p, unsigned char *d,
++ # ifndef OPENSSL_NO_HEARTBEATS
++     s->tlsext_heartbeat &= ~(SSL_TLSEXT_HB_ENABLED |
++@@ -1497,6 +1499,8 @@
 +     s->s3->next_proto_neg_seen = 0;
 + # endif
 +     s->tlsext_ticket_expected = 0;
 ++    /* kktls: a renegotiation must not inherit the previous Channel ID state */
 ++    s->s3->tlsext_channel_id_valid = 0;
 + 
-+     if (s->s3->alpn_selected) {
-+         OPENSSL_free(s->s3->alpn_selected);
++ # ifndef OPENSSL_NO_HEARTBEATS
++     s->tlsext_heartbeat &= ~(SSL_TLSEXT_HB_ENABLED |
 diff --git a/patches/kktls_p12_npas_alg_get.patch b/patches/kktls_p12_npas_alg_get.patch
 new file mode 100644
 index 000000000..3b193f59a

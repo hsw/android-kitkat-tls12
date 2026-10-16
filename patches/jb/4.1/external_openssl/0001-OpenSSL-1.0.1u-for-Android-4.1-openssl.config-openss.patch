@@ -20,55 +20,60 @@ Ssl.mk the ARM target libraries build with LOCAL_SDK_VERSION 9 as in stock
 _Unwind_*) that stock prebuilt binaries import from it.
 patches/README starts with a note on this base (patches of the 4.1 set not
 carried and why).
+
+kktls_jb_cipher_auth_decl.patch (this base only): the ssl.h prototype of
+SSL_CIPHER_authentication_method, which the 4.4 base gets from
+channelid.patch.
 ---
- Android.mk                           |    1 +
- Apps.mk                              |   74 +-
- Crypto.mk                            |  622 +---------------
- Ssl.mk                               |   89 +--
- android-config.mk                    |   25 +-
- check-all-builds.sh                  |  628 ++++++++++++++++
- import_openssl.sh                    |  346 ++++++++-
- openssl.config                       | 1005 +++++++++++++++++++++++++-
- openssl.version                      |    3 +-
- patches/README                       |  357 ++++++++-
- patches/cve-2016-8610.patch          |  120 +++
- patches/cve-2017-3735.patch          |   28 +
- patches/cve-2017-3737.patch          |   20 +
- patches/cve-2018-0732.patch          |   30 +
- patches/cve-2018-0737.patch          |   20 +
- patches/cve-2018-0739.patch          |  221 ++++++
- patches/cve-2019-1559.patch          |   47 ++
- patches/cve-2019-1563.patch          |   50 ++
- patches/cve-2020-1971-template.patch |  131 ++++
- patches/cve-2020-1971.patch          |   94 +++
- patches/cve-2021-23841.patch         |   23 +
- patches/cve-2021-4160.patch          |   95 +++
- patches/cve-2022-0778.patch          |   56 ++
- patches/cve-2023-0215.patch          |   44 ++
- patches/cve-2023-0286.patch          |  280 +++++++
- patches/cve-2023-0465.patch          |   36 +
- patches/cve-2023-2650.patch          |   38 +
- patches/cve-2023-3446.patch          |   61 ++
- patches/cve-2024-0727.patch          |  103 +++
- patches/cve-2024-5535-npn.patch      |   21 +
- patches/cve-2024-5535.patch          |   94 +++
- patches/cve-2025-69421.patch         |   23 +
- patches/cve-2026-22796.patch         |   49 ++
- patches/cve-2026-28388.patch         |   20 +
- patches/cve-2026-35189.patch         |  197 +++++
- patches/cve-2026-45447.patch         |   44 ++
- patches/eng_dyn_dirs.patch           |   56 ++
- patches/fix_clang_build.patch        |   53 ++
- patches/handshake_cutthrough.patch   |  519 ++++++-------
- patches/jsse.patch                   |  782 ++++++++++----------
- patches/kktls_cert_chain.patch       |   60 ++
- patches/kktls_p12_npas_alg_get.patch |   20 +
- patches/progs.patch                  |   87 ++-
- patches/rc4_md5_harden.patch         |   19 +
- patches/sha1_armv4_large.patch       |   21 -
- patches/small_records.patch          |  337 ---------
- patches/tls12_digests.patch          |  390 ++++++++++
- 47 files changed, 5625 insertions(+), 1814 deletions(-)
+ Android.mk                              |    1 +
+ Apps.mk                                 |   74 +-
+ Crypto.mk                               |  622 +-------------
+ Ssl.mk                                  |   89 +-
+ android-config.mk                       |   25 +-
+ check-all-builds.sh                     |  628 ++++++++++++++
+ import_openssl.sh                       |  346 +++++++-
+ openssl.config                          | 1006 ++++++++++++++++++++++-
+ openssl.version                         |    3 +-
+ patches/README                          |  368 ++++++++-
+ patches/cve-2016-8610.patch             |  120 +++
+ patches/cve-2017-3735.patch             |   28 +
+ patches/cve-2017-3737.patch             |   20 +
+ patches/cve-2018-0732.patch             |   30 +
+ patches/cve-2018-0737.patch             |   20 +
+ patches/cve-2018-0739.patch             |  221 +++++
+ patches/cve-2019-1559.patch             |   47 ++
+ patches/cve-2019-1563.patch             |   50 ++
+ patches/cve-2020-1971-template.patch    |  131 +++
+ patches/cve-2020-1971.patch             |   94 +++
+ patches/cve-2021-23841.patch            |   23 +
+ patches/cve-2021-4160.patch             |   95 +++
+ patches/cve-2022-0778.patch             |   56 ++
+ patches/cve-2023-0215.patch             |   44 +
+ patches/cve-2023-0286.patch             |  280 +++++++
+ patches/cve-2023-0465.patch             |   36 +
+ patches/cve-2023-2650.patch             |   38 +
+ patches/cve-2023-3446.patch             |   61 ++
+ patches/cve-2024-0727.patch             |  103 +++
+ patches/cve-2024-5535-npn.patch         |   21 +
+ patches/cve-2024-5535.patch             |   94 +++
+ patches/cve-2025-69421.patch            |   23 +
+ patches/cve-2026-22796.patch            |   49 ++
+ patches/cve-2026-28388.patch            |   20 +
+ patches/cve-2026-35189.patch            |  197 +++++
+ patches/cve-2026-45447.patch            |   44 +
+ patches/eng_dyn_dirs.patch              |   56 ++
+ patches/fix_clang_build.patch           |   53 ++
+ patches/handshake_cutthrough.patch      |  519 ++++++------
+ patches/jsse.patch                      |  782 +++++++++---------
+ patches/kktls_cert_chain.patch          |   60 ++
+ patches/kktls_jb_cipher_auth_decl.patch |   17 +
+ patches/kktls_p12_npas_alg_get.patch    |   20 +
+ patches/progs.patch                     |   87 +-
+ patches/rc4_md5_harden.patch            |   19 +
+ patches/sha1_armv4_large.patch          |   21 -
+ patches/small_records.patch             |  337 --------
+ patches/tls12_digests.patch             |  390 +++++++++
+ 48 files changed, 5654 insertions(+), 1814 deletions(-)
  create mode 100755 check-all-builds.sh
  create mode 100644 patches/cve-2016-8610.patch
  create mode 100644 patches/cve-2017-3735.patch
@@ -99,6 +104,7 @@ carried and why).
  create mode 100644 patches/eng_dyn_dirs.patch
  create mode 100644 patches/fix_clang_build.patch
  create mode 100644 patches/kktls_cert_chain.patch
+ create mode 100644 patches/kktls_jb_cipher_auth_decl.patch
  create mode 100644 patches/kktls_p12_npas_alg_get.patch
  create mode 100644 patches/rc4_md5_harden.patch
  delete mode 100644 patches/sha1_armv4_large.patch
@@ -2119,7 +2125,7 @@ index 59952e1ba..01bbc2984 100755
        echo "Skiping patch $i"
      fi
 diff --git a/openssl.config b/openssl.config
-index 7109f03c5..ccd3ddc91 100644
+index 7109f03c5..e18ab2dad 100644
 --- a/openssl.config
 +++ b/openssl.config
 @@ -1,7 +1,28 @@
@@ -2212,7 +2218,7 @@ index 7109f03c5..ccd3ddc91 100644
  " 
  
  NEEDED_SOURCES="\
-@@ -197,19 +216,815 @@ ssl \
+@@ -197,19 +216,816 @@ ssl \
  include \
  "
  
@@ -2989,6 +2995,7 @@ index 7109f03c5..ccd3ddc91 100644
  handshake_cutthrough.patch \
  jsse.patch \
 -sha1_armv4_large.patch \
++kktls_jb_cipher_auth_decl.patch \
 +eng_dyn_dirs.patch \
 +fix_clang_build.patch \
 +tls12_digests.patch \
@@ -3031,7 +3038,7 @@ index 7109f03c5..ccd3ddc91 100644
  "
  
  OPENSSL_PATCHES_handshake_cutthrough_SOURCES="\
-@@ -223,17 +1038,6 @@ ssl/ssltest.c \
+@@ -223,17 +1039,6 @@ ssl/ssltest.c \
  test/testssl \
  "
  
@@ -3049,7 +3056,7 @@ index 7109f03c5..ccd3ddc91 100644
  OPENSSL_PATCHES_jsse_SOURCES="\
  ssl/ssl.h \
  ssl/d1_clnt.c \
-@@ -248,3 +1052,154 @@ ssl/ssl_locl.h
+@@ -248,3 +1053,154 @@ ssl/ssl_locl.h
  ssl/ssl_rsa.c \
  ssl/ssl_sess.c \
  "
@@ -3213,10 +3220,10 @@ index 126c02396..da494e495 100644
 -OPENSSL_VERSION=1.0.1c
 +OPENSSL_VERSION=1.0.1u
 diff --git a/patches/README b/patches/README
-index 7fd809384..a0941d9f9 100644
+index 7fd809384..e174cc7f8 100644
 --- a/patches/README
 +++ b/patches/README
-@@ -1,18 +1,79 @@
+@@ -1,18 +1,82 @@
 -progs.patch:
 +android-kitkat-tls12, Android 4.1/4.2 base (android-4.2.2_r1 and
 +android-4.1.2_r2, OpenSSL 1.0.1c), 2026-10-16:
@@ -3231,6 +3238,9 @@ index 7fd809384..a0941d9f9 100644
 +(Android.mk, Crypto.mk, Ssl.mk, Apps.mk, android-config.mk,
 +import_openssl.sh) are those of android-4.3_r3, which generate
 +*-config.mk from openssl.config; the 4.1/4.2 ones list sources by hand.
++Added for this base: kktls_jb_cipher_auth_decl.patch (the ssl.h prototype of
++SSL_CIPHER_authentication_method, which channelid.patch carries in the 4.4
++base; without it ssl_lib.c calls an implicitly declared function).
 +Not carried from the 4.1/4.2 patch set: small_records.patch
 +(SSL_MODE_SMALL_BUFFERS = 0x20, which is SSL_MODE_SEND_CLIENTHELLO_TIME in
 +1.0.1u: stock callers that set it get the 1.0.1u meaning, a harmless
@@ -3307,7 +3317,7 @@ index 7fd809384..a0941d9f9 100644
  
  
  handshake_cutthrough.patch
-@@ -26,6 +87,276 @@ jsse.patch
+@@ -26,6 +90,284 @@ jsse.patch
  
  Support for JSSE implementation based on OpenSSL.
  
@@ -3556,6 +3566,14 @@ index 7fd809384..a0941d9f9 100644
 +kktls: CERT_PKEY.cert_chain (KitKat jsse patch, owned after
 +SSL_use_certificate_chain) is freed in ssl_cert_free() and duplicated with
 +new references in ssl_cert_dup() (was leaked, and lost on a CERT copy).
++
++kktls_jb_cipher_auth_decl.patch
++
++kktls (Android 4.1/4.2 base): ssl.h declares SSL_CIPHER_authentication_method,
++which the jsse patch defines in ssl_ciph.c and calls from
++SSL_authentication_method() in ssl_lib.c. In the 4.4 base the prototype comes
++with channelid.patch, which this base does not carry; stock 4.1/4.2 had the
++same implicit declaration (a const char * returned as int).
 +
 +kktls_p12_npas_alg_get.patch
 +
@@ -7258,6 +7276,29 @@ index 000000000..abe9341f8
 + #if 0
 +         if (c->pkeys[i].publickey != NULL)
 +             EVP_PKEY_free(c->pkeys[i].publickey);
+diff --git a/patches/kktls_jb_cipher_auth_decl.patch b/patches/kktls_jb_cipher_auth_decl.patch
+new file mode 100644
+index 000000000..de69a5597
+--- /dev/null
++++ b/patches/kktls_jb_cipher_auth_decl.patch
+@@ -0,0 +1,17 @@
++From: android-kitkat-tls12 (Android 4.1/4.2 base, fix of the jsse patch), OpenSSL 1.0.1u
++Subject: kktls_jb_cipher_auth_decl
++ssl.h declares SSL_CIPHER_authentication_method (defined in ssl_ciph.c and
++called from SSL_authentication_method in ssl_lib.c by the jsse patch); in the
++4.4 base the prototype comes with channelid.patch, not carried here.
++---
++diff --git a/ssl/ssl.h b/ssl/ssl.h
++--- a/ssl/ssl.h
+++++ b/ssl/ssl.h
++@@ -1845,6 +1845,7 @@
++ char *SSL_CIPHER_get_version(const SSL_CIPHER *c);
++ const char *SSL_CIPHER_get_name(const SSL_CIPHER *c);
++ unsigned long SSL_CIPHER_get_id(const SSL_CIPHER *c);
+++const char *SSL_CIPHER_authentication_method(const SSL_CIPHER *cipher);
++ 
++ int SSL_get_fd(const SSL *s);
++ int SSL_get_rfd(const SSL *s);
 diff --git a/patches/kktls_p12_npas_alg_get.patch b/patches/kktls_p12_npas_alg_get.patch
 new file mode 100644
 index 000000000..3b193f59a
