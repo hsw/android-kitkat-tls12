@@ -155,7 +155,7 @@ cp "$T/fx/ours.so" "$IN/android-4.4.2_r2/x86/lib/libssl.so"
 check "mkzips refuses a bad release name" sh -c "! '$MK' --in '$IN' --release 'v 1' --cacerts '$T/cacerts' --conscrypt-notice '$T/cnotice' --out '$T/z3' > /dev/null 2>&1"
 
 # ---- fake device roots ----------------------------------------------------------------------------------------------
-mkroot() { # dir [key=value...] (build.prop overrides; special: libssl=FIXTURE, nosdcard=1, media=1)
+mkroot() { # dir [key=value...] (build.prop overrides; special: libssl=FIXTURE, nosdcard=1, media=1, selinuxfs=1|sysfs)
   local r=$1 kv; shift
   rm -rf "$r"; mkdir -p "$r/system/lib" "$r/system/framework" "$r/system/app" "$r/system/priv-app" \
     "$r/system/etc/security/cacerts" "$r/data/dalvik-cache" "$r/sdcard"
@@ -179,6 +179,8 @@ mkroot() { # dir [key=value...] (build.prop overrides; special: libssl=FIXTURE, 
       libssl=*) cp "$T/fx/${kv#libssl=}" "$r/system/lib/libssl.so" ;;
       nosdcard=1) rm -rf "$r/sdcard" ;;
       media=1) mkdir -p "$r/data/media/0" ;;
+      selinuxfs=1) mkdir -p "$r/proc"; printf 'nodev\tsysfs\nnodev\tselinuxfs\n\text4\n' > "$r/proc/filesystems" ;;
+      selinuxfs=sysfs) mkdir -p "$r/sys/fs/selinux" ;;
       *) sed -i "/^${kv%%=*}=/d" "$r/system/build.prop"; echo "$kv" >> "$r/system/build.prop" ;;
     esac
   done
@@ -230,7 +232,17 @@ mkroot "$R0" ro.miui.ui.version.name=V5
 refused "openssl on MIUI" "$R0" "$O"
 mkroot "$R0" ro.build.version.release=4.3
 refused "openssl on 4.3" "$R0" "$O"
-refused "cacerts on 4.3" "$R0" "$C"
+refused "java 4.4.2 zip on 4.3" "$R0" "$J"
+mkroot "$R0" ro.build.version.release=4.0.4
+refused "cacerts on 4.0.4" "$R0" "$C"
+mkroot "$R0" ro.build.version.release=5.0
+refused "cacerts on 5.0" "$R0" "$C"
+mkroot "$R0" ro.build.version.release=4.10
+refused "cacerts on 4.10" "$R0" "$C"
+mkroot "$R0" ro.build.version.release=4.1-rc
+refused "cacerts on a non-numeric 4.1-rc" "$R0" "$C"
+mkroot "$R0" ro.build.version.release=4.1.2 ro.product.cpu.abi=armeabi-v7a
+refused "openssl on 4.1.2" "$R0" "$Z/kktls-openssl-armeabi-v7a-v9.zip"
 mkroot "$R0" ro.product.cpu.abi=armeabi-v7a
 refused "x86 openssl on an ARM device" "$R0" "$O"
 mkroot "$R0" libssl=dev-extra.so
@@ -288,6 +300,46 @@ check "restore: /system identical to the original" [ "$ORIG" = "$(snap "$R0" sys
 check "restore: dalvik-cache wiped" [ -z "$(ls -A "$R0/data/dalvik-cache")" ]
 check "restore: backups marked done" none "$R0"/data/kktls-backup/[0-9]* "$R0"/sdcard/kktls-backup/[0-9]*
 refused "restore twice" "$R0" "$R"
+
+# cacerts and restore on Android 4.1-4.3: no SELinux in an AOSP 4.1/4.2 kernel (no label writes), labels on 4.3 and
+# on a 4.1/4.2 kernel that has SELinux
+check "cacerts zip says android=4.1-4.4" sh -c "unzip -p '$C' kktls/zip.conf | grep -qx android=4.1-4.4"
+check "restore zip says android=4.1-4.4" sh -c "unzip -p '$R' kktls/zip.conf | grep -qx android=4.1-4.4"
+for v in 4.1 4.1.2 4.2.2; do
+  mkroot "$R0" ro.build.version.release=$v ro.product.cpu.abi=armeabi-v7a; ORIG=$(snap "$R0" system)
+  : > "$LOG"
+  installs "cacerts on $v without SELinux" "$R0" "$C"
+  check "cacerts $v: says it does not label" grep -q 'no SELinux in this kernel' "$T/out"
+  check "cacerts $v: directory replaced wholesale" sh -c "[ \"\$(ls '$R0/system/etc/security/cacerts' | tr '\n' ' ')\" = '00000001.0 00000002.0 keepme00.0 ' ]"
+  check "cacerts $v: files 0644, marker dir 0755" sh -c "[ \"\$(stat -c %a '$R0'/system/etc/security/cacerts/* '$R0/system/etc/kktls' | sort -u | tr '\n' ' ')\" = '644 755 ' ]"
+  check "cacerts $v: marker" [ "$(cat "$R0/system/etc/kktls/cacerts.version")" = v9 ]
+  check "cacerts $v: no label calls" [ ! -s "$LOG" ]
+  installs "restore on $v without SELinux" "$R0" "$R"
+  check "restore $v: /system identical" [ "$ORIG" = "$(snap "$R0" system)" ]
+  check "restore $v: no label calls" [ ! -s "$LOG" ]
+done
+for kv in "4.2.2 selinuxfs=1" "4.2.2 selinuxfs=sysfs" "4.3" "4.3.1"; do
+  read -r v opt <<< "$kv"
+  mkroot "$R0" ro.build.version.release="$v" ${opt:+"$opt"}; ORIG=$(snap "$R0" system)
+  : > "$LOG"
+  installs "cacerts on $kv" "$R0" "$C"
+  check "cacerts $kv: labels each CA file and the marker" [ "$(grep -c '^util u:object_r:system_file:s0 .*\.kktls-new$' "$LOG")" = 4 ]
+  check "cacerts $kv: labels the marker dir" grep -qx "util u:object_r:system_file:s0 $R0/system/etc/kktls" "$LOG"
+  check "cacerts $kv: no 'not labelled' line" sh -c "! grep -q 'no SELinux' '$T/out'"
+  : > "$LOG"
+  installs "restore on $kv" "$R0" "$R"
+  check "restore $kv: /system identical" [ "$ORIG" = "$(snap "$R0" system)" ]
+  check "restore $kv: labels the restored files" grep -q '^util u:object_r:system_file:s0 ' "$LOG"
+done
+mkroot "$R0" ro.build.version.release=4.4.2 selinuxfs=1
+: > "$LOG"
+installs "cacerts on 4.4.2 (selinuxfs listed)" "$R0" "$C"
+check "cacerts 4.4.2: labelled" [ "$(grep -c '\.kktls-new$' "$LOG")" = 4 ]
+mkroot "$R0" ro.build.version.release=4.1.2
+installs "cacerts on 4.1.2: an injected label failure is never reached" "$R0" "$C" KKTLS_TEST_FAIL=keepme00.0.kktls-new
+mkroot "$R0" ro.build.version.release=4.3; ORIG=$(snap "$R0" system)
+if run "$R0" "$C" KKTLS_TEST_FAIL=keepme00.0.kktls-new; then bad "4.3: a label failure must fail the install"; else ok; fi
+check "4.3 label failure: rolled back" [ "$ORIG" = "$(snap "$R0" system)" ]
 
 # restore from /sdcard after /data is wiped
 mkroot "$R0"; ORIG=$(snap "$R0" system)

@@ -169,13 +169,13 @@ for a in $ABIS; do
 done
 n=kktls-cacerts-$REL
 # shellcheck disable=SC2086
-stage "$n" cacerts any 4.4 "$BASE" $ABIS
+stage "$n" cacerts any 4.1-4.4 "$BASE" $ABIS
 mkdir -p "$ST/$n/system/etc/security/cacerts"
 for f in "$CACERTS"/*.[0-9]; do install -m 0644 "$f" "$ST/$n/system/etc/security/cacerts/"; done
 pack "$n"
 n=kktls-restore-$REL
 # shellcheck disable=SC2086
-stage "$n" restore any 4.4 "$BASE" $ABIS
+stage "$n" restore any 4.1-4.4 "$BASE" $ABIS
 pack "$n"
 
 (cd "$OUT" && sha256sum kktls-*.zip > SHA256SUMS)
