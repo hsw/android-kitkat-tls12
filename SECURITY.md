@@ -70,6 +70,15 @@ exported by ours, apart from those 32. A matching symbol list does not prove tha
 native code was compiled against the same structs and `#define` values; that is why the installer accepts only
 AOSP-like builds.
 
+**Android 4.1 to 4.3.** The Jelly Bean openssl zips carry the same OpenSSL 1.0.1u with the same backports, the same
+configuration and the same conditions; the table applies to them as to 4.4 (the platform itself is older and equally
+unpatched). Each is built from the AOSP tree of its version (`android-4.3_r3`, `android-4.2.2_r1`, `android-4.1.2_r2`)
+and compared there with the stock library (1.0.1e on 4.3, 1.0.1c on 4.1/4.2): no public symbol removed; the internal
+ones listed in `patches/jb/<ver>/allow-missing-*.txt` are gone, nothing in AOSP of that version imports them. Left out
+compared with 4.4: ALPN (all three) and Channel ID (4.1/4.2), which are features, not fixes; their struct members
+would move fields that stock callers use. 4.1's stock `libcrypto` offered zlib TLS compression (CRIME); this build
+does not, as stock 4.2. The CVE reproducers run on each Jelly Bean recipe too (`openssl-cve-test.sh --jb-base`).
+
 ## Conditions
 
 The verdicts above hold only when all of these are true. If you build or use the libraries differently, triage the
