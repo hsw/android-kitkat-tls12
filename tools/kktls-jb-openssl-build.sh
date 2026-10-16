@@ -26,7 +26,8 @@
 #   collect  lib/libssl.so lib/libcrypto.so and the java files into WORK/out/kktls-jb/<base>/<abi>/ (jars rewritten by
 #            tools/zipnorm.py: sorted entries, fixed time) + SHA256SUMS + BUILD-INFO.txt (with the java modules and the
 #            gate line of the base); bin/openssl into WORK/out/kktls-jb/<base>/test-bin/<abi>/; external/openssl/NOTICE
-#            (+ libcore/NOTICE for a java base) into .../notice/; patches/jb/<base>/allow-missing-lib{ssl,crypto}.txt (the
+#            (+ libcore/NOTICE and external/fdlibm/NOTICE for a java base: libjavacore.so links libfdlibm statically)
+#            into .../notice/; patches/jb/<base>/allow-missing-lib{ssl,crypto}.txt (the
 #            zip's kktls-symcheck lists) into .../allow/
 #   check    per ABI: openssl-abi-check.py symbols against stock-openssl (0 removed public exports; the 4.4 allow
 #            list plus patches/jb/<base>/openssl-abi-allow.txt when present), and kktls-symcheck (built for this host
@@ -93,7 +94,7 @@ while [ $# -gt 0 ]; do
     --reuse-stock) REUSE_STOCK=1; shift ;;
     --dry-run) DRY=1; shift ;;
     all|sync|stock|apply|build|collect|check) CMDS+=("$1"); shift ;;
-    -h|--help) sed -n '2,50p' "$ME"; exit 0 ;;
+    -h|--help) sed -n '2,51p' "$ME"; exit 0 ;;
     *) die "unknown argument: $1" 2 ;;
   esac
 done
@@ -362,7 +363,10 @@ do_collect() {
   local nd=$WORK/out/kktls-jb/$b/notice
   rm -rf "$nd"; mkdir -p "$nd"
   install -m 0644 "$d/src/external/openssl/NOTICE" "$nd/openssl.NOTICE"
-  [ -z "$(java_rows "$b")" ] || install -m 0644 "$d/src/libcore/NOTICE" "$nd/libcore.NOTICE"
+  if [ -n "$(java_rows "$b")" ]; then
+    install -m 0644 "$d/src/libcore/NOTICE" "$nd/libcore.NOTICE"
+    install -m 0644 "$d/src/external/fdlibm/NOTICE" "$nd/fdlibm.NOTICE"
+  fi
   (cd "$nd" && sha256sum -- *.NOTICE > SHA256SUMS)
   local ad=$WORK/out/kktls-jb/$b/allow l
   rm -rf "$ad"; mkdir -p "$ad"
