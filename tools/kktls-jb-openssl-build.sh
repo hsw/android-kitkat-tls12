@@ -6,9 +6,15 @@
 #   tools/kktls-jb-openssl-build.sh [options] [all|sync|stock|apply|build|collect|check]...
 #
 # Steps per base (all = every step in this order; each step leaves WORK/<tag>/<step>.done and is skipped next time):
-#   sync     repo init --depth=1 + repo sync of the base's `project` lines; every project must then be at its `rev`
+#   sync     repo init --depth=1 + repo sync of the base's `project` lines; every project must then be at its `rev`;
+#            the compilers (prebuilts/gcc projects, prebuilts/tools/gcc-sdk/) get their commit's time as mtime
+#            (ccache 2.4 hashes the compiler's size and mtime: a checkout's mtime would miss a ccache kept from an
+#            earlier tree, as in CI)
 #   stock    pristine tree (+ the base's build/ OpenJDK 6 diff): libcrypto libssl per ABI; the libraries and include/ go
-#            to WORK/<tag>/stock-openssl/<abi>/ (the old side of the ABI check); out/target is removed afterwards
+#            to WORK/<tag>/stock-openssl/<abi>/ (the old side of the ABI check); out/target is removed afterwards.
+#            WORK/<tag>/stock-openssl.manifest records the inputs (target rows, project revs, this script, the JDK
+#            patch) and the sha256 of every file; with --reuse-stock a stock-openssl/ that matches its manifest and this
+#            run's inputs is kept and the makes are skipped (else it is removed and built)
 #   apply    git am patches/jb/<base>/external_openssl/*.patch in external/openssl
 #   build    per ABI: libcrypto libssl openssl (the command-line tool is a test client, not a release file)
 #   collect  lib/libssl.so lib/libcrypto.so into WORK/out/kktls-jb/<base>/<abi>/ + SHA256SUMS + BUILD-INFO.txt;
@@ -26,6 +32,8 @@
 #   --cpus N --jobs N docker --cpus and make -j (default 4 / 4)
 #   --image NAME      build image (default: tools/docker-image.sh aosp-build); --sync-image NAME (default aosp-sync)
 #   --runner docker|direct   direct = already inside the build image: no docker
+#   --reuse-stock     keep a complete stock-openssl/ of the same inputs (e.g. restored from a CI cache), see `stock`
+# Environment: KKTLS_CCACHE_MAX  ccache -M of WORK/<tag>/ccache (default 10G)
 #
 # Inputs come from `git archive HEAD` (patches/jb, patches/build, tools) and must be committed (exit 4); a tree is only built further
 # while patches/jb at HEAD equals what it was patched with. Exit codes: 0 ok, 1 a failed step or check, 2 usage,
@@ -50,7 +58,7 @@ if [ "${1:-}" = --inner-make ]; then
   source build/envsetup.sh >/dev/null
   lunch "$combo" > "$tree/logs/$label.lunch" 2>&1 || { echo "INNER rc=90 wall=0 (lunch $combo failed)"; exit 0; }
   export ALLOW_OPENJDK=1 USE_CCACHE=1 CCACHE_DIR=$tree/ccache
-  prebuilts/misc/linux-x86/ccache/ccache -M 10G >/dev/null
+  prebuilts/misc/linux-x86/ccache/ccache -M "${KKTLS_CCACHE_MAX:-10G}" >/dev/null
   t0=$(date +%s)
   make -j"$jobs" "$@" > "$tree/logs/$label.log" 2>&1
   rc=$?
@@ -58,7 +66,7 @@ if [ "${1:-}" = --inner-make ]; then
   exit 0
 fi
 
-WORK=./kktls-jb-work; SEL_BASES=""; SEL_ABIS=""; CPUS=4; JOBS=4; IMAGE=""; SYNC_IMAGE=""; RUNNER=docker; CMDS=()
+WORK=./kktls-jb-work; SEL_BASES=""; SEL_ABIS=""; CPUS=4; JOBS=4; IMAGE=""; SYNC_IMAGE=""; RUNNER=docker; REUSE_STOCK=0; CMDS=()
 while [ $# -gt 0 ]; do
   case $1 in
     --work) WORK=${2:?}; shift 2 ;;
@@ -69,8 +77,9 @@ while [ $# -gt 0 ]; do
     --image) IMAGE=${2:?}; shift 2 ;;
     --sync-image) SYNC_IMAGE=${2:?}; shift 2 ;;
     --runner) RUNNER=${2:?}; shift 2 ;;
+    --reuse-stock) REUSE_STOCK=1; shift ;;
     all|sync|stock|apply|build|collect|check) CMDS+=("$1"); shift ;;
-    -h|--help) sed -n '2,32p' "$ME"; exit 0 ;;
+    -h|--help) sed -n '2,40p' "$ME"; exit 0 ;;
     *) die "unknown argument: $1" 2 ;;
   esac
 done
@@ -133,7 +142,7 @@ run_make() {
   local out rc
   if [ $RUNNER = docker ]; then
     out=$(docker run --rm --name "kktls-jb-$(basename "$tree")-$label" --cpus="$CPUS" --ulimit nofile=1024:524288 \
-          -v "$tree:/aosp" -v "$ME:/scripts/r.sh:ro" "$IMAGE" \
+          -e KKTLS_CCACHE_MAX -v "$tree:/aosp" -v "$ME:/scripts/r.sh:ro" "$IMAGE" \
           bash /scripts/r.sh --inner-make /aosp "$combo" "$JOBS" "$label" "$@" | tail -n1)
   else
     out=$(bash "$ME" --inner-make "$tree" "$combo" "$JOBS" "$label" "$@" | tail -n1)
@@ -169,22 +178,71 @@ do_sync() {
   done
   [ $bad = 0 ] || return 1
   echo "  $(wc -w <<<"$projects") projects at their pinned commits"
+  # shellcheck disable=SC2086
+  run_sync "$d" "$(pin_mtimes_cmd $projects)" >> "$d/logs/sync.log" 2>&1 ||
+    { echo "[$t] setting the toolchain mtimes failed" >&2; tail -n 5 "$d/logs/sync.log" >&2; return 1; }
+}
+
+# pin_mtimes_cmd PROJECT...: the run_sync command that sets every file of the compilers (the prebuilts/gcc projects,
+# prebuilts/tools/gcc-sdk/: the host gcc wrappers) to its project's commit time (ccache 2.4 hashes the compiler's size
+# and mtime; a new toolchain commit still changes the hash)
+pin_mtimes_cmd() {
+  local p dir
+  for p in "$@"; do
+    case $p in prebuilts/gcc/*) dir=$p ;; prebuilts/tools) dir=$p/gcc-sdk ;; *) continue ;; esac
+    printf '[ ! -d %s ] || find %s -name .git -prune -o -type f -exec touch -d @$(git -C %s -c core.hooksPath=/dev/null log -1 --format=%%ct HEAD) {} +\n' \
+      "$dir" "$dir" "$p"
+  done
+  echo true
+}
+
+sha_of() { sha256sum < "$1" | cut -c1-64; }
+jdk_patch() { local j=patches/jb/$1/build/0001-allow-openjdk6.patch; [ -f "$INPUTS/$j" ] || j=patches/build/0001-allow-openjdk6.patch; echo "$j"; }
+stock_inputs() { # base tag: the manifest header, everything besides the synced tree that the stock libraries depend on
+  local b=$1 t=$2 p
+  echo "kktls-jb-stock 1 $b $t"
+  rows_of "$b" | sed 's/^/target /'
+  for p in $(projects_of "$b"); do echo "rev $p $(rev_of "$t" "$p")"; done
+  echo "script $(sha_of "$INPUTS/tools/kktls-jb-openssl-build.sh")"
+  echo "jdk-patch $(jdk_patch "$b") $(sha_of "$INPUTS/$(jdk_patch "$b")")"
+  echo --
+}
+stock_files() { (cd "$1" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum); }
+# stock_reusable BASE TAG: 0 when stock-openssl/ holds exactly the files of its manifest, each with its sha256, every
+# target's libraries and headers, and the manifest was written for this run's inputs
+stock_reusable() {
+  local b=$1 t=$2 d=$WORK/$2 m=$WORK/$2/stock-openssl.manifest abi f
+  [ -f "$m" ] && [ -d "$d/stock-openssl" ] || return 1
+  [ "$(sed -n '1,/^--$/p' "$m")" = "$(stock_inputs "$b" "$t")" ] || { echo "  stock-openssl: manifest of other inputs"; return 1; }
+  while read -r _ abi; do
+    for f in libcrypto.so libssl.so include/openssl/ssl.h; do
+      [ -s "$d/stock-openssl/$abi/$f" ] || { echo "  stock-openssl: $abi/$f missing"; return 1; }
+    done
+  done < <(rows_of "$b")
+  [ "$(sed '1,/^--$/d' "$m")" = "$(stock_files "$d/stock-openssl")" ] || { echo "  stock-openssl: files differ from the manifest"; return 1; }
 }
 
 do_stock() {
-  local b=$1 t=$2 d=$WORK/$2 combo abi
+  local b=$1 t=$2 d=$WORK/$2 combo abi m=$WORK/$2/stock-openssl.manifest
   [ -f "$d/apply.done" ] && die "[$t] stock after apply: the tree is no longer pristine (rm -rf $d)" 1
-  local jdk=patches/jb/$b/build/0001-allow-openjdk6.patch
-  [ -f "$INPUTS/$jdk" ] || jdk=patches/build/0001-allow-openjdk6.patch
+  local jdk; jdk=$(jdk_patch "$b")
   run_sync "$d" "git -C build -c core.hooksPath=/dev/null apply -R --check \$P/$jdk 2>/dev/null ||
     git -C build -c core.hooksPath=/dev/null apply \$P/$jdk" > "$d/logs/stock-jdk.log" 2>&1 ||
     { cat "$d/logs/stock-jdk.log" >&2; return 1; }
+  if [ $REUSE_STOCK = 1 ]; then
+    if stock_reusable "$b" "$t"; then
+      echo "  stock-openssl: reused ($(sed '1,/^--$/d' "$m" | wc -l) files match $m)"; return 0
+    fi
+    echo "  stock-openssl: nothing to reuse, building"; rm -rf "$d/stock-openssl"
+  fi
+  rm -f "$m"
   while read -r combo abi; do
     run_make "$d" "$combo" "stock-$abi" libcrypto libssl || return 1
     local o=$d/stock-openssl/$abi po; po=$(product_out "$d" "$combo"); rm -rf "$o"; mkdir -p "$o"
     cp "$po/system/lib/libcrypto.so" "$po/system/lib/libssl.so" "$o/"
     cp -r "$d/src/external/openssl/include" "$o/include"
   done < <(rows_of "$b")
+  { stock_inputs "$b" "$t"; stock_files "$d/stock-openssl"; } > "$m.new" && mv "$m.new" "$m"
   rm -rf "$d/src/out/target"
 }
 

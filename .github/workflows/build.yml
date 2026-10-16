@@ -3,6 +3,12 @@
 # partial AOSP build per tag (both ABIs in one out/, every step of tools/kktls-release-build.sh inside the image with
 # --runner direct), one OpenSSL build per Jelly Bean base (tools/kktls-jb-openssl-build.sh, same image), then the
 # recovery zips (tools/mkzips.sh) with the installer tests on the real output. release.yml calls this workflow for a tag and publishes the zips.
+# Caches (actions/cache; off with `cold`, which release.yml sets: a release is built from nothing, as a local rebuild):
+#   stock-<tag|base>-<image>-<inputs>   WORK/<tag>/stock-openssl/ + its manifest; the scripts' --reuse-stock keeps it only
+#                                       when the manifest matches the run's inputs and every file's sha256
+#   ccache-<tag|base>-<image>-<inputs>  WORK/<tag>/ccache (the tree's prebuilt ccache 2.4; restore-keys: the newest of the
+#                                       same tag and image); a hit returns the stored object of the same preprocessed
+#                                       source, arguments and compiler, so the outputs do not depend on the cache
 name: build
 
 on:
@@ -10,12 +16,21 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      cold:
+        description: no caches (stock libraries, ccache)
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       release:
         description: release name written into the zips and their markers (e.g. v1)
         required: true
         type: string
+      cold:
+        description: no caches (stock libraries, ccache); release.yml sets it
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -128,6 +143,8 @@ jobs:
     env:
       IMG: ${{ needs.image.outputs.ref }}
       PINNED: ${{ needs.image.outputs.pinned }}
+      TAG: ${{ matrix.tag }}
+      KKTLS_CCACHE_MAX: 3G   # one build of a tag leaves ~1.7 GB
     steps:
       - name: free disk
         run: |
@@ -149,12 +166,44 @@ jobs:
           else
             docker build -q --build-arg UID="$(id -u)" -t "$IMG" -f docker/Dockerfile.build docker
           fi
+      - id: keys
+        name: cache keys
+        if: ${{ !inputs.cold }}
+        run: echo "image=${IMG##*:}" >> "$GITHUB_OUTPUT"   # <Dockerfile hash>-uid<N>
+      - name: stock libraries cache
+        if: ${{ !inputs.cold }}
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/kktls/${{ matrix.tag }}/stock-openssl
+            ${{ runner.temp }}/kktls/${{ matrix.tag }}/stock-openssl.manifest
+          key: stock-${{ matrix.tag }}-${{ steps.keys.outputs.image }}-${{ hashFiles('tools/targets.txt', 'tools/kktls-release-build.sh', 'patches/build/0001-allow-openjdk6.patch', 'conscrypt/check_prebuilt.py') }}
+      - name: ccache
+        if: ${{ !inputs.cold }}
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/kktls/${{ matrix.tag }}/ccache
+          key: ccache-${{ matrix.tag }}-${{ steps.keys.outputs.image }}-${{ hashFiles('tools/targets.txt', 'tools/kktls-release-build.sh', 'tools/kktls-apply-series.sh', 'patches/build/**', 'patches/external_openssl/**', 'patches/libcore/**', 'patches/external_okhttp/**', 'conscrypt/**', 'symcheck/**') }}
+          restore-keys: ccache-${{ matrix.tag }}-${{ steps.keys.outputs.image }}-
       - name: build
+        env:
+          REUSE: ${{ !inputs.cold && '--reuse-stock' || '' }}
         run: |
           mkdir -p "$RUNNER_TEMP/kktls"
-          docker run --rm --ulimit nofile=1024:524288 -v "$GITHUB_WORKSPACE:/src" -v "$RUNNER_TEMP/kktls:/work" "$IMG" \
-            bash /src/tools/kktls-release-build.sh --runner direct --work /work --tags "${{ matrix.tag }}" \
-            --jobs "$(nproc)" all
+          run() { docker run --rm --ulimit nofile=1024:524288 -e KKTLS_CCACHE_MAX -v "$GITHUB_WORKSPACE:/src" \
+            -v "$RUNNER_TEMP/kktls:/work" "$IMG" "$@"; }
+          b() { run bash /src/tools/kktls-release-build.sh --runner direct --work /work --tags "$TAG" --jobs "$(nproc)" "$@"; }
+          b sync
+          # this run's ccache counters (a restored cache keeps those of earlier runs)
+          run env CCACHE_DIR="/work/$TAG/ccache" "/work/$TAG/src/prebuilts/misc/linux-x86/ccache/ccache" -z
+          b ${REUSE:+"$REUSE"} all
+      - name: ccache statistics
+        if: always()
+        run: |
+          [ -x "$RUNNER_TEMP/kktls/$TAG/src/prebuilts/misc/linux-x86/ccache/ccache" ] || exit 0
+          docker run --rm -v "$RUNNER_TEMP/kktls:/work" "$IMG" \
+            env CCACHE_DIR="/work/$TAG/ccache" "/work/$TAG/src/prebuilts/misc/linux-x86/ccache/ccache" -s
+          du -sh "$RUNNER_TEMP/kktls/$TAG/ccache"
       - name: disk use
         if: always()
         run: df -h / && du -sh "$RUNNER_TEMP/kktls" || true
@@ -190,6 +239,8 @@ jobs:
     env:
       IMG: ${{ needs.image.outputs.ref }}
       PINNED: ${{ needs.image.outputs.pinned }}
+      BASE: ${{ matrix.base }}
+      KKTLS_CCACHE_MAX: 2G   # one build of a base leaves up to ~1.6 GB
     steps:
       - name: free disk
         run: |
@@ -209,12 +260,46 @@ jobs:
           else
             docker build -q --build-arg UID="$(id -u)" -t "$IMG" -f docker/Dockerfile.build docker
           fi
+      - id: keys
+        name: tag and cache keys
+        run: |
+          tag=$(awk -v b="$BASE" '$1 == "base" && $2 == b { print $3 }' patches/jb/targets.txt)
+          [ -n "$tag" ] || { echo "no base line for $BASE" >&2; exit 1; }
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+          { echo "tag=$tag"; echo "image=${IMG##*:}"; } >> "$GITHUB_OUTPUT"   # image: <Dockerfile hash>-uid<N>
+      - name: stock libraries cache
+        if: ${{ !inputs.cold }}
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/kktls/${{ steps.keys.outputs.tag }}/stock-openssl
+            ${{ runner.temp }}/kktls/${{ steps.keys.outputs.tag }}/stock-openssl.manifest
+          key: stock-jb${{ matrix.base }}-${{ steps.keys.outputs.image }}-${{ hashFiles('patches/jb/targets.txt', 'tools/kktls-jb-openssl-build.sh', format('patches/jb/{0}/build/**', matrix.base), 'patches/build/0001-allow-openjdk6.patch') }}
+      - name: ccache
+        if: ${{ !inputs.cold }}
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/kktls/${{ steps.keys.outputs.tag }}/ccache
+          key: ccache-jb${{ matrix.base }}-${{ steps.keys.outputs.image }}-${{ hashFiles('patches/jb/targets.txt', 'tools/kktls-jb-openssl-build.sh', format('patches/jb/{0}/**', matrix.base), 'patches/build/**') }}
+          restore-keys: ccache-jb${{ matrix.base }}-${{ steps.keys.outputs.image }}-
       - name: build
+        env:
+          REUSE: ${{ !inputs.cold && '--reuse-stock' || '' }}
         run: |
           mkdir -p "$RUNNER_TEMP/kktls"
-          docker run --rm --ulimit nofile=1024:524288 -v "$GITHUB_WORKSPACE:/src" -v "$RUNNER_TEMP/kktls:/work" "$IMG" \
-            bash /src/tools/kktls-jb-openssl-build.sh --runner direct --work /work --bases "${{ matrix.base }}" \
-            --jobs "$(nproc)" all
+          run() { docker run --rm --ulimit nofile=1024:524288 -e KKTLS_CCACHE_MAX -v "$GITHUB_WORKSPACE:/src" \
+            -v "$RUNNER_TEMP/kktls:/work" "$IMG" "$@"; }
+          b() { run bash /src/tools/kktls-jb-openssl-build.sh --runner direct --work /work --bases "$BASE" --jobs "$(nproc)" "$@"; }
+          b sync
+          run env CCACHE_DIR="/work/$TAG/ccache" "/work/$TAG/src/prebuilts/misc/linux-x86/ccache/ccache" -z
+          b ${REUSE:+"$REUSE"} all
+      - name: ccache statistics
+        if: always()
+        run: |
+          [ -x "$RUNNER_TEMP/kktls/$TAG/src/prebuilts/misc/linux-x86/ccache/ccache" ] || exit 0
+          docker run --rm -v "$RUNNER_TEMP/kktls:/work" "$IMG" \
+            env CCACHE_DIR="/work/$TAG/ccache" "/work/$TAG/src/prebuilts/misc/linux-x86/ccache/ccache" -s
+          du -sh "$RUNNER_TEMP/kktls/$TAG/ccache"
       - name: stock libraries (the old side of the installer tests)
         if: always()
         run: |
