@@ -14,14 +14,17 @@ kktls_channelid_state.patch: stock 4.1 has no Channel ID, and its fields sit
 in the middle of struct ssl_st. tls12_digests.patch: SSL3_STATE hunk context
 without the Channel ID fields. Android.mk, Apps.mk, Crypto.mk, Ssl.mk,
 android-config.mk, import_openssl.sh and check-all-builds.sh from
-android-4.3_r3 (generated *-config.mk instead of hand-kept source lists).
+android-4.3_r3 (generated *-config.mk instead of hand-kept source lists); in Crypto.mk and
+Ssl.mk the ARM target libraries build with LOCAL_SDK_VERSION 9 as in stock
+4.1, so libcrypto links and exports the libgcc helpers (__aeabi_*,
+_Unwind_*) that stock prebuilt binaries import from it.
 patches/README starts with a note on this base (patches of the 4.1 set not
 carried and why).
 ---
  Android.mk                           |    1 +
  Apps.mk                              |   74 +-
- Crypto.mk                            |  616 +---------------
- Ssl.mk                               |   83 +--
+ Crypto.mk                            |  622 +---------------
+ Ssl.mk                               |   89 +--
  android-config.mk                    |   25 +-
  check-all-builds.sh                  |  628 ++++++++++++++++
  import_openssl.sh                    |  346 ++++++++-
@@ -65,7 +68,7 @@ carried and why).
  patches/sha1_armv4_large.patch       |   21 -
  patches/small_records.patch          |  337 ---------
  patches/tls12_digests.patch          |  390 ++++++++++
- 47 files changed, 5613 insertions(+), 1814 deletions(-)
+ 47 files changed, 5625 insertions(+), 1814 deletions(-)
  create mode 100755 check-all-builds.sh
  create mode 100644 patches/cve-2016-8610.patch
  create mode 100644 patches/cve-2017-3735.patch
@@ -216,7 +219,7 @@ index e78395e52..57d43b9ce 100644
  include $(LOCAL_PATH)/android-config.mk
  include $(BUILD_HOST_EXECUTABLE)
 diff --git a/Crypto.mk b/Crypto.mk
-index ccbf97a4d..8827383e4 100644
+index ccbf97a4d..be50490c3 100644
 --- a/Crypto.mk
 +++ b/Crypto.mk
 @@ -1,541 +1,10 @@
@@ -765,13 +768,16 @@ index ccbf97a4d..8827383e4 100644
  
  #######################################
  # target static library
-@@ -544,32 +13,16 @@ include $(LOCAL_PATH)/android-config.mk
+@@ -544,32 +13,19 @@ include $(LOCAL_PATH)/android-config.mk
  
  LOCAL_SHARED_LIBRARIES := $(log_shared_libraries)
  
 -ifeq ($(TARGET_ARCH),arm)
 -LOCAL_NDK_VERSION := 5
-+ifneq (,$(TARGET_BUILD_APPS))
++# kktls (Android 4.1/4.2 base): ARM builds against the NDK android-9 platform, as
++# the stock 4.1/4.2 makefiles did; libgcc then links into libcrypto and its
++# helpers (__aeabi_*, _Unwind_*) are exported, which stock prebuilt binaries import.
++ifneq (,$(TARGET_BUILD_APPS)$(filter arm,$(TARGET_ARCH)))
  LOCAL_SDK_VERSION := 9
  endif
  
@@ -803,13 +809,16 @@ index ccbf97a4d..8827383e4 100644
  include $(BUILD_STATIC_LIBRARY)
  
  #######################################
-@@ -579,36 +32,17 @@ include $(LOCAL_PATH)/android-config.mk
+@@ -579,36 +35,20 @@ include $(LOCAL_PATH)/android-config.mk
  
  LOCAL_SHARED_LIBRARIES := $(log_shared_libraries)
  
 -ifeq ($(TARGET_ARCH),arm)
 -LOCAL_NDK_VERSION := 5
-+ifneq (,$(TARGET_BUILD_APPS))
++# kktls (Android 4.1/4.2 base): ARM builds against the NDK android-9 platform, as
++# the stock 4.1/4.2 makefiles did; libgcc then links into libcrypto and its
++# helpers (__aeabi_*, _Unwind_*) are exported, which stock prebuilt binaries import.
++ifneq (,$(TARGET_BUILD_APPS)$(filter arm,$(TARGET_ARCH)))
  LOCAL_SDK_VERSION := 9
 -# Use the NDK prebuilt libz and libdl.
 -LOCAL_LDFLAGS += -lz -ldl
@@ -846,7 +855,7 @@ index ccbf97a4d..8827383e4 100644
  include $(BUILD_SHARED_LIBRARY)
  
  #######################################
-@@ -616,15 +50,13 @@ include $(BUILD_SHARED_LIBRARY)
+@@ -616,15 +56,13 @@ include $(BUILD_SHARED_LIBRARY)
  include $(CLEAR_VARS)
  include $(LOCAL_PATH)/android-config.mk
  LOCAL_SHARED_LIBRARIES := $(log_shared_libraries)
@@ -866,7 +875,7 @@ index ccbf97a4d..8827383e4 100644
  include $(BUILD_HOST_SHARED_LIBRARY)
  
  ########################################
-@@ -633,13 +65,11 @@ include $(BUILD_HOST_SHARED_LIBRARY)
+@@ -633,13 +71,11 @@ include $(BUILD_HOST_SHARED_LIBRARY)
  include $(CLEAR_VARS)
  include $(LOCAL_PATH)/android-config.mk
  LOCAL_SHARED_LIBRARIES := $(log_shared_libraries)
@@ -885,10 +894,10 @@ index ccbf97a4d..8827383e4 100644
 +LOCAL_ADDITIONAL_DEPENDENCIES := $(local_additional_dependencies)
  include $(BUILD_HOST_STATIC_LIBRARY)
 diff --git a/Ssl.mk b/Ssl.mk
-index 32107ee36..ca1290a2b 100644
+index 32107ee36..06599d7f0 100644
 --- a/Ssl.mk
 +++ b/Ssl.mk
-@@ -1,69 +1,27 @@
+@@ -1,69 +1,30 @@
 -local_c_includes := \
 -	external/openssl \
 -	external/openssl/include \
@@ -953,7 +962,10 @@ index 32107ee36..ca1290a2b 100644
  
 -ifeq ($(TARGET_ARCH),arm)
 -LOCAL_NDK_VERSION := 5
-+ifneq (,$(TARGET_BUILD_APPS))
++# kktls (Android 4.1/4.2 base): ARM builds against the NDK android-9 platform, as
++# the stock 4.1/4.2 makefiles did; libgcc then links into libcrypto and its
++# helpers (__aeabi_*, _Unwind_*) are exported, which stock prebuilt binaries import.
++ifneq (,$(TARGET_BUILD_APPS)$(filter arm,$(TARGET_ARCH)))
  LOCAL_SDK_VERSION := 9
  endif
 -LOCAL_SRC_FILES += $(local_src_files)
@@ -969,13 +981,16 @@ index 32107ee36..ca1290a2b 100644
  include $(BUILD_STATIC_LIBRARY)
  
  #######################################
-@@ -71,26 +29,30 @@ include $(BUILD_STATIC_LIBRARY)
+@@ -71,26 +32,33 @@ include $(BUILD_STATIC_LIBRARY)
  include $(CLEAR_VARS)
  include $(LOCAL_PATH)/android-config.mk
  
 -ifeq ($(TARGET_ARCH),arm)
 -LOCAL_NDK_VERSION := 5
-+ifneq (,$(TARGET_BUILD_APPS))
++# kktls (Android 4.1/4.2 base): ARM builds against the NDK android-9 platform, as
++# the stock 4.1/4.2 makefiles did; libgcc then links into libcrypto and its
++# helpers (__aeabi_*, _Unwind_*) are exported, which stock prebuilt binaries import.
++ifneq (,$(TARGET_BUILD_APPS)$(filter arm,$(TARGET_ARCH)))
  LOCAL_SDK_VERSION := 9
  endif
 -LOCAL_SRC_FILES += $(local_src_files)
@@ -1006,7 +1021,7 @@ index 32107ee36..ca1290a2b 100644
  include $(BUILD_HOST_SHARED_LIBRARY)
  
  #######################################
-@@ -98,8 +60,9 @@ include $(BUILD_HOST_SHARED_LIBRARY)
+@@ -98,8 +66,9 @@ include $(BUILD_HOST_SHARED_LIBRARY)
  include $(CLEAR_VARS)
  include $(LOCAL_PATH)/android-config.mk
  LOCAL_SRC_FILES:= ssl/ssltest.c
