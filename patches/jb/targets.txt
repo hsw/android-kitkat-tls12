@@ -1,0 +1,144 @@
+# Build inputs of tools/kktls-jb-openssl-build.sh: OpenSSL 1.0.1u (layer A, native only) for Android 4.1-4.3.
+# One keyword per line, # starts a comment.
+#   base    BASE TAG          series patches/jb/BASE/ is built on AOSP TAG (the release this base stands for)
+#   target  BASE LUNCH ABI    one build: lunch combo, Android ABI name (output dir out/kktls-jb/BASE/ABI)
+#   project BASE PATH         AOSP manifest path synced (depth 1) for this base
+#   rev     TAG PATH SHA      the commit PATH must have after `sync` of TAG
+# Modules: libcrypto libssl (the release files lib/libcrypto.so lib/libssl.so) and the openssl command-line tool
+# (a test client only, not a release file). Variant -user, as the 4.4 release build.
+
+base    4.3  android-4.3_r3
+target  4.3  full-user      armeabi-v7a
+target  4.3  full_x86-user  x86
+
+base    4.2  android-4.2.2_r1
+target  4.2  full-user      armeabi-v7a
+target  4.2  full_x86-user  x86
+
+base    4.1  android-4.1.2_r2
+target  4.1  full-user      armeabi-v7a
+target  4.1  full_x86-user  x86
+
+project 4.3  build
+project 4.3  bionic
+project 4.3  abi/cpp
+project 4.3  system/core
+project 4.3  external/openssl
+project 4.3  external/zlib
+project 4.3  external/safe-iop
+project 4.3  external/stlport
+project 4.3  external/clang
+project 4.3  external/llvm
+project 4.3  external/compiler-rt
+project 4.3  prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.7
+project 4.3  prebuilts/gcc/linux-x86/x86/i686-linux-android-4.7
+project 4.3  prebuilts/gcc/linux-x86/host/i686-linux-glibc2.7-4.6
+project 4.3  prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.7-4.6
+project 4.3  prebuilts/gcc/linux-x86/host/i686-linux-glibc2.7-4.4.3
+project 4.3  prebuilts/tools
+project 4.3  prebuilts/misc
+project 4.3  prebuilts/sdk
+project 4.3  prebuilts/ndk
+project 4.2  build
+project 4.2  bionic
+project 4.2  abi/cpp
+project 4.2  system/core
+project 4.2  external/openssl
+project 4.2  external/zlib
+project 4.2  external/safe-iop
+project 4.2  external/stlport
+project 4.2  external/clang
+project 4.2  external/llvm
+project 4.2  external/compiler-rt
+project 4.2  prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.6
+project 4.2  prebuilts/gcc/linux-x86/x86/i686-linux-android-4.6
+project 4.2  prebuilts/gcc/linux-x86/host/i686-linux-glibc2.7-4.6
+project 4.2  prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.7-4.6
+project 4.2  prebuilts/gcc/linux-x86/host/i686-linux-glibc2.7-4.4.3
+project 4.2  prebuilts/tools
+project 4.2  prebuilts/misc
+project 4.2  prebuilts/sdk
+project 4.2  prebuilts/ndk
+project 4.1  build
+project 4.1  bionic
+project 4.1  abi/cpp
+project 4.1  system/core
+project 4.1  external/openssl
+project 4.1  external/zlib
+project 4.1  frameworks/native
+project 4.1  external/stlport
+project 4.1  external/clang
+project 4.1  external/llvm
+project 4.1  external/compiler-rt
+project 4.1  prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.6
+project 4.1  prebuilts/gcc/linux-x86/x86/i686-linux-android-4.6
+project 4.1  prebuilts/gcc/linux-x86/x86/i686-android-linux-4.4.3
+project 4.1  prebuilts/gcc/linux-x86/host/i686-linux-glibc2.7-4.6
+project 4.1  prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.7-4.6
+project 4.1  prebuilts/gcc/linux-x86/host/i686-linux-glibc2.7-4.4.3
+project 4.1  prebuilts/tools
+project 4.1  prebuilts/misc
+project 4.1  prebuilts/sdk
+project 4.1  prebuilts/ndk
+
+rev  android-4.3_r3    build                                                   20fe48ac3ec082f205ddbfe22d4575b7ea7b0a90
+rev  android-4.3_r3    bionic                                                  738370d9387396922c10910edb61272e585be107
+rev  android-4.3_r3    abi/cpp                                                 eb789ea833d8d800662b67914d9c1785a58c2caa
+rev  android-4.3_r3    system/core                                             821678e1c7bd0af12fa4adc314c9024def9ba7c0
+rev  android-4.3_r3    external/openssl                                        4d2199ecb112f77bd1897047a75277c1d43d1aa9
+rev  android-4.3_r3    external/safe-iop                                       aa0725fb1da35e47676b6da30009322eb5ed59be
+rev  android-4.3_r3    external/zlib                                           6a396b358e97fdbcb2dc181e52d36a9d8b5ea752
+rev  android-4.3_r3    external/stlport                                        c7253d88b7fa6f7ba115f167a59b1e9f857db728
+rev  android-4.3_r3    external/clang                                          177982bea7e4ccffd2577c8f63a5872eebebe54b
+rev  android-4.3_r3    external/llvm                                           c7ef4e40cf01397ebd25fc9622fc8eb9c61a547d
+rev  android-4.3_r3    external/compiler-rt                                    06743c2886fc26a7363ac7114c2f9b6620f63071
+rev  android-4.3_r3    prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.7   f59b0b330652def9439f594eb647be98b314d579
+rev  android-4.3_r3    prebuilts/gcc/linux-x86/x86/i686-linux-android-4.7      c7931763d41be602407ed9d71e2c0292c6597e00
+rev  android-4.3_r3    prebuilts/gcc/linux-x86/host/i686-linux-glibc2.7-4.6    95bb5b66b3ec5769c3de8d3f25d681787418e7d2
+rev  android-4.3_r3    prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.7-4.6  ebdad82e61c16772f6cd47e9f11936bf6ebe9aa0
+rev  android-4.3_r3    prebuilts/gcc/linux-x86/host/i686-linux-glibc2.7-4.4.3  10191e2f442c5409cb70783508658d474612a97e
+rev  android-4.3_r3    prebuilts/tools                                         31ec211efafde89ab39472d7bd040f00d1b71945
+rev  android-4.3_r3    prebuilts/misc                                          b0ddf9b51594fd0457bca1666373c40544669f1e
+rev  android-4.3_r3    prebuilts/sdk                                           3c1c4d0ec5801bc9210036b45bca37baec1a290d
+rev  android-4.3_r3    prebuilts/ndk                                           30ee84f92cb832c789366c516fcadb718ccc25e8
+rev  android-4.2.2_r1  build                                                   fbef8b9578aaa422d5bd3153eb50df739815672c
+rev  android-4.2.2_r1  bionic                                                  5115d4348ee720be3db77ae54a06c492049e5ea3
+rev  android-4.2.2_r1  abi/cpp                                                 eb789ea833d8d800662b67914d9c1785a58c2caa
+rev  android-4.2.2_r1  system/core                                             4f247d753a8865cd16292ff0b720b72c28049786
+rev  android-4.2.2_r1  external/openssl                                        ba352abc91bee1349bbdcbababd38e954e2020c7
+rev  android-4.2.2_r1  external/zlib                                           2d5094f0ebcb01fb9f11952d776945b090d89cf0
+rev  android-4.2.2_r1  external/safe-iop                                       aa0725fb1da35e47676b6da30009322eb5ed59be
+rev  android-4.2.2_r1  external/stlport                                        30865cb901602ed078ff2ed534529d847b3b54b5
+rev  android-4.2.2_r1  external/clang                                          210d8aa7162e928d81d3f284b5ca7bc6bb3a9ba7
+rev  android-4.2.2_r1  external/llvm                                           99e8132d3daedcebd061aacb0b08d1e1a6dab14c
+rev  android-4.2.2_r1  external/compiler-rt                                    1f922a5259510f70a12576e7a61eaa0033a02b16
+rev  android-4.2.2_r1  prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.6   1aa5822560cdc5cf155e2a8300c73441cb519ec4
+rev  android-4.2.2_r1  prebuilts/gcc/linux-x86/x86/i686-linux-android-4.6      b9ebba077c2f62e930b16240d7f3ad61f1ad1dfc
+rev  android-4.2.2_r1  prebuilts/gcc/linux-x86/host/i686-linux-glibc2.7-4.6    9e754ea754eac37d1cd20182cc5d37df85239b0d
+rev  android-4.2.2_r1  prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.7-4.6  4b88bc4aafd69d02e14e2aa99046db67666f7f52
+rev  android-4.2.2_r1  prebuilts/gcc/linux-x86/host/i686-linux-glibc2.7-4.4.3  10191e2f442c5409cb70783508658d474612a97e
+rev  android-4.2.2_r1  prebuilts/tools                                         bbf7c256c4f5261c20599ec2f0d4f9316cb226bd
+rev  android-4.2.2_r1  prebuilts/misc                                          f32b66a45d6d74a427bf4a159296b389a26c4d7f
+rev  android-4.2.2_r1  prebuilts/sdk                                           de5b622335ccfbe24aaa11447edde3463350a074
+rev  android-4.2.2_r1  prebuilts/ndk                                           9e04eb2e30bc8d5707c57c2787111b3a5b365fa9
+rev  android-4.1.2_r2  build                                                   eab7126650f75dd9c240574912791b2bafc80bae
+rev  android-4.1.2_r2  bionic                                                  e13338429f12ed760a690a02c268b128f90c5d99
+rev  android-4.1.2_r2  abi/cpp                                                 eb789ea833d8d800662b67914d9c1785a58c2caa
+rev  android-4.1.2_r2  system/core                                             ca38f2c7cde05b67bc8d582040210c4aad303298
+rev  android-4.1.2_r2  external/openssl                                        9b4b062050bf9a39ae49bce7b735a3c046d7452c
+rev  android-4.1.2_r2  external/zlib                                           7b332dbcb6a69c1919decb488c28d9b1fc5ba141
+rev  android-4.1.2_r2  external/stlport                                        ec42173ef0955aa1844e0be303363c7e5dc98fb7
+rev  android-4.1.2_r2  external/clang                                          094004c9c6693abad38a37906ec4363a7ee9e0df
+rev  android-4.1.2_r2  external/llvm                                           8cd85a728d71bb9756866570b32a65e613d4d671
+rev  android-4.1.2_r2  external/compiler-rt                                    27590d73e7a656b92ed5789172a38468ce7b615e
+rev  android-4.1.2_r2  prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.6   c63c3b97bd3b9d37680f58b63c61027ec414ad79
+rev  android-4.1.2_r2  prebuilts/gcc/linux-x86/x86/i686-linux-android-4.6      907c92922b6f593b6d122e3e02212d589ec70ff8
+rev  android-4.1.2_r2  prebuilts/gcc/linux-x86/x86/i686-android-linux-4.4.3    286506f01f8ca64d6eb0e33bafb475a5cf10ff37
+rev  android-4.1.2_r2  prebuilts/gcc/linux-x86/host/i686-linux-glibc2.7-4.6    9e754ea754eac37d1cd20182cc5d37df85239b0d
+rev  android-4.1.2_r2  prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.7-4.6  02075080d51c371ae87b9898bf84a085e436ee27
+rev  android-4.1.2_r2  prebuilts/gcc/linux-x86/host/i686-linux-glibc2.7-4.4.3  10191e2f442c5409cb70783508658d474612a97e
+rev  android-4.1.2_r2  prebuilts/tools                                         f3caf7e4e568492fa2f93df9d43a8fce747eef91
+rev  android-4.1.2_r2  prebuilts/misc                                          eb007bf7a77026a304709f5ff204ba7364d18b2e
+rev  android-4.1.2_r2  prebuilts/sdk                                           3f205799f673189be2b1d880cd1f2f0cf9097cd3
+rev  android-4.1.2_r2  prebuilts/ndk                                           0e9345c19d21bd3652a706c23d5e46ed2d3c7f36
+rev  android-4.1.2_r2  frameworks/native                                       e0daeb3933e034f037630715e4cd2ecb3880498b
