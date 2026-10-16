@@ -9,7 +9,8 @@
 #   KK_ROOT   prefix of the device tree ("" on a device; a fake root in the tests)
 #   KK_DIR    the unpacked zip: KK_DIR/kktls/zip.conf, KK_DIR/kktls/bin/<abi>/, KK_DIR/system/... (the payload)
 # zip.conf (written by mkzips.sh): kind=openssl|cacerts|java|conscrypt|restore, release=<tag>, abi=armeabi-v7a|x86|any,
-#   android=4.4.2|4.4.4 (java: the exact ro.build.version.release it was built from) or 4.4 (any 4.4.x)
+#   android=4.4.2|4.4.4 (java: the exact ro.build.version.release it was built from), 4.4 (any 4.4.x) or a range
+#   4.1-4.4 (any 4.1.x to 4.4.x: cacerts and restore, which carry no code built against one release)
 #
 # Properties come from KK_ROOT/system/build.prop, never from getprop: in recovery getprop answers for the recovery's
 # own default.prop, not for the system that is being changed.
@@ -58,13 +59,20 @@ kk_util() { # kktls-util from the zip for this device
 KK_FAIL=0
 kk_refuse() { kk_print "REFUSED: $*"; KK_FAIL=1; }
 
-kk_check_version() { # $1 = zip.conf android (4.4 = any 4.4.x)
-  local rel; rel=$(kk_prop ro.build.version.release)
-  if [ "$1" = 4.4 ]; then
-    case $rel in 4.4|4.4.[0-9]*) ;; *) kk_refuse "Android '$rel' is not 4.4.x" ;; esac
-  elif [ "$rel" != "$1" ]; then
-    kk_refuse "Android '$rel' is not $1 (this zip is built from AOSP $1)"
-  fi
+kk_minor() { # ro.build.version.release -> its minor number when it is 4.N or 4.N.x, else nothing
+  case $1 in 4.[0-9]|4.[0-9].*|4.[0-9][0-9]|4.[0-9][0-9].*) ;; *) return 0 ;; esac
+  local m=${1#4.}; echo "${m%%.*}"
+}
+
+kk_check_version() { # $1 = zip.conf android (4.4 = any 4.4.x, 4.A-4.B = any 4.A.x to 4.B.x)
+  local rel lo hi m; rel=$(kk_prop ro.build.version.release)
+  case $1 in
+    4.4) case $rel in 4.4|4.4.[0-9]*) ;; *) kk_refuse "Android '$rel' is not 4.4.x" ;; esac ;;
+    4.[0-9]-4.[0-9])
+      lo=${1%-*} hi=${1#*-} lo=${lo#4.} hi=${hi#4.} m=$(kk_minor "$rel")
+      [ -n "$m" ] && [ "$m" -ge "$lo" ] && [ "$m" -le "$hi" ] || kk_refuse "Android '$rel' is not 4.$lo.x to 4.$hi.x" ;;
+    *) [ "$rel" = "$1" ] || kk_refuse "Android '$rel' is not $1 (this zip is built from AOSP $1)" ;;
+  esac
 }
 
 kk_check_aosp() { # AOSP-like gate: no CM/OEM marker property (ro.build.id is not checked: SDK images say KK)

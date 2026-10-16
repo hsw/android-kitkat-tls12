@@ -63,8 +63,13 @@ working.
   `#define` values match what a vendor's own native code was compiled against.
 - ARMv6 devices (`armeabi`) are refused. MIPS is source only: no binaries.
 - The java zip must match the device's `ro.build.version.release` exactly: `kktls-java-4.4.2-*` for 4.4.2,
-  `kktls-java-4.4.4-*` for 4.4.4. Other 4.4.x releases have no java zip; build from source (below). The OpenSSL and
-  CA store zips install on any 4.4.x that passes the checks.
+  `kktls-java-4.4.4-*` for 4.4.4. Other 4.4.x releases have no java zip; build from source (below). The OpenSSL zip
+  installs on any 4.4.x that passes the checks.
+- The CA store zip (and the restore zip) also install on **Android 4.1 to 4.3** (Jelly Bean, API 16-18), which read
+  the same `/system/etc/security/cacerts/<hash>.0` format; the other zips are 4.4 only. On 4.1/4.2 the installed files
+  are labelled `system_file` only when the kernel takes labels: a kernel without SELinux, or one with SELinux but no
+  policy loaded (AOSP 4.1/4.2 userspace loads none), gets no label and the install goes on. From 4.3 on they are
+  labelled as on 4.4, and a failed label write fails the install.
 - A custom recovery (TWRP, CWM) for the recovery zips, or `adb root` (eng/userdebug builds, emulator images) for the
   adb installer.
 
@@ -75,7 +80,7 @@ Each release has these zips and a `SHA256SUMS` file:
 | Zip | Contents | Checks before anything is written |
 |---|---|---|
 | `kktls-openssl-<abi>-<rel>.zip` | `libssl.so`, `libcrypto.so` | Android 4.4.x; AOSP-like; ABI; every symbol the device's `libssl`/`libcrypto` exports is exported by ours (except 32 internal `libssl` symbols that nothing in AOSP 4.4 imports) |
-| `kktls-cacerts-<rel>.zip` | the CA store | Android 4.4.x |
+| `kktls-cacerts-<rel>.zip` | the CA store | Android 4.1.x to 4.4.x |
 | `kktls-java-<ver>-<abi>-<rel>.zip` | the four jars and `libjavacrypto.so` | release equals `<ver>`; AOSP-like; ABI; the openssl zip is installed; dex check |
 | `kktls-conscrypt-<abi>-<rel>.zip` | layer D | AOSP-like; ABI; the java zip of the same release is installed |
 | `kktls-restore-<rel>.zip` | none | a backup exists; every backup has an intact copy and was taken on this ROM |
@@ -136,6 +141,7 @@ tools/install-adb.sh [-s SERIAL] --restore kktls-restore-v1.zip
 | Android SDK system image 4.4.2 x86 (eng, SELinux disabled) | emulator, `install-adb.sh` | same |
 | AOSP `android-4.4.4_r2` `aosp_arm-eng` build | emulator, `install-adb.sh` | same, with the 4.4.4 java zip |
 | Refusals on the 4.4.2 ARM image: java before openssl, conscrypt before java, a CM marker in `build.prop`, an odexed apk without `classes.dex` | emulator | refused, device unchanged |
+| Android SDK system images 4.1.2, 4.2.2, 4.3.1 ARM (and 4.4.2 again), CA store and restore zips | emulator, `install-adb.sh` | install, reboot and restore; all 121 roots parse and their self-signatures verify on each release's providers (RSA-4096, P-384, SHA-384 included); real server chains to 7 roots the stock stores lack (ISRG Root X1 and X2, GTS Root R4, DigiCert Global Root G2, USERTrust ECC, Sectigo R46, Amazon Root CA 1) are trusted after the install and not before; the stock roots that are not in the new set are no longer trusted; restore gives the stock directory back byte for byte |
 | The recovery path (`update-binary`), 4.4.4 x86 java zip | host tests against fake `/system` trees, plus a real SDK 4.4.2 `/system` | pass |
 
 **Not tested yet:** a real TWRP or CWM recovery (only host tests run `update-binary`); 4.4.4 on x86 in an emulator;
