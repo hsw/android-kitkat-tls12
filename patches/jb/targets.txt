@@ -65,6 +65,7 @@ project 4.1  abi/cpp
 project 4.1  system/core
 project 4.1  external/openssl
 project 4.1  external/zlib
+project 4.1  frameworks/native
 project 4.1  external/stlport
 project 4.1  external/clang
 project 4.1  external/llvm
@@ -138,3 +139,4 @@ rev  android-4.1.2_r2  prebuilts/tools                                         f
 rev  android-4.1.2_r2  prebuilts/misc                                          eb007bf7a77026a304709f5ff204ba7364d18b2e
 rev  android-4.1.2_r2  prebuilts/sdk                                           3f205799f673189be2b1d880cd1f2f0cf9097cd3
 rev  android-4.1.2_r2  prebuilts/ndk                                           0e9345c19d21bd3652a706c23d5e46ed2d3c7f36
+rev  android-4.1.2_r2  frameworks/native                                       e0daeb3933e034f037630715e4cd2ecb3880498b
