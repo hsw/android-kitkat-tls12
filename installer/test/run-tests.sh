@@ -382,14 +382,18 @@ installs "restore after a broken first rollback" "$R0" "$R"
 check "broken first rollback: /system identical after restore" [ "$ORIG" = "$(snap "$R0" system)" ]
 
 # free space: a /system or /data too small refuses before anything is written; a full /sdcard only loses the second copy
+# full_pre DIR: KK_PRE that mounts a tmpfs over $R0/DIR, copies DIR back and fills it up to 8 KiB free. The tmpfs is
+# filled rather than sized from `du`: du of the copy depends on the host filesystem (ext4 counts 4 KiB per directory,
+# tmpfs none), so a size derived from it left the tmpfs with room to spare when TMPDIR is not a tmpfs.
+full_pre() {
+  echo "mount -t tmpfs -o size=$(( $(du -sk "$R0/$1" | cut -f1) * 2 + 1024 ))k tmpfs '$R0/$1' && cp -a '$T/cp/$1/.' '$R0/$1/'" \
+    "&& f=\$(df -Pk '$R0/$1' | awk 'NR == 2 { print \$4 }') && dd if=/dev/zero of='$R0/$1/.kktls-test-fill' bs=1024" \
+    "count=\$((f - 8)) 2> /dev/null && [ \"\$(df -Pk '$R0/$1' | awk 'NR == 2 { print \$4 }')\" -le 8 ]"
+}
 mkroot "$R0"; rm -rf "$T/cp"; cp -a "$R0" "$T/cp"
-kb=$(du -sk "$R0/system" | cut -f1)
-KK_PRE="mount -t tmpfs -o size=$((kb + 8))k tmpfs '$R0/system' && cp -a '$T/cp/system/.' '$R0/system/'" \
-  refused "openssl with a full /system" "$R0" "$O"
+KK_PRE=$(full_pre system) refused "openssl with a full /system" "$R0" "$O"
 check "full /system: the refusal says so" grep -q 'not enough space on /system' "$T/out"
-kb=$(du -sk "$R0/data" | cut -f1)
-KK_PRE="mount -t tmpfs -o size=$((kb + 8))k tmpfs '$R0/data' && cp -a '$T/cp/data/.' '$R0/data/'" \
-  refused "openssl with a full /data" "$R0" "$O"
+KK_PRE=$(full_pre data) refused "openssl with a full /data" "$R0" "$O"
 check "full /data: the refusal says so" grep -q 'not enough space on /data' "$T/out"
 KK_PRE="mount -t tmpfs -o size=4k tmpfs '$R0/sdcard'" installs "openssl with a full /sdcard" "$R0" "$O"
 check "full /sdcard: warned, no second copy" grep -q 'not enough space for the second backup copy' "$T/out"
