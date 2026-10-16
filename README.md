@@ -247,7 +247,9 @@ CVE reproducers on a Jelly Bean recipe.
 
 CI: `.github/workflows/` runs the CVE harness (`cve-harness.yml`), the host tests and this build with the zips
 (`build.yml`, in the image of `docker/Dockerfile.build`) on GitHub-hosted runners; a tag `vN` builds the zips again
-and attaches them to the release of that tag (`release.yml`).
+and attaches them to the release of that tag (`release.yml`). Branch and pull request builds keep the stock libraries
+(checked against their manifest, `--reuse-stock`) and the ccache of each tree in the Actions cache; the release build
+uses neither.
 
 ### 4. Tests
 

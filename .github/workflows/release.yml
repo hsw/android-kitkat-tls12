@@ -14,6 +14,7 @@ jobs:
     uses: ./.github/workflows/build.yml
     with:
       release: ${{ github.ref_name }}
+      cold: true   # no caches: the zips come from a build of nothing but the tag, as a local rebuild
     permissions:
       contents: read
       packages: write
