@@ -19,7 +19,8 @@
 #            WORK/<tag>/stock-openssl.manifest records the inputs (target rows, project revs, this script, the JDK
 #            patch) and the sha256 of every file; with --reuse-stock a stock-openssl/ that matches its manifest and this
 #            run's inputs is kept and the makes are skipped (else it is removed and built)
-#   apply    git am patches/jb/<base>/external_openssl/*.patch in external/openssl
+#   apply    git am patches/jb/<base>/external_openssl/*.patch in external/openssl and, when the base has one, the
+#            libcore series patches/jb/<base>/libcore/*.patch in libcore (both projects must be pristine)
 #   build    per ABI: libcrypto libssl openssl (the command-line tool is a test client, not a release file) and the
 #            base's java modules; every make runs with WITH_DEXPREOPT=false (jars keep classes.dex, no .odex)
 #   collect  lib/libssl.so lib/libcrypto.so and the java files into WORK/out/kktls-jb/<base>/<abi>/ (jars rewritten by
@@ -31,7 +32,10 @@
 #            list plus patches/jb/<base>/openssl-abi-allow.txt when present), and kktls-symcheck (built for this host
 #            with $CC, default cc) with the allow/ lists, as the installer runs it on a device; for a java base every jar
 #            carries classes.dex, and every java lib/*.so keeps the stock-tree build's dynamic exports (none removed)
-#            and its NEEDED list (identical); summary in WORK/out/kktls-jb/checks.tsv
+#            and its NEEDED list (identical); for a base with a libcore series, once per base on the patched tree:
+#            check_tls_lists.py --base <base> (groups openssl and libcore) and check_jni_signatures.py (Java natives vs
+#            the JNI table and C functions, with patches/jb/<base>/jni-signature-allow.txt); summary in
+#            WORK/out/kktls-jb/checks.tsv
 #
 # Options:
 #   --work DIR        scratch root (default ./kktls-jb-work)
@@ -120,6 +124,7 @@ java_modules() { java_rows "$1" | awk '{ print $1 }'; }
 java_files() { java_rows "$1" | awk '{ print $2 }'; }
 java_libs() { java_rows "$1" | awk '$2 ~ /^lib\/[^\/]+\.so$/ { print $2 }'; }  # base -> the java lib/*.so files
 gate_of() { kw gate | awk -v b="$1" '$1 == b { $1 = ""; sub(/^ +/, ""); print }'; }
+libcore_series() { compgen -G "$INPUTS/patches/jb/$1/libcore/*.patch" > /dev/null; }  # base has a libcore series
 
 BASES=${SEL_BASES:-$(kw base | awk '{print $1}')}
 for b in $BASES; do
@@ -138,6 +143,8 @@ for b in $BASES; do
   if [ -n "$(java_rows "$b")" ]; then
     case " $(projects_of "$b" | tr '\n' ' ') " in *" libcore "*) ;; *) die "base $b has java lines but no libcore project" 2 ;; esac
     [ -n "$(gate_of "$b")" ] || die "base $b has java lines but no gate line" 2
+    ! libcore_series "$b" || [ -f "$INPUTS/patches/jb/$b/jni-signature-allow.txt" ] ||
+      die "base $b has a libcore series but no patches/jb/$b/jni-signature-allow.txt" 2
     for v in $(gate_of "$b"); do
       case $v in "$b"|"$b".[0-9]|"$b".[0-9][0-9]) ;; *) die "gate $b: $v is not an Android $b release" 2 ;; esac
     done
@@ -151,6 +158,7 @@ if [ $DRY = 1 ]; then
     rows_of "$b" | sed 's/^/  target /'
     echo "  files: $FILES $(java_files "$b" | tr '\n' ' ')"
     [ -z "$(java_rows "$b")" ] || echo "  java modules: $(java_modules "$b" | tr '\n' ' ')gate: $(gate_of "$b")"
+    ! libcore_series "$b" || echo "  libcore series: $(ls "$INPUTS/patches/jb/$b/libcore/"*.patch | wc -l) patches"
     echo "  projects ($(projects_of "$b" | wc -l)): $(projects_of "$b" | tr '\n' ' ')"
   done
   exit 0
@@ -299,8 +307,17 @@ do_apply() {
     g -c user.name=kktls -c user.email=kktls@localhost am --keep-cr \$P/patches/jb/$b/external_openssl/*.patch
     echo \"external/openssl HEAD \$(g rev-parse --short HEAD), \$(g log --oneline refs/remotes/m/$t..HEAD | wc -l) commits\"" \
     > "$d/logs/apply.log" 2>&1 || { tail -n 20 "$d/logs/apply.log" >&2; return 1; }
+  if libcore_series "$b"; then
+    run_sync "$d" "g() { git -C libcore -c core.hooksPath=/dev/null \"\$@\"; }
+      [ -z \"\$(g status --porcelain --untracked-files=normal)\" ] || { echo 'libcore has local changes'; exit 3; }
+      [ \"\$(g rev-parse HEAD)\" = \"\$(g rev-parse -q --verify refs/remotes/m/$t^{commit})\" ] ||
+        { echo 'libcore is not at the synced $t revision (series applied before?)'; exit 3; }
+      g -c user.name=kktls -c user.email=kktls@localhost am --keep-cr \$P/patches/jb/$b/libcore/*.patch
+      echo \"libcore HEAD \$(g rev-parse --short HEAD), \$(g log --oneline refs/remotes/m/$t..HEAD | wc -l) commits\"" \
+      >> "$d/logs/apply.log" 2>&1 || { tail -n 20 "$d/logs/apply.log" >&2; return 1; }
+  fi
   mv "$d/series-head.txt.new" "$d/series-head.txt"
-  tail -n 1 "$d/logs/apply.log"
+  grep -E '^(external/openssl|libcore) HEAD ' "$d/logs/apply.log"
 }
 
 do_build() {
@@ -334,6 +351,7 @@ do_collect() {
       done
       if [ -n "$(java_rows "$b")" ]; then
         echo "base libcore $(git -C "$d/src/libcore" rev-parse -q --verify "refs/remotes/m/$t^{commit}")"
+        ! libcore_series "$b" || echo "libcore series $(ls "$INPUTS/patches/jb/$b/libcore/"*.patch | wc -l) patches"
         java_rows "$b" | sed 's/^/java /'
         echo "make WITH_DEXPREOPT=false"
         echo "gate $(gate_of "$b")"
@@ -424,6 +442,20 @@ do_check() {
       echo "  $abi java dex/exports/NEEDED: $r ($(grep -c '^FAIL\|  FAIL' "$l/java-$abi.log") failures)"
     fi
   done < <(rows_of "$b")
+  if libcore_series "$b"; then
+    # the source checks of the libcore series, once per base on the patched tree (groups openssl and libcore; the
+    # libcore.net.http group joins once the series carries the HttpsURLConnection fallback fix)
+    local l=$d/logs r=PASS
+    $PY "$INPUTS/tools/check_tls_lists.py" "$d/src" --base "$b" --group openssl --group libcore \
+      > "$l/tls-lists.log" 2>&1 || { r=FAIL; rc=1; }
+    printf '%s\t%s\tcheck-tls-lists\t%s\t%s\n' "$b" all "$r" "$l/tls-lists.log" >> "$sum"
+    echo "  check_tls_lists.py --base $b: $r ($(tail -n1 "$l/tls-lists.log"))"
+    r=PASS
+    $PY "$INPUTS/tools/check_jni_signatures.py" "$d/src/libcore" --allow "$INPUTS/patches/jb/$b/jni-signature-allow.txt" \
+      > "$l/jni-signatures.log" 2>&1 || { r=FAIL; rc=1; }
+    printf '%s\t%s\tjni-signatures\t%s\t%s\n' "$b" all "$r" "$l/jni-signatures.log" >> "$sum"
+    echo "  check_jni_signatures.py: $r ($(tail -n1 "$l/jni-signatures.log" | cut -c1-120))"
+  fi
   return $rc
 }
 
