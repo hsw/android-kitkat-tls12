@@ -1,6 +1,6 @@
 # Changelog
 
-## v2 (draft, not released)
+## v2
 
 Android 4.1 to 4.3 (Jelly Bean, API 16-18): native OpenSSL and the CA store. The Java TLS layer and TLS 1.3 stay
 4.4 only.
