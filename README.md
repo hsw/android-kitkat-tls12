@@ -67,8 +67,9 @@ working.
   installs on any 4.4.x that passes the checks.
 - The CA store zip (and the restore zip) also install on **Android 4.1 to 4.3** (Jelly Bean, API 16-18), which read
   the same `/system/etc/security/cacerts/<hash>.0` format; the other zips are 4.4 only. On 4.1/4.2 the installed files
-  get no SELinux label when the kernel has no SELinux (AOSP 4.1/4.2 kernels); from 4.3 on they are labelled
-  `system_file` as on 4.4.
+  are labelled `system_file` only when the kernel takes labels: a kernel without SELinux, or one with SELinux but no
+  policy loaded (AOSP 4.1/4.2 userspace loads none), gets no label and the install goes on. From 4.3 on they are
+  labelled as on 4.4, and a failed label write fails the install.
 - A custom recovery (TWRP, CWM) for the recovery zips, or `adb root` (eng/userdebug builds, emulator images) for the
   adb installer.
 

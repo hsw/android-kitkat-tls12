@@ -28,7 +28,7 @@
 
 KK_BACKUP_NAME=kktls-backup
 KK_SECOND_SKIP=
-KK_LABEL=  # kk_selinux: 1 label, 0 no SELinux
+KK_LABEL=  # set by kk_selinux
 
 kk_backup_bases() { # every backup location that exists, primary first
   local b
@@ -95,26 +95,34 @@ kk_backup_verify() { # backup dir: the manifest is there and every F file matche
   done < "$dir/manifest"
 }
 
-kk_selinux() { # 0 when installed files must be labelled (the answer is cached in KK_LABEL)
-  # Android 4.3 and later: always (AOSP ships SELinux from 4.3 on; a failed label write fails the install, as on 4.4).
-  # 4.1/4.2: only when the kernel has SELinux (selinuxfs registered or mounted), as on some vendor 4.2 firmwares; an
-  # AOSP 4.1/4.2 kernel has none, there is no label to write and the helper's xattr write could fail with ENOTSUP.
-  if [ -z "${KK_LABEL:-}" ]; then
-    KK_LABEL=1
-    case $(kk_prop ro.build.version.release) in
-      4.[0-2]|4.[0-2].*)
-        grep -qw selinuxfs "$KK_ROOT/proc/filesystems" 2> /dev/null || [ -d "$KK_ROOT/sys/fs/selinux" ] ||
-          KK_LABEL=0 ;;
-    esac
-    [ $KK_LABEL = 1 ] || kk_print "no SELinux in this kernel (Android $(kk_prop ro.build.version.release)): files are not labelled"
-  fi
-  [ $KK_LABEL = 1 ]
+kk_selinux() { # sets KK_LABEL once: 1 label (a failure fails the install), 2 label if the kernel lets us, 0 no SELinux
+  # Android 4.3 and later: 1 (AOSP ships SELinux from 4.3 on; as on 4.4).
+  # 4.1/4.2: 0 when the kernel has no SELinux (no selinuxfs in /proc/filesystems, no /sys/fs/selinux): the AOSP case,
+  # nothing to label. With SELinux in the kernel, 2: an AOSP 4.1/4.2 userspace loads no policy, so the kernel refuses
+  # the label write (EOPNOTSUPP) and nothing checks labels; a firmware that does load one gets its files labelled.
+  [ -z "${KK_LABEL:-}" ] || return 0
+  KK_LABEL=1
+  case $(kk_prop ro.build.version.release) in
+    4.[0-2]|4.[0-2].*)
+      if grep -qw selinuxfs "$KK_ROOT/proc/filesystems" 2> /dev/null || [ -d "$KK_ROOT/sys/fs/selinux" ]; then
+        KK_LABEL=2
+      else
+        KK_LABEL=0
+        kk_print "no SELinux in this kernel (Android $(kk_prop ro.build.version.release)): files are not labelled"
+      fi ;;
+  esac
 }
 
-kk_setcon() { # label paths system_file: chcon when it works, else the zip's helper; nothing without SELinux
-  kk_selinux || return 0
+kk_setcon() { # label paths system_file: chcon when it works, else the zip's helper (see kk_selinux)
+  kk_selinux
+  [ "$KK_LABEL" != 0 ] || return 0
   if command -v chcon > /dev/null 2>&1 && chcon "$KK_CTX" "$@" 2> /dev/null; then return 0; fi
-  kk_util setcon "$KK_CTX" "$@"
+  [ "$KK_LABEL" = 2 ] || { kk_util setcon "$KK_CTX" "$@"; return; }
+  kk_util setcon "$KK_CTX" "$@" 2> /dev/null && return 0
+  # once per run (kk_setcon may run in a subshell, so the note is a file)
+  [ -e "$KK_DIR/kktls/label-skipped" ] || { : > "$KK_DIR/kktls/label-skipped"
+    kk_print "SELinux is in the kernel but takes no labels (no policy loaded, Android $(kk_prop ro.build.version.release)): files are not labelled"; }
+  return 0
 }
 
 kk_place() { # src dst: copy one payload file into /system as root:root 0644 system_file
@@ -393,7 +401,7 @@ kk_restore() { # after kk_precheck (which wrote KK_DIR/kktls/restore-list, every
 
 kk_main() {
   kk_precheck || { kk_print "nothing was changed"; return 1; }
-  kk_selinux || :  # decided once, in this shell (kk_setcon may run in subshells)
+  kk_selinux  # decided once, in this shell (kk_setcon may run in subshells)
   case $(kk_conf kind) in
     restore) kk_restore ;;
     *) kk_install ;;

@@ -335,6 +335,17 @@ mkroot "$R0" ro.build.version.release=4.4.2 selinuxfs=1
 : > "$LOG"
 installs "cacerts on 4.4.2 (selinuxfs listed)" "$R0" "$C"
 check "cacerts 4.4.2: labelled" [ "$(grep -c '\.kktls-new$' "$LOG")" = 4 ]
+# 4.2.2 kernel with SELinux but no policy loaded (the SDK 4.1/4.2 emulator kernels): every label write fails with
+# EOPNOTSUPP; the install and the restore go on without labels and say so once
+mkroot "$R0" ro.build.version.release=4.2.2 selinuxfs=1; ORIG=$(snap "$R0" system)
+rm -f "$LOG.n"
+installs "cacerts on 4.2.2, SELinux without a policy (label writes fail)" "$R0" "$C" KKTLS_TEST_FAIL_AFTER=0
+check "cacerts 4.2.2 no policy: one 'takes no labels' line" [ "$(grep -c 'takes no labels' "$T/out")" = 1 ]
+check "cacerts 4.2.2 no policy: directory replaced" sh -c "[ \"\$(ls '$R0/system/etc/security/cacerts' | tr '\n' ' ')\" = '00000001.0 00000002.0 keepme00.0 ' ]"
+rm -f "$LOG.n"
+installs "restore on 4.2.2, SELinux without a policy" "$R0" "$R" KKTLS_TEST_FAIL_AFTER=0
+check "restore 4.2.2 no policy: /system identical" [ "$ORIG" = "$(snap "$R0" system)" ]
+rm -f "$LOG.n"
 mkroot "$R0" ro.build.version.release=4.1.2
 installs "cacerts on 4.1.2: an injected label failure is never reached" "$R0" "$C" KKTLS_TEST_FAIL=keepme00.0.kktls-new
 mkroot "$R0" ro.build.version.release=4.3; ORIG=$(snap "$R0" system)
@@ -555,11 +566,13 @@ echo "$c $*" >> "$KKTLS_ADB_LOG"
 [ ! -e "$R/gone" ] || { echo "error: device 'fake' not found" >&2; exit 1; }  # the device was unplugged
 case $c in
   root|remount|wait-for-device|reboot) exit 0 ;;
-  push) case $2 in */zip) [ ! -e "$R/pushfail" ] || exit 1 ;; esac
+  push) case $2 in */zip[0-9]*) [ ! -e "$R/pushfail" ] || exit 1 ;; esac
         if [ -d "$R$2" ]; then cp -r "$1" "$R$2/"; else cp -r "$1" "$R$2"; fi ;;
   shell) case "$*" in stop|start) exit 0 ;; *kk_main*) [ ! -e "$R/vanish" ] || { : > "$R/gone"; exit 1; } ;; esac
+         cmd=$*  # /jbrm: rm refuses -f like the Android 4.1 toolbox (a function: busybox sh prefers its own applets)
+         [ ! -e "$R/jbrm" ] || cmd='rm() { case $1 in -*f*) echo "rm: invalid option -- f" >&2; return 1 ;; esac; command rm "$@"; }; '$cmd
          exec unshare -rm sh -c 'mount --bind /dev/null "$1/dev/null" && exec chroot "$1" /bin/busybox env -i \
-           PATH=/bin:/system/bin /bin/sh -c "$2"' sh "$R" "$*" ;;
+           PATH=/bin:/system/bin /bin/sh -c "$2"' sh "$R" "$cmd" ;;
   *) exit 1 ;;
 esac
 EOF
@@ -606,6 +619,22 @@ EOF
   check "adb: /system identical after restore" [ "$ORIG" = "$(snap "$RA" system)" ]
   check "adb: reboot by default" grep -qx 'reboot ' "$ALOG"
 
+  # Android 4.1: toolbox rm has no -f (rm -rf fails); a stale work dir from an interrupted run is on the device. Two
+  # zips in one run must each run their own scripts (a push into a stale dir nests and would run the old ones).
+  jbrm() { : > "$1/jbrm"; }  # stub adb: rm of the device shell refuses -f like the 4.1 toolbox
+  mkdev "$RA" ro.build.version.release=4.1.2; jbrm "$RA"; ORIG=$(snap "$RA" system)
+  mkdir -p "$RA/data/local/tmp/kktls-adb/zip1/kktls" "$RA/data/local/tmp/kktls-adb/zip/kktls"
+  echo 'kk_main() { echo STALE; }' > "$RA/data/local/tmp/kktls-adb/zip1/kktls/install.sh"
+  aexit "adb 4.1: cacerts over a stale work dir" 0 --no-reboot "$ZA/kktls-cacerts-v9.zip"
+  check "adb 4.1: the zip's own scripts ran" sh -c "grep -q 'installed: 3 files' '$T/aout' && ! grep -q STALE '$T/aout'"
+  check "adb 4.1: not labelled (no SELinux)" sh -c "grep -q 'files are not labelled' '$T/aout' && [ ! -s '$RA/chcon.log' ]"
+  check "adb 4.1: work dir removed" [ ! -e "$RA/data/local/tmp/kktls-adb" ]
+  aexit "adb 4.1: restore" 0 --no-reboot --restore "$ZA/kktls-restore-v9.zip"
+  check "adb 4.1: /system identical after restore" [ "$ORIG" = "$(snap "$RA" system)" ]
+  mkdev "$RA"; jbrm "$RA"
+  aexit "adb: two zips in one run with a toolbox rm without -f" 0 --no-reboot "$ZA/kktls-openssl-x86-v9.zip" "$ZA/kktls-cacerts-v9.zip"
+  check "adb: both markers" sh -c "[ -f '$RA/system/etc/kktls/openssl.version' ] && [ -f '$RA/system/etc/kktls/cacerts.version' ]"
+
   # SELinux enforcing: setenforce 0 for the run, 1 after it (also after a refusal); a refused setenforce stops the run
   selinux() { # root: getenforce/setenforce stand-ins; /enforce holds the mode, /setenforce.fail refuses setenforce
     local r=$1
@@ -634,7 +663,7 @@ EOF
   mkdev "$RA"; selinux "$RA"; : > "$RA/vanish"
   aexit "adb: device gone during the install" 1 --no-reboot "$ZA/kktls-openssl-x86-v9.zip"
   check "adb: device gone: trap warns and ends cleanly" sh -c "grep -q 'could not set SELinux enforcing again' '$T/aout' && ! grep -Eq 'unbound|command not found|syntax error' '$T/aout'"
-  check "adb: device gone: one cleanup only" [ "$(grep -c '^shell rm -rf /data/local/tmp/kktls-adb$' "$ALOG")" = 1 ]
+  check "adb: device gone: one cleanup only" [ "$(grep -c '^shell rm -r /data/local/tmp/kktls-adb$' "$ALOG")" = 1 ]
 
   mkdev "$RA"; before=$(snap "$RA")
   aexit "adb: conscrypt without java refused" 1 --no-reboot "$ZA/kktls-conscrypt-x86-v9.zip"

@@ -59,7 +59,7 @@ DEVDIR=0 SETENF=0 FINISHED=0
 finish() {
   [ "$FINISHED" = 0 ] || return 0
   FINISHED=1
-  if [ "$DEVDIR" = 1 ]; then "${A[@]}" shell "rm -rf $DEV" > /dev/null 2>&1 || true; fi
+  if [ "$DEVDIR" = 1 ]; then "${A[@]}" shell "rm -r $DEV" > /dev/null 2>&1 || true; fi
   if [ "$SETENF" = 1 ]; then
     if [ "$("${A[@]}" shell 'setenforce 1; getenforce' 2> /dev/null | tr -d '\r' || true)" = Enforcing ]; then
       echo "install-adb.sh: SELinux enforcing again"
@@ -131,7 +131,8 @@ if [ "$(dsh getenforce 2> /dev/null)" = Enforcing ]; then
   SETENF=1; echo "install-adb.sh: SELinux permissive for the run"
 fi
 DEVDIR=1
-dsh "rm -rf $DEV && mkdir -p $DEV/bb" > /dev/null
+# toolbox rm of Android 4.1 has no -f: rm -r; the run fails when an old work dir cannot be removed
+dsh "rm -r $DEV 2> /dev/null; mkdir $DEV && mkdir $DEV/bb && echo DIROK" | grep -qx DIROK || die "cannot create a fresh $DEV"
 "${A[@]}" push "$BUSYBOX" "$DEV/bb/busybox" > /dev/null 2>&1 || die "cannot push busybox"
 dsh "chmod 0755 $DEV/bb/busybox && $DEV/bb/busybox --install -s $DEV/bb && echo BBOK" | grep -qx BBOK ||
   die "the busybox does not run on the device ($abi)"
@@ -142,10 +143,10 @@ i=0 done_n=0
 for z in "${ZIPS[@]}"; do
   i=$((i + 1))
   echo "== $(basename "$z")"
-  dsh "rm -rf $DEV/zip" > /dev/null
-  "${A[@]}" push "$T/z$i" "$DEV/zip" > /dev/null 2>&1 || die "cannot push $z"
+  # a new directory per zip: a push into an existing directory would nest (zip<i>/z<i>) and run the old scripts
+  "${A[@]}" push "$T/z$i" "$DEV/zip$i" > /dev/null 2>&1 || die "cannot push $z"
   # the zip's scripts under busybox sh; busybox tools first on PATH, toolbox (chcon) after them
-  dsh "cd / && export PATH=$DEV/bb:/system/bin:/system/xbin KK_ROOT= KK_DIR=$DEV/zip KK_OUTFD= && \
+  dsh "cd / && export PATH=$DEV/bb:/system/bin:/system/xbin KK_ROOT= KK_DIR=$DEV/zip$i KK_OUTFD= && \
 $DEV/bb/sh -c 'chmod 0755 \"\$KK_DIR\"/kktls/bin/*/* 2> /dev/null; . \"\$KK_DIR/kktls/checks.sh\" && \
 . \"\$KK_DIR/kktls/install.sh\" && kk_main' 2>&1; echo KKTLS_RC=\$?" > "$T/out" || true
   grep -v '^KKTLS_RC=' "$T/out" || true
