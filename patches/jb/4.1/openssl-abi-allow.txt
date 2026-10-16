@@ -1,0 +1,6 @@
+# Android 4.1 base only (appended to tools/openssl-abi-allow.txt by tools/kktls-jb-openssl-build.sh check).
+# Stock 4.1 built libcrypto with -DZLIB, which also offers DEFLATE TLS compression (CRIME); stock 4.2 dropped -DZLIB
+# (AOSP bug 7079965) and with it BIO_f_zlib. This series uses the 4.3 build files, so BIO_f_zlib goes the same way.
+# No system binary or library of the API 16 SDK images imports it (users check, armeabi-v7a and x86), and none of them
+# relies on libcrypto pulling in libz.so (no zlib importer without its own NEEDED libz.so).
+symbol	BIO_f_zlib	stock 4.1 only (-DZLIB, TLS compression); removed as in stock 4.2 (CRIME, AOSP bug 7079965); no API 16 user imports it

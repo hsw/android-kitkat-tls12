@@ -3,7 +3,7 @@
 # Tests of the kktls recovery zips: mkzips.sh on a synthetic release output, then update-binary from each zip run by
 # busybox sh against fake device roots (KKTLS_ROOT), inside `unshare -r` so chown 0:0 works without privileges.
 #
-#   run-tests.sh [--real IN CACERTS CONSCRYPT_NOTICE STOCK_LIB_DIR [--sdk-system DIR]]
+#   run-tests.sh [--real IN CACERTS CONSCRYPT_NOTICE STOCK_LIB_DIR [--sdk-system DIR] [--jb JB JB_STOCK]]
 #
 # Synthetic input: ELF fixtures for the libraries (symcheck/mkfixtures.py), zip jars with or without classes.dex, and
 # helper wrappers: kktls-symcheck and kktls-util built for this host, with `setcon` replaced by a logger (a label write
@@ -18,6 +18,9 @@
 # priv-app, etc), e.g. extracted from the SDK 4.4.2 ARM image with debugfs rdump; its ARM zips are installed on a copy
 # (openssl, cacerts, java-<its release>, conscrypt) and restored: the AOSP gate, the dex check and the symbol check
 # against a real AOSP system. The ARM helpers run through qemu-user binfmt_misc.
+# --jb JB JB_STOCK (with --real): JB is the Jelly Bean openssl output (mkzips.sh --jb), JB_STOCK/<base>/x86/ the stock
+# AOSP x86 libssl/libcrypto of each base: per base its x86 openssl zip installs and restores on a fake <base>.x root with
+# those libraries (the real allow lists against the real stock exports), and the 4.4 zip is refused there.
 # Exit 0 all pass, 1 a failure, 2 usage or a missing tool.
 set -euo pipefail
 export LC_ALL=C
@@ -25,14 +28,16 @@ export LC_ALL=C
 HERE=$(cd "$(dirname "$0")" && pwd)
 REL_DIR=$(cd "$HERE/../.." && pwd)
 SYM=$REL_DIR/symcheck
-REAL=() SDK=''
+REAL=() SDK='' RJB=() RJB_STOCK=''
 while [ $# -gt 0 ]; do
   case $1 in
     --real) [ $# -ge 5 ] || { echo "run-tests.sh: --real needs IN CACERTS CONSCRYPT_NOTICE STOCK_LIB_DIR" >&2; exit 2; }
             REAL=("$2" "$3" "$4" "$5"); shift 5 ;;
     --sdk-system) [ $# -ge 2 ] && [ -f "$2/build.prop" ] || { echo "run-tests.sh: --sdk-system needs a /system copy" >&2; exit 2; }
                   SDK=$(cd "$2" && pwd); shift 2 ;;
-    -h|--help) sed -n '3,20p' "$0"; exit 0 ;;
+    --jb) [ $# -ge 3 ] && [ -d "$2" ] && [ -d "$3" ] || { echo "run-tests.sh: --jb needs JB JB_STOCK directories" >&2; exit 2; }
+          RJB=("$2"); RJB_STOCK=$3; shift 3 ;;
+    -h|--help) sed -n '3,23p' "$0"; exit 0 ;;
     *) echo "run-tests.sh: unknown argument $1" >&2; exit 2 ;;
   esac
 done
@@ -91,6 +96,7 @@ libs = {
     "dev-subset.so": m.elf(m.without("kk_fb"), machine=m.EM_386),
     "dev-ssl2.so": m.elf(m.FULL + [extra("ssl2_accept")], machine=m.EM_386),   # allow-listed internal export
     "dev-extra.so": m.elf(m.FULL + [extra("kk_oem_only")], machine=m.EM_386),  # an export ours lacks
+    "dev-zlib.so": m.elf(m.FULL + [extra("BIO_f_zlib")], machine=m.EM_386),    # libcrypto export a JB allow list names
 }
 for n, b in libs.items():
     open(os.path.join(out, n), "wb").write(b)
@@ -128,6 +134,22 @@ mkin() {
     for n in openssl.NOTICE libcore.NOTICE okhttp.LICENSE bionic-libc.NOTICE; do echo "fake $n of $t" > "$IN/$t/notice/$n"; done
     (cd "$IN/$t/notice" && sha256sum ./* | sed 's# \./# #' > SHA256SUMS)
   done
+  local b
+  for b in 4.3 4.2 4.1; do
+    for a in armeabi-v7a x86; do
+      d=$T/jb/$b/$a
+      mkdir -p "$d/lib"
+      cp "$T/fx/ours.so" "$d/lib/libssl.so"; cp "$T/fx/ours.so" "$d/lib/libcrypto.so"
+      printf 'base %s\ntag android-%s_r9\nabi %s\n' "$b" "$b" "$a" > "$d/BUILD-INFO.txt"
+      (cd "$d" && find . -type f ! -name SHA256SUMS ! -name BUILD-INFO.txt | sed 's#^\./##' | sort | xargs sha256sum > SHA256SUMS)
+    done
+    mkdir -p "$T/jb/$b/notice" "$T/jb/$b/allow"
+    echo "fake openssl.NOTICE of android-${b}_r9" > "$T/jb/$b/notice/openssl.NOTICE"
+    (cd "$T/jb/$b/notice" && sha256sum openssl.NOTICE > SHA256SUMS)
+    cp "$SYM/allow-missing-libssl.txt" "$T/jb/$b/allow/"
+    [ "$b" != 4.1 ] || echo BIO_f_zlib > "$T/jb/$b/allow/allow-missing-libcrypto.txt"
+    (cd "$T/jb/$b/allow" && sha256sum allow-missing-*.txt > SHA256SUMS)
+  done
   mkdir -p "$T/cacerts"
   for c in 00000001.0 00000002.0 keepme00.0; do echo "new cert $c" > "$T/cacerts/$c"; done
   echo "fake conscrypt notice" > "$T/cnotice"
@@ -135,10 +157,13 @@ mkin() {
 mkin
 
 MK=$REL_DIR/mkzips.sh; [ -f "$MK" ] || MK=$REL_DIR/tools/mkzips.sh   # published layout: tools/
-"$MK" --in "$IN" --release v9 --cacerts "$T/cacerts" --conscrypt-notice "$T/cnotice" --out "$T/z1" > "$T/mk1.log"
-"$MK" --in "$IN" --release v9 --cacerts "$T/cacerts" --conscrypt-notice "$T/cnotice" --out "$T/z2" > "$T/mk2.log"
+"$MK" --in "$IN" --release v9 --cacerts "$T/cacerts" --conscrypt-notice "$T/cnotice" --out "$T/z1" --jb "$T/jb" > "$T/mk1.log"
+"$MK" --in "$IN" --release v9 --cacerts "$T/cacerts" --conscrypt-notice "$T/cnotice" --out "$T/z2" --jb "$T/jb" > "$T/mk2.log"
+"$MK" --in "$IN" --release v9 --cacerts "$T/cacerts" --conscrypt-notice "$T/cnotice" --out "$T/z44" > "$T/mk44.log"
 Z=$T/z1
-check "mkzips writes 10 zips" [ "$(wc -l < "$Z/SHA256SUMS")" = 10 ]
+check "mkzips writes 16 zips (10 + 3 JB bases x 2 ABIs)" [ "$(wc -l < "$Z/SHA256SUMS")" = 16 ]
+check "mkzips without --jb writes the 10 4.4 zips" [ "$(wc -l < "$T/z44/SHA256SUMS")" = 10 ]
+check "the 4.4 zips do not depend on --jb" sh -c "grep -v -- '-4\.[123]-' '$Z/SHA256SUMS' | cmp -s - '$T/z44/SHA256SUMS'"
 check "zips are byte-identical across two runs" cmp -s "$T/z1/SHA256SUMS" "$T/z2/SHA256SUMS"
 for z in "$Z"/kktls-*.zip; do
   l=$(unzip -Z1 "$z")
@@ -147,7 +172,20 @@ for z in "$Z"/kktls-*.zip; do
   check "$(basename "$z") entries sorted" sh -c "echo '$l' | sort -c"
   check "$(basename "$z") update-binary is 0755" sh -c "unzip -Z '$z' META-INF/com/google/android/update-binary | grep -q '^-rwxr-xr-x'"
 done
-check "openssl zip carries the allow list" sh -c "unzip -Z1 '$Z/kktls-openssl-x86-v9.zip' | grep -qx kktls/allow-missing-libssl.txt"
+check "openssl zip carries the allow list" sh -c "unzip -Z1 '$Z/kktls-openssl-4.4-x86-v9.zip' | grep -qx kktls/allow-missing-libssl.txt"
+for b in 4.3 4.2 4.1; do
+  for a in armeabi-v7a x86; do
+    zb=$Z/kktls-openssl-$b-$a-v9.zip
+    check "openssl $b $a: zip.conf android=$b tag=android-${b}_r9" sh -c "unzip -p '$zb' kktls/zip.conf | tr '\n' ' ' | grep -qx 'kind=openssl release=v9 abi=$a android=$b tag=android-${b}_r9 '"
+    check "openssl $b $a: the base's libs and BUILD-INFO" sh -c "unzip -p '$zb' kktls/BUILD-INFO.txt | grep -qx 'base $b'"
+    check "openssl $b $a: helpers of the 4.4 base tag" sh -c "unzip -p '$zb' kktls/bin/$a/kktls-symcheck | cmp -s - '$IN/android-4.4.2_r2/helpers/$a/kktls-symcheck'"
+    check "openssl $b $a: NOTICE has the base's OpenSSL and the 4.4 bionic" sh -c "unzip -p '$zb' NOTICE > '$T/n' && grep -q 'fake openssl.NOTICE of android-${b}_r9' '$T/n' && grep -q 'built from AOSP android-${b}_r9' '$T/n' && grep -q 'fake bionic-libc.NOTICE of android-4.4.2_r2' '$T/n'"
+  done
+done
+check "openssl 4.1 zip carries a libcrypto allow list" sh -c "unzip -Z1 '$Z/kktls-openssl-4.1-x86-v9.zip' | grep -qx kktls/allow-missing-libcrypto.txt"
+check "openssl 4.3 and 4.4 zips carry none" sh -c "! unzip -Z1 '$Z/kktls-openssl-4.3-x86-v9.zip' | grep -q libcrypto.txt && ! unzip -Z1 '$Z/kktls-openssl-4.4-x86-v9.zip' | grep -q libcrypto.txt"
+check "mkzips refuses a tampered JB input" sh -c "echo x >> '$T/jb/4.2/allow/allow-missing-libssl.txt'; ! '$MK' --in '$IN' --release v9 --cacerts '$T/cacerts' --conscrypt-notice '$T/cnotice' --out '$T/z3' --jb '$T/jb' > /dev/null 2>&1"
+cp "$SYM/allow-missing-libssl.txt" "$T/jb/4.2/allow/"
 check "cacerts NOTICE has the MPL" sh -c "unzip -p '$Z/kktls-cacerts-v9.zip' NOTICE | grep -q 'Mozilla Public License Version 2.0'"
 check "java 4.4.4 zip says android=4.4.4" sh -c "unzip -p '$Z/kktls-java-4.4.4-x86-v9.zip' kktls/zip.conf | grep -qx android=4.4.4"
 check "mkzips refuses a tampered input" sh -c "echo x >> '$IN/android-4.4.2_r2/x86/lib/libssl.so'; ! '$MK' --in '$IN' --release v9 --cacerts '$T/cacerts' --conscrypt-notice '$T/cnotice' --out '$T/z3' > /dev/null 2>&1"
@@ -155,7 +193,7 @@ cp "$T/fx/ours.so" "$IN/android-4.4.2_r2/x86/lib/libssl.so"
 check "mkzips refuses a bad release name" sh -c "! '$MK' --in '$IN' --release 'v 1' --cacerts '$T/cacerts' --conscrypt-notice '$T/cnotice' --out '$T/z3' > /dev/null 2>&1"
 
 # ---- fake device roots ----------------------------------------------------------------------------------------------
-mkroot() { # dir [key=value...] (build.prop overrides; special: libssl=FIXTURE, nosdcard=1, media=1)
+mkroot() { # dir [key=value...] (build.prop overrides; special: libssl=FIXTURE, libcrypto=FIXTURE, nosdcard=1, media=1, selinuxfs=1|sysfs)
   local r=$1 kv; shift
   rm -rf "$r"; mkdir -p "$r/system/lib" "$r/system/framework" "$r/system/app" "$r/system/priv-app" \
     "$r/system/etc/security/cacerts" "$r/data/dalvik-cache" "$r/sdcard"
@@ -177,8 +215,11 @@ mkroot() { # dir [key=value...] (build.prop overrides; special: libssl=FIXTURE, 
   for kv; do
     case $kv in
       libssl=*) cp "$T/fx/${kv#libssl=}" "$r/system/lib/libssl.so" ;;
+      libcrypto=*) cp "$T/fx/${kv#libcrypto=}" "$r/system/lib/libcrypto.so" ;;
       nosdcard=1) rm -rf "$r/sdcard" ;;
       media=1) mkdir -p "$r/data/media/0" ;;
+      selinuxfs=1) mkdir -p "$r/proc"; printf 'nodev\tsysfs\nnodev\tselinuxfs\n\text4\n' > "$r/proc/filesystems" ;;
+      selinuxfs=sysfs) mkdir -p "$r/sys/fs/selinux" ;;
       *) sed -i "/^${kv%%=*}=/d" "$r/system/build.prop"; echo "$kv" >> "$r/system/build.prop" ;;
     esac
   done
@@ -217,7 +258,7 @@ installs() { # label root zip [env...]
   if run "$r" "$z" "$@"; then ok; else bad "$l: exit $?"; sed 's/^/  /' "$T/out"; fi
 }
 
-O=$Z/kktls-openssl-x86-v9.zip C=$Z/kktls-cacerts-v9.zip J=$Z/kktls-java-4.4.2-x86-v9.zip
+O=$Z/kktls-openssl-4.4-x86-v9.zip C=$Z/kktls-cacerts-v9.zip J=$Z/kktls-java-4.4.2-x86-v9.zip
 J4=$Z/kktls-java-4.4.4-x86-v9.zip D=$Z/kktls-conscrypt-x86-v9.zip R=$Z/kktls-restore-v9.zip
 R0=$T/root
 
@@ -230,9 +271,38 @@ mkroot "$R0" ro.miui.ui.version.name=V5
 refused "openssl on MIUI" "$R0" "$O"
 mkroot "$R0" ro.build.version.release=4.3
 refused "openssl on 4.3" "$R0" "$O"
-refused "cacerts on 4.3" "$R0" "$C"
+refused "java 4.4.2 zip on 4.3" "$R0" "$J"
+mkroot "$R0" ro.build.version.release=4.0.4
+refused "cacerts on 4.0.4" "$R0" "$C"
+mkroot "$R0" ro.build.version.release=5.0
+refused "cacerts on 5.0" "$R0" "$C"
+mkroot "$R0" ro.build.version.release=4.10
+refused "cacerts on 4.10" "$R0" "$C"
+mkroot "$R0" ro.build.version.release=4.1-rc
+refused "cacerts on a non-numeric 4.1-rc" "$R0" "$C"
+mkroot "$R0" ro.build.version.release=4.1.2 ro.product.cpu.abi=armeabi-v7a
+refused "openssl on 4.1.2" "$R0" "$Z/kktls-openssl-4.4-armeabi-v7a-v9.zip"
 mkroot "$R0" ro.product.cpu.abi=armeabi-v7a
 refused "x86 openssl on an ARM device" "$R0" "$O"
+# Jelly Bean openssl zips: each installs only on its own 4.N.x; the 4.4 zip only on 4.4.x
+O43=$Z/kktls-openssl-4.3-x86-v9.zip O41=$Z/kktls-openssl-4.1-x86-v9.zip
+mkroot "$R0" ro.build.version.release=4.4.2
+refused "openssl 4.3 zip on 4.4.2" "$R0" "$O43"
+mkroot "$R0" ro.build.version.release=4.2.2
+refused "openssl 4.3 zip on 4.2.2" "$R0" "$O43"
+refused "openssl 4.1 zip on 4.2.2" "$R0" "$O41"
+mkroot "$R0" ro.build.version.release=4.10
+refused "openssl 4.1 zip on 4.10" "$R0" "$O41"
+mkroot "$R0" ro.build.version.release=4.3.1 ro.product.cpu.abi=armeabi-v7a
+refused "x86 openssl 4.3 zip on an ARM device" "$R0" "$O43"
+mkroot "$R0" ro.build.version.release=4.3.1 ro.cm.version=10.2
+refused "openssl 4.3 zip on a CM build" "$R0" "$O43"
+mkroot "$R0" ro.build.version.release=4.1.2 libcrypto=dev-zlib.so
+refused "openssl 4.2 zip on 4.1.2" "$R0" "$Z/kktls-openssl-4.2-x86-v9.zip"
+mkroot "$R0" libcrypto=dev-zlib.so
+refused "openssl 4.4 zip: device libcrypto exports more (no libcrypto allow list)" "$R0" "$O"
+mkroot "$R0" ro.build.version.release=4.3 libcrypto=dev-zlib.so
+refused "openssl 4.3 zip: BIO_f_zlib is allowed for 4.1 only" "$R0" "$O43"
 mkroot "$R0" libssl=dev-extra.so
 refused "device libssl exports more" "$R0" "$O"
 mkroot "$R0"; echo "not an elf" > "$R0/system/lib/libssl.so"
@@ -252,6 +322,31 @@ cp "$T/fx/dex.jar" "$R0/system/priv-app/Settings.apk"
 refused "java 4.4.4 zip on 4.4.2" "$R0" "$J4"
 echo v9 > "$R0/system/etc/kktls/java.version"; echo v8 > "$R0/system/etc/kktls/java.version"
 refused "conscrypt with another release's java marker" "$R0" "$D"
+
+# a read-only /system or /data refuses, although busybox `test -w` says yes to root there
+mkroot "$R0"
+KK_PRE="mount --bind '$R0/system' '$R0/system' && mount -o remount,bind,ro '$R0/system'" \
+  refused "openssl on a read-only /system" "$R0" "$O"
+check "read-only /system: the refusal says so" grep -q '/system is not writable' "$T/out"
+KK_PRE="mount --bind '$R0/data' '$R0/data' && mount -o remount,bind,ro '$R0/data'" \
+  refused "cacerts on a read-only /data" "$R0" "$C"
+check "read-only /data: the refusal says so" grep -q '/data is not mounted read-write' "$T/out"
+KK_PRE="mount --bind '$R0/system/app' '$R0/system/app' && mount -o remount,bind,ro '$R0/system/app'" \
+  installs "openssl with only /system/app read-only (the mount of /system itself decides)" "$R0" "$O"
+mkroot "$R0"
+KK_PRE="mount --bind '$R0' '$R0' && mount --bind '$R0/system' '$R0/system' && mount --bind '$R0/data' '$R0/data' && mount --bind '$R0/sdcard' '$R0/sdcard' && mount -o remount,bind,ro '$R0'" \
+  installs "openssl: read-write /system and /data mounts below a read-only root" "$R0" "$O"
+
+# Jelly Bean openssl zips install on their base (4.1: stock libcrypto with BIO_f_zlib, allowed by its list) and restore
+for kv in "4.3 4.3.1" "4.2 4.2.2" "4.1 4.1.2 libcrypto=dev-zlib.so" "4.1 4.1"; do
+  read -r b v opt <<< "$kv"
+  mkroot "$R0" ro.build.version.release="$v" ${opt:+"$opt"}; ORIG=$(snap "$R0" system)
+  installs "openssl $b zip on $v" "$R0" "$Z/kktls-openssl-$b-x86-v9.zip"
+  check "openssl $b on $v: libssl and libcrypto replaced" sh -c "cmp -s '$R0/system/lib/libssl.so' '$T/fx/ours.so' && cmp -s '$R0/system/lib/libcrypto.so' '$T/fx/ours.so'"
+  check "openssl $b on $v: marker" [ "$(cat "$R0/system/etc/kktls/openssl.version")" = v9 ]
+  installs "restore after openssl $b on $v" "$R0" "$R"
+  check "openssl $b on $v: /system identical after restore" [ "$ORIG" = "$(snap "$R0" system)" ]
+done
 
 # ---- install chain and restore -------------------------------------------------------------------------------------
 mkroot "$R0"; ORIG=$(snap "$R0" system)
@@ -288,6 +383,57 @@ check "restore: /system identical to the original" [ "$ORIG" = "$(snap "$R0" sys
 check "restore: dalvik-cache wiped" [ -z "$(ls -A "$R0/data/dalvik-cache")" ]
 check "restore: backups marked done" none "$R0"/data/kktls-backup/[0-9]* "$R0"/sdcard/kktls-backup/[0-9]*
 refused "restore twice" "$R0" "$R"
+
+# cacerts and restore on Android 4.1-4.3: no SELinux in an AOSP 4.1/4.2 kernel (no label writes), labels on 4.3 and
+# on a 4.1/4.2 kernel that has SELinux
+check "cacerts zip says android=4.1-4.4" sh -c "unzip -p '$C' kktls/zip.conf | grep -qx android=4.1-4.4"
+check "restore zip says android=4.1-4.4" sh -c "unzip -p '$R' kktls/zip.conf | grep -qx android=4.1-4.4"
+for v in 4.1 4.1.2 4.2.2; do
+  mkroot "$R0" ro.build.version.release=$v ro.product.cpu.abi=armeabi-v7a; ORIG=$(snap "$R0" system)
+  : > "$LOG"
+  installs "cacerts on $v without SELinux" "$R0" "$C"
+  check "cacerts $v: says it does not label" grep -q 'no SELinux in this kernel' "$T/out"
+  check "cacerts $v: directory replaced wholesale" sh -c "[ \"\$(ls '$R0/system/etc/security/cacerts' | tr '\n' ' ')\" = '00000001.0 00000002.0 keepme00.0 ' ]"
+  check "cacerts $v: files 0644, marker dir 0755" sh -c "[ \"\$(stat -c %a '$R0'/system/etc/security/cacerts/* '$R0/system/etc/kktls' | sort -u | tr '\n' ' ')\" = '644 755 ' ]"
+  check "cacerts $v: marker" [ "$(cat "$R0/system/etc/kktls/cacerts.version")" = v9 ]
+  check "cacerts $v: no label calls" [ ! -s "$LOG" ]
+  installs "restore on $v without SELinux" "$R0" "$R"
+  check "restore $v: /system identical" [ "$ORIG" = "$(snap "$R0" system)" ]
+  check "restore $v: no label calls" [ ! -s "$LOG" ]
+done
+for kv in "4.2.2 selinuxfs=1" "4.2.2 selinuxfs=sysfs" "4.3" "4.3.1"; do
+  read -r v opt <<< "$kv"
+  mkroot "$R0" ro.build.version.release="$v" ${opt:+"$opt"}; ORIG=$(snap "$R0" system)
+  : > "$LOG"
+  installs "cacerts on $kv" "$R0" "$C"
+  check "cacerts $kv: labels each CA file and the marker" [ "$(grep -c '^util u:object_r:system_file:s0 .*\.kktls-new$' "$LOG")" = 4 ]
+  check "cacerts $kv: labels the marker dir" grep -qx "util u:object_r:system_file:s0 $R0/system/etc/kktls" "$LOG"
+  check "cacerts $kv: no 'not labelled' line" sh -c "! grep -q 'no SELinux' '$T/out'"
+  : > "$LOG"
+  installs "restore on $kv" "$R0" "$R"
+  check "restore $kv: /system identical" [ "$ORIG" = "$(snap "$R0" system)" ]
+  check "restore $kv: labels the restored files" grep -q '^util u:object_r:system_file:s0 ' "$LOG"
+done
+mkroot "$R0" ro.build.version.release=4.4.2 selinuxfs=1
+: > "$LOG"
+installs "cacerts on 4.4.2 (selinuxfs listed)" "$R0" "$C"
+check "cacerts 4.4.2: labelled" [ "$(grep -c '\.kktls-new$' "$LOG")" = 4 ]
+# 4.2.2 kernel with SELinux but no policy loaded (the SDK 4.1/4.2 emulator kernels): every label write fails with
+# EOPNOTSUPP; the install and the restore go on without labels and say so once
+mkroot "$R0" ro.build.version.release=4.2.2 selinuxfs=1; ORIG=$(snap "$R0" system)
+rm -f "$LOG.n"
+installs "cacerts on 4.2.2, SELinux without a policy (label writes fail)" "$R0" "$C" KKTLS_TEST_FAIL_AFTER=0
+check "cacerts 4.2.2 no policy: one 'takes no labels' line" [ "$(grep -c 'takes no labels' "$T/out")" = 1 ]
+check "cacerts 4.2.2 no policy: directory replaced" sh -c "[ \"\$(ls '$R0/system/etc/security/cacerts' | tr '\n' ' ')\" = '00000001.0 00000002.0 keepme00.0 ' ]"
+rm -f "$LOG.n"
+installs "restore on 4.2.2, SELinux without a policy" "$R0" "$R" KKTLS_TEST_FAIL_AFTER=0
+check "restore 4.2.2 no policy: /system identical" [ "$ORIG" = "$(snap "$R0" system)" ]
+rm -f "$LOG.n"
+mkroot "$R0" ro.build.version.release=4.1.2
+installs "cacerts on 4.1.2: an injected label failure is never reached" "$R0" "$C" KKTLS_TEST_FAIL=keepme00.0.kktls-new
+mkroot "$R0" ro.build.version.release=4.3; ORIG=$(snap "$R0" system)
+if run "$R0" "$C" KKTLS_TEST_FAIL=keepme00.0.kktls-new; then bad "4.3: a label failure must fail the install"; else ok; fi
+check "4.3 label failure: rolled back" [ "$ORIG" = "$(snap "$R0" system)" ]
 
 # restore from /sdcard after /data is wiped
 mkroot "$R0"; ORIG=$(snap "$R0" system)
@@ -503,11 +649,13 @@ echo "$c $*" >> "$KKTLS_ADB_LOG"
 [ ! -e "$R/gone" ] || { echo "error: device 'fake' not found" >&2; exit 1; }  # the device was unplugged
 case $c in
   root|remount|wait-for-device|reboot) exit 0 ;;
-  push) case $2 in */zip) [ ! -e "$R/pushfail" ] || exit 1 ;; esac
+  push) case $2 in */zip[0-9]*) [ ! -e "$R/pushfail" ] || exit 1 ;; esac
         if [ -d "$R$2" ]; then cp -r "$1" "$R$2/"; else cp -r "$1" "$R$2"; fi ;;
   shell) case "$*" in stop|start) exit 0 ;; *kk_main*) [ ! -e "$R/vanish" ] || { : > "$R/gone"; exit 1; } ;; esac
+         cmd=$*  # /jbrm: rm refuses -f like the Android 4.1 toolbox (a function: busybox sh prefers its own applets)
+         [ ! -e "$R/jbrm" ] || cmd='rm() { case $1 in -*f*) echo "rm: invalid option -- f" >&2; return 1 ;; esac; command rm "$@"; }; '$cmd
          exec unshare -rm sh -c 'mount --bind /dev/null "$1/dev/null" && exec chroot "$1" /bin/busybox env -i \
-           PATH=/bin:/system/bin /bin/sh -c "$2"' sh "$R" "$*" ;;
+           PATH=/bin:/system/bin /bin/sh -c "$2"' sh "$R" "$cmd" ;;
   *) exit 1 ;;
 esac
 EOF
@@ -538,7 +686,7 @@ EOF
 
   mkdev "$RA"; ORIG=$(snap "$RA" system)
   aexit "adb: openssl, cacerts, java, conscrypt in one run" 0 --no-reboot \
-    "$ZA/kktls-openssl-x86-v9.zip" "$ZA/kktls-cacerts-v9.zip" "$ZA/kktls-java-4.4.2-x86-v9.zip" "$ZA/kktls-conscrypt-x86-v9.zip"
+    "$ZA/kktls-openssl-4.4-x86-v9.zip" "$ZA/kktls-cacerts-v9.zip" "$ZA/kktls-java-4.4.2-x86-v9.zip" "$ZA/kktls-conscrypt-x86-v9.zip"
   check "adb: our libssl installed" cmp -s "$RA/system/lib/libssl.so" "$T/fx/ours.so"
   check "adb: markers written" sh -c "[ \"\$(cat '$RA/system/etc/kktls/java.version')\" = v9 ] && [ -f '$RA/system/etc/kktls/openssl.version' ]"
   check "adb: D files installed" [ -f "$RA/system/framework/kktls-conscrypt.jar" ]
@@ -554,6 +702,22 @@ EOF
   check "adb: /system identical after restore" [ "$ORIG" = "$(snap "$RA" system)" ]
   check "adb: reboot by default" grep -qx 'reboot ' "$ALOG"
 
+  # Android 4.1: toolbox rm has no -f (rm -rf fails); a stale work dir from an interrupted run is on the device. Two
+  # zips in one run must each run their own scripts (a push into a stale dir nests and would run the old ones).
+  jbrm() { : > "$1/jbrm"; }  # stub adb: rm of the device shell refuses -f like the 4.1 toolbox
+  mkdev "$RA" ro.build.version.release=4.1.2; jbrm "$RA"; ORIG=$(snap "$RA" system)
+  mkdir -p "$RA/data/local/tmp/kktls-adb/zip1/kktls" "$RA/data/local/tmp/kktls-adb/zip/kktls"
+  echo 'kk_main() { echo STALE; }' > "$RA/data/local/tmp/kktls-adb/zip1/kktls/install.sh"
+  aexit "adb 4.1: cacerts over a stale work dir" 0 --no-reboot "$ZA/kktls-cacerts-v9.zip"
+  check "adb 4.1: the zip's own scripts ran" sh -c "grep -q 'installed: 3 files' '$T/aout' && ! grep -q STALE '$T/aout'"
+  check "adb 4.1: not labelled (no SELinux)" sh -c "grep -q 'files are not labelled' '$T/aout' && [ ! -s '$RA/chcon.log' ]"
+  check "adb 4.1: work dir removed" [ ! -e "$RA/data/local/tmp/kktls-adb" ]
+  aexit "adb 4.1: restore" 0 --no-reboot --restore "$ZA/kktls-restore-v9.zip"
+  check "adb 4.1: /system identical after restore" [ "$ORIG" = "$(snap "$RA" system)" ]
+  mkdev "$RA"; jbrm "$RA"
+  aexit "adb: two zips in one run with a toolbox rm without -f" 0 --no-reboot "$ZA/kktls-openssl-4.4-x86-v9.zip" "$ZA/kktls-cacerts-v9.zip"
+  check "adb: both markers" sh -c "[ -f '$RA/system/etc/kktls/openssl.version' ] && [ -f '$RA/system/etc/kktls/cacerts.version' ]"
+
   # SELinux enforcing: setenforce 0 for the run, 1 after it (also after a refusal); a refused setenforce stops the run
   selinux() { # root: getenforce/setenforce stand-ins; /enforce holds the mode, /setenforce.fail refuses setenforce
     local r=$1
@@ -564,25 +728,25 @@ EOF
     chmod 0755 "$r"/system/bin/getenforce "$r"/system/bin/setenforce
   }
   mkdev "$RA"; selinux "$RA"
-  aexit "adb: enforcing device" 0 --no-reboot "$ZA/kktls-openssl-x86-v9.zip"
+  aexit "adb: enforcing device" 0 --no-reboot "$ZA/kktls-openssl-4.4-x86-v9.zip"
   check "adb: permissive for the run, enforcing after" sh -c "[ \"\$(tr '\n' ' ' < '$RA/selinux.log')\" = 'setenforce 0 setenforce 1 ' ] && grep -qx Enforcing '$RA/enforce'"
   check "adb: openssl installed on the enforcing device" [ -f "$RA/system/etc/kktls/openssl.version" ]
   mkdev "$RA"; selinux "$RA"
   aexit "adb: enforcing, refusal" 1 --no-reboot "$ZA/kktls-conscrypt-x86-v9.zip"
   check "adb: enforcing again after a refusal" grep -qx Enforcing "$RA/enforce"
   mkdev "$RA"; selinux "$RA"; : > "$RA/setenforce.fail"
-  aexit "adb: enforcing, setenforce refused" 2 --no-reboot "$ZA/kktls-openssl-x86-v9.zip"
+  aexit "adb: enforcing, setenforce refused" 2 --no-reboot "$ZA/kktls-openssl-4.4-x86-v9.zip"
   check "adb: nothing installed without setenforce" [ ! -e "$RA/system/etc/kktls" ]
 
   # the EXIT trap cleans up after a die, and copes with a device that is gone
   mkdev "$RA"; selinux "$RA"; : > "$RA/pushfail"
-  aexit "adb: zip push fails" 2 --no-reboot "$ZA/kktls-openssl-x86-v9.zip"
+  aexit "adb: zip push fails" 2 --no-reboot "$ZA/kktls-openssl-4.4-x86-v9.zip"
   check "adb: push failure: enforcing again, work dir removed" sh -c "grep -qx Enforcing '$RA/enforce' && [ ! -e '$RA/data/local/tmp/kktls-adb' ]"
   check "adb: push failure: says why" grep -q 'cannot push' "$T/aout"
   mkdev "$RA"; selinux "$RA"; : > "$RA/vanish"
-  aexit "adb: device gone during the install" 1 --no-reboot "$ZA/kktls-openssl-x86-v9.zip"
+  aexit "adb: device gone during the install" 1 --no-reboot "$ZA/kktls-openssl-4.4-x86-v9.zip"
   check "adb: device gone: trap warns and ends cleanly" sh -c "grep -q 'could not set SELinux enforcing again' '$T/aout' && ! grep -Eq 'unbound|command not found|syntax error' '$T/aout'"
-  check "adb: device gone: one cleanup only" [ "$(grep -c '^shell rm -rf /data/local/tmp/kktls-adb$' "$ALOG")" = 1 ]
+  check "adb: device gone: one cleanup only" [ "$(grep -c '^shell rm -r /data/local/tmp/kktls-adb$' "$ALOG")" = 1 ]
 
   mkdev "$RA"; before=$(snap "$RA")
   aexit "adb: conscrypt without java refused" 1 --no-reboot "$ZA/kktls-conscrypt-x86-v9.zip"
@@ -593,23 +757,23 @@ EOF
   aexit "adb: java without openssl refused" 1 --no-reboot "$ZA/kktls-java-4.4.2-x86-v9.zip"
   check "adb: java refusal names the openssl zip" grep -q 'install the kktls openssl zip first' "$T/aout"
   aexit "adb: second zip refused after the first installed" 1 --no-reboot \
-    "$ZA/kktls-openssl-x86-v9.zip" "$ZA/kktls-java-4.4.4-x86-v9.zip"
+    "$ZA/kktls-openssl-4.4-x86-v9.zip" "$ZA/kktls-java-4.4.4-x86-v9.zip"
   check "adb: partial run says reboot" grep -q '1 zip(s) of this run are installed' "$T/aout"
   check "adb: first zip of the partial run is installed" [ -f "$RA/system/etc/kktls/openssl.version" ]
 
   mkdev "$RA" ro.cm.version=11-20140804-NIGHTLY-hammerhead; before=$(snap "$RA")
-  aexit "adb: openssl on a CM build refused" 1 --no-reboot "$ZA/kktls-openssl-x86-v9.zip"
+  aexit "adb: openssl on a CM build refused" 1 --no-reboot "$ZA/kktls-openssl-4.4-x86-v9.zip"
   rm -f "$RA/chcon.log"
   check "adb: CM refusal leaves the device unchanged" [ "$before" = "$(snap "$RA")" ]
 
   aexit "adb: restore zip without --restore" 2 "$ZA/kktls-restore-v9.zip"
-  aexit "adb: --restore with an install zip" 2 --restore "$ZA/kktls-openssl-x86-v9.zip"
+  aexit "adb: --restore with an install zip" 2 --restore "$ZA/kktls-openssl-4.4-x86-v9.zip"
   echo "not a zip" > "$T/bad.zip"
   aexit "adb: not a zip" 2 "$T/bad.zip"
   (cd "$T/fx" && zip -q "$T/other.zip" dex.jar)
   aexit "adb: a zip without kktls/zip.conf" 2 "$T/other.zip"
   check "adb: usage errors never reach the device" [ ! -s "$ALOG" ]
-  aexit "adb: missing --busybox file" 2 --busybox "$T/nonexistent" "$ZA/kktls-openssl-x86-v9.zip"
+  aexit "adb: missing --busybox file" 2 --busybox "$T/nonexistent" "$ZA/kktls-openssl-4.4-x86-v9.zip"
   aexit "adb: no zip" 2 --no-reboot
 else
   echo "run-tests.sh: $BB is not static, install-adb.sh tests skipped"; bad "install-adb.sh tests need a static busybox"
@@ -617,14 +781,16 @@ fi
 
 # ---- real release output --------------------------------------------------------------------------------------------
 if [ ${#REAL[@]} = 4 ]; then
-  "$MK" --in "${REAL[0]}" --release t1 --cacerts "${REAL[1]}" --conscrypt-notice "${REAL[2]}" --out "$T/r1" > "$T/r1.log"
-  "$MK" --in "${REAL[0]}" --release t1 --cacerts "${REAL[1]}" --conscrypt-notice "${REAL[2]}" --out "$T/r2" > /dev/null
-  check "real: 10 zips" [ "$(wc -l < "$T/r1/SHA256SUMS")" = 10 ]
+  jbargs=(); nz=10
+  [ ${#RJB[@]} = 0 ] || { jbargs=(--jb "${RJB[0]}"); nz=$((10 + 2 * $(ls -d "${RJB[0]}"/4.[1-3] | wc -l))); }
+  "$MK" --in "${REAL[0]}" --release t1 --cacerts "${REAL[1]}" --conscrypt-notice "${REAL[2]}" --out "$T/r1" "${jbargs[@]}" > "$T/r1.log"
+  "$MK" --in "${REAL[0]}" --release t1 --cacerts "${REAL[1]}" --conscrypt-notice "${REAL[2]}" --out "$T/r2" "${jbargs[@]}" > /dev/null
+  check "real: $nz zips" [ "$(wc -l < "$T/r1/SHA256SUMS")" = "$nz" ]
   check "real: byte-identical across two runs" cmp -s "$T/r1/SHA256SUMS" "$T/r2/SHA256SUMS"
   mkroot "$R0"
   cp "${REAL[3]}/libssl.so" "${REAL[3]}/libcrypto.so" "$R0/system/lib/"; chmod 0644 "$R0"/system/lib/*.so
   ORIG=$(snap "$R0" system); : > "$LOG"
-  for z in kktls-openssl-x86-t1 kktls-java-4.4.2-x86-t1 kktls-conscrypt-x86-t1 kktls-cacerts-t1; do
+  for z in kktls-openssl-4.4-x86-t1 kktls-java-4.4.2-x86-t1 kktls-conscrypt-x86-t1 kktls-cacerts-t1; do
     KK_PATH=$T/chcon installs "real: $z" "$R0" "$T/r1/$z.zip"
   done
   check "real: every installed file labelled" [ "$(grep -c '\.kktls-new$' "$LOG")" -ge 14 ]
@@ -638,7 +804,7 @@ if [ ${#REAL[@]} = 4 ]; then
     echo "  sdk system: release $sv, abi $sa, id $(sed -n 's/^ro.build.id=//p' "$R0/system/build.prop"),"\
       "$(ls "$R0"/system/framework/*.odex "$R0"/system/app/*.odex "$R0"/system/priv-app/*.odex 2> /dev/null | wc -l) .odex"
     ORIG=$(snap "$R0" system); : > "$LOG"
-    for z in kktls-openssl-$sa-t1 kktls-cacerts-t1 kktls-java-$sv-$sa-t1 kktls-conscrypt-$sa-t1; do
+    for z in kktls-openssl-4.4-$sa-t1 kktls-cacerts-t1 kktls-java-$sv-$sa-t1 kktls-conscrypt-$sa-t1; do
       KK_PATH=$T/chcon installs "sdk: $z" "$R0" "$T/r1/$z.zip"
       grep -E 'dex check|backup:|installed:' "$T/out" | sed 's/^ui_print /    /'
     done
@@ -647,8 +813,22 @@ if [ ${#REAL[@]} = 4 ]; then
     KK_PATH=$T/chcon installs "sdk: restore" "$R0" "$T/r1/kktls-restore-t1.zip"
     check "sdk: /system identical after restore" [ "$ORIG" = "$(snap "$R0" system)" ]
   fi
-elif [ -n "$SDK" ]; then
-  echo "run-tests.sh: --sdk-system needs --real" >&2; exit 2
+  for jd in ${RJB[0]:+"${RJB[0]}"/4.[1-3]}; do
+    b=${jd##*/} st=$RJB_STOCK/${jd##*/}/x86
+    [ -f "$st/libssl.so" ] && [ -f "$st/libcrypto.so" ] || { bad "real jb $b: no stock x86 libs in $st"; continue; }
+    mkroot "$R0" ro.build.version.release="$b.9"
+    cp "$st/libssl.so" "$st/libcrypto.so" "$R0/system/lib/"; chmod 0644 "$R0"/system/lib/*.so
+    ORIG=$(snap "$R0" system); : > "$LOG"
+    refused "real jb $b: the 4.4 openssl zip" "$R0" "$T/r1/kktls-openssl-4.4-x86-t1.zip"
+    for z in "kktls-openssl-$b-x86-t1" kktls-cacerts-t1; do
+      KK_PATH=$T/chcon installs "real jb $b: $z" "$R0" "$T/r1/$z.zip"
+    done
+    check "real jb $b: libssl is the base's build" cmp -s "$R0/system/lib/libssl.so" "$jd/x86/lib/libssl.so"
+    KK_PATH=$T/chcon installs "real jb $b: restore" "$R0" "$T/r1/kktls-restore-t1.zip"
+    check "real jb $b: /system identical after restore" [ "$ORIG" = "$(snap "$R0" system)" ]
+  done
+elif [ -n "$SDK" ] || [ ${#RJB[@]} != 0 ]; then
+  echo "run-tests.sh: --sdk-system and --jb need --real" >&2; exit 2
 fi
 
 [ -z "${KKTLS_TEST_SHOW:-}" ] || cat "$T/out"

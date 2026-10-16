@@ -34,7 +34,10 @@ probe() {
   mkdir -p "$(dirname "$out")"
   src=${out%.o}.c
   rm -f "$out"
-  $PY probe-source > "$src"
+  # KKTLS_PROBE_ABSENT="Type.member ...": members the old base lacks (Jelly Bean: no ALPN, Channel ID or tls12 digests)
+  local absent=() k
+  for k in ${KKTLS_PROBE_ABSENT:-}; do absent+=(--absent "$k"); done
+  $PY probe-source "${absent[@]}" > "$src"
   cflags=$(sed -n 's/^ *\(-D[A-Za-z0-9_]*\) *\\$/\1/p' "$tree/build-config.mk" | grep -v -x -- -DTERMIO | tr '\n' ' ')
   [ -n "$IMAGE" ] || IMAGE=$(sh "$TOOLS/docker-image.sh" aosp-build) || { echo "docker-image.sh aosp-build failed" >&2; return 1; }
   docker run --rm -u "$(id -u):$(id -g)" -v "$W:/aosp" "$IMAGE" \

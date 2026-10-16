@@ -1,0 +1,11 @@
+# kktls-symcheck --allow-missing list for the Android 4.1 openssl zip (libcrypto.so): exports of the stock AOSP
+# android-4.1.2_r2 libcrypto (OpenSSL 1.0.1c) that our 1.0.1u libcrypto no longer has:
+#   BIO_f_zlib            both ABIs: stock 4.1 built with -DZLIB (DEFLATE TLS compression, CRIME); removed as in stock
+#                         4.2 (AOSP bug 7079965), see openssl-abi-allow.txt next to this file
+#   cleanse_ctr, DES_SPtrans, md5_block_data_order
+#                         x86 only: internal symbols of the old x86 asm (not in include/openssl), not exported by 1.0.1u
+# No ELF of the API 16 SDK images imports any of them. Copied into the zip as kktls/allow-missing-libcrypto.txt.
+BIO_f_zlib
+DES_SPtrans
+cleanse_ctr
+md5_block_data_order

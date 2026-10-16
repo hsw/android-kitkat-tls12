@@ -1,0 +1,6 @@
+# kktls-symcheck --allow-missing list for the Android 4.2 openssl zip (libcrypto.so): exports of the stock AOSP
+# android-4.2.2_r1 libcrypto (OpenSSL 1.0.1c) that our 1.0.1u libcrypto no longer has:
+#   cleanse_ctr  x86 only: a data object of the old x86 OPENSSL_cleanse asm, internal (not in include/openssl);
+#                1.0.1u does not export it
+# No ELF of the API 17 SDK images imports it. Copied into the zip as kktls/allow-missing-libcrypto.txt.
+cleanse_ctr

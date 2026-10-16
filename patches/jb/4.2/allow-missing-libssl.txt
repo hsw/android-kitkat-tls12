@@ -1,0 +1,41 @@
+# kktls-symcheck --allow-missing list for the Android 4.2 openssl zip (libssl.so): exports of the stock AOSP
+# android-4.2.2_r1 (OpenSSL 1.0.1c) libssl that our 1.0.1u libssl no longer has; the same names on armeabi-v7a and x86. All internal
+# (not in include/openssl; openssl-abi-check.py reports them as `internal ... removed`):
+#   ssl2_*                     SSLv2 is not built (OPENSSL_NO_SSL2)
+#   ssl3_check_finished        static in s3_clnt.c in 1.0.1u
+#   dtls1_clear_record_buffer  gone from 1.0.1u
+#   ssl_check_clienthello_tlsext  static in t1_lib.c in 1.0.1u (exported by the 1.0.1c of 4.1/4.2)
+# No ELF of the API 17 SDK images imports any of them. Copied into the zip as kktls/allow-missing-libssl.txt.
+dtls1_clear_record_buffer
+ssl2_accept
+ssl2_callback_ctrl
+ssl2_ciphers
+ssl2_clear
+ssl2_connect
+ssl2_ctrl
+ssl2_ctx_callback_ctrl
+ssl2_ctx_ctrl
+ssl2_default_timeout
+ssl2_do_write
+ssl2_enc
+ssl2_enc_init
+ssl2_free
+ssl2_generate_key_material
+ssl2_get_cipher
+ssl2_get_cipher_by_char
+ssl2_mac
+ssl2_new
+ssl2_num_ciphers
+ssl2_part_read
+ssl2_peek
+ssl2_pending
+ssl2_put_cipher_by_char
+ssl2_read
+ssl2_return_error
+ssl2_set_certificate
+ssl2_shutdown
+ssl2_version_str
+ssl2_write
+ssl2_write_error
+ssl3_check_finished
+ssl_check_clienthello_tlsext
