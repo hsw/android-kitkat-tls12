@@ -64,6 +64,8 @@ jobs:
       - name: checkers
         run: |
           python3 -I tools/check_tls_lists.py --selftest
+          python3 -I tools/check_jni_signatures.py --selftest
+          python3 -I tools/kktls-jb-remap.py --selftest
           python3 -I tools/openssl-abi-check.py --selftest
           python3 -I tools/clienthello_probe.py --selftest
           python3 -I tools/check_artifacts.py --selftest
