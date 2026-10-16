@@ -1,0 +1,32 @@
+# apicheck-allow.txt: references of the Conscrypt 2.6-alpha2 classes.jar that the 4.4 runtime cannot resolve and that
+# are not reached on API 19 (apicheck.py --allow). Format: REF | CALL-SITE PREFIXES | REASON (the guard).
+# Source lines: google/conscrypt tag 2.6-alpha2 (abb04e30). "2.5.3 too" = the same reference is unresolved in the 2.5.3
+# classes.jar (apicheck.py --baseline), which ran on the emulator and on a device.
+# Every line was reviewed against the source; a new Conscrypt pin re-runs apicheck and re-reviews this file.
+
+# Class never instantiated on Android: TrustManagerFactoryImpl is registered only when Platform.provideTrustManagerByDefault()
+# is true (OpenSSLProvider.java:101-104), android Platform.java:112-114 returns false. 2.5.3 too.
+javax/net/ssl/X509ExtendedTrustManager | org/conscrypt/TrustManagerImpl, org/conscrypt/ConscryptEngineSocket | TrustManagerImpl: never instantiated on Android (Platform.provideTrustManagerByDefault() = false, Platform.java:112). ConscryptEngineSocket.getDelegatingTrustManager (ConscryptEngineSocket.java:146-150, instanceof + anonymous $2): byte-identical logic in 2.5.3 (:137-139), whose engine-socket default (SSLUtils USE_ENGINE_SOCKET_BY_DEFAULT = true in both) completed TLS 1.2/1.3 on a 4.4 device
+java/security/cert/PKIXRevocationChecker | org/conscrypt/TrustManagerImpl | TrustManagerImpl never instantiated on Android (Platform.java:112); 2.5.3 too
+java/security/cert/PKIXRevocationChecker$Option | org/conscrypt/TrustManagerImpl | TrustManagerImpl never instantiated on Android (Platform.java:112); 2.5.3 too
+java/security/cert/CertPathValidator.getRevocationChecker()Ljava/security/cert/CertPathChecker; | org/conscrypt/TrustManagerImpl | TrustManagerImpl never instantiated on Android (Platform.java:112); 2.5.3 too
+javax/net/ssl/SSLSocket.getHandshakeSession()Ljavax/net/ssl/SSLSession; | org/conscrypt/TrustManagerImpl | TrustManagerImpl never instantiated on Android (Platform.java:112); 2.5.3 too
+javax/net/ssl/SSLEngine.getHandshakeSession()Ljavax/net/ssl/SSLSession; | org/conscrypt/TrustManagerImpl | TrustManagerImpl never instantiated on Android (Platform.java:112); 2.5.3 too
+javax/net/ssl/SSLParameters.getEndpointIdentificationAlgorithm()Ljava/lang/String; | org/conscrypt/TrustManagerImpl | TrustManagerImpl never instantiated on Android (Platform.java:112); 2.5.3 too
+
+# Java 7/8 adapter classes: created only behind Build.VERSION.SDK_INT >= 24 (android Platform.java:520-631 sockets,
+# :814 Java8ExtendedSSLSession); Java7ExtendedSSLSession and Java8EngineWrapper are not constructed by the android
+# flavour at all (only the OpenJDK Platform does). 2.5.3 too.
+javax/net/ssl/ExtendedSSLSession | org/conscrypt/Java7ExtendedSSLSession | not constructed by the android Platform (OpenJDK flavour only); 2.5.3 too
+java/util/function/BiFunction | org/conscrypt/Java8EngineSocket, org/conscrypt/Java8EngineWrapper, org/conscrypt/Java8FileDescriptorSocket | Java8EngineSocket/Java8FileDescriptorSocket only under SDK_INT >= 24 (Platform.java:520-631); Java8EngineWrapper not constructed on Android; 2.5.3 too
+
+# SNI parameters (API 24): every caller is guarded by SDK_INT >= 24 (Platform.java:281, 299, 364, 391, 960) or sits in
+# Java8ExtendedSSLSession (created only under SDK_INT >= 24, :814). 2.5.3 too.
+javax/net/ssl/SNIHostName | org/conscrypt/Platform.getSniHostnameFromParams, org/conscrypt/Platform.serverNamePermittedInternal, org/conscrypt/Platform.setParametersSniHostname, org/conscrypt/Java8ExtendedSSLSession | callers guarded by SDK_INT >= 24 (Platform.java:281, 299, 364, 391, 960); Java8ExtendedSSLSession only under SDK_INT >= 24 (:814); 2.5.3 too
+javax/net/ssl/SNIMatcher | org/conscrypt/Platform.serverNamePermittedInternal | only via Platform.java:960 (SDK_INT >= 24); 2.5.3 too
+javax/net/ssl/SNIServerName | org/conscrypt/Platform.getSniHostnameFromParams | only via Platform.java:281/299 (SDK_INT >= 24); 2.5.3 too
+
+# New in 2.6-alpha2.
+android/system/Os | org/conscrypt/Platform.getUids, org/conscrypt/Platform.<pool> | Platform.getUids (Platform.java:1008, @TargetApi(30)) is called only from metrics StatsLogImpl (StatsLogImpl.java:57), which Platform.getStatsLog returns only for SDK_INT >= 30 (Platform.java:995-999; NoopStatsLog below)
+javax/net/ssl/SSLServerSocket.getSSLParameters()Ljavax/net/ssl/SSLParameters; | org/conscrypt/ConscryptServerSocket.getSSLParameters | override of the API 24 SSLServerSocket method (ConscryptServerSocket.java:83-88, commit 90cecd78): nothing in the 4.4 framework or the kktls wrapper (client sockets only) calls it; an app built against the 4.4 SDK cannot
+javax/net/ssl/SSLServerSocket.setSSLParameters(Ljavax/net/ssl/SSLParameters;)V | org/conscrypt/ConscryptServerSocket.setSSLParameters | override of the API 24 SSLServerSocket method (ConscryptServerSocket.java:90-94, commit 90cecd78): nothing in the 4.4 framework or the kktls wrapper (client sockets only) calls it; an app built against the 4.4 SDK cannot

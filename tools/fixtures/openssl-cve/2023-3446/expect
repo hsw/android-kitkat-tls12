@@ -1,0 +1,13 @@
+# CVE-2023-3446 - DH_check unbounded primality work on an over-large modulus (hang class: decided by work done, timeout = safety bound)
+class=hang
+lib=noasan
+needs_ssl=0
+timeout_host=25
+timeout_arm32=90
+timeout_x86=25
+timeout_mips=90
+arm32=yes
+x86=yes
+mips=yes
+target=yes
+desc=DH_check runs BN_is_prime_ex on an uncapped modulus; a huge p makes it grind (DoS)

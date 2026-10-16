@@ -1,0 +1,19 @@
+# CVE-2020-1971 template completion (upstream aa0ad2011d, 1.1.1i): the
+# EDIPartyName fields are DirectoryString (a CHOICE), so they must use
+# EXPLICIT tags [0]/[1] (RFC 5280); 1.0.1u had IMPLICIT, which the encoder
+# and decoder silently ignored. Benign known-answer test, not an exploit: a
+# well-formed EDIPartyName GENERAL_NAME is built through the API, encoded and
+# compared with the RFC 5280 DER (hard-coded), then decoded back and its
+# fields compared. Pure library logic: same verdict on every arch.
+class=kat
+lib=noasan
+needs_ssl=0
+timeout_host=10
+timeout_arm32=40
+timeout_x86=10
+timeout_mips=40
+arm32=yes
+x86=yes
+mips=yes
+target=yes
+desc=EDIPartyName template: an API-built partyName must encode to the RFC 5280 DER (explicit [1]) and decode back into partyName

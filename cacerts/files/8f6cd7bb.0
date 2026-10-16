@@ -1,0 +1,33 @@
+-----BEGIN CERTIFICATE-----
+MIICIzCCAamgAwIBAgIUFhXHw9hJp75pDIqI7fBw+d23PocwCgYIKoZIzj0EAwMw
+UTELMAkGA1UEBhMCSlAxIzAhBgNVBAoTGkN5YmVydHJ1c3QgSmFwYW4gQ28uLCBM
+dGQuMR0wGwYDVQQDExRTZWN1cmVTaWduIFJvb3QgQ0ExNTAeFw0yMDA0MDgwODMy
+NTZaFw00NTA0MDgwODMyNTZaMFExCzAJBgNVBAYTAkpQMSMwIQYDVQQKExpDeWJl
+cnRydXN0IEphcGFuIENvLiwgTHRkLjEdMBsGA1UEAxMUU2VjdXJlU2lnbiBSb290
+IENBMTUwdjAQBgcqhkjOPQIBBgUrgQQAIgNiAAQLUHSNZDKZmbPSYAi4Io5GdCx4
+wCtELW1fHcmuS1Iggz24FG1Th2CeX2yF2wYUleDHKP+dX+Sq8bOLbe1PL0vJSpSR
+ZHX+AezB2Ot6lHhWGENfa4HL9rzatAy2KZMIaY+jQjBAMA8GA1UdEwEB/wQFMAMB
+Af8wDgYDVR0PAQH/BAQDAgEGMB0GA1UdDgQWBBTrQciu/NWeUUj1vYv0hyCTQSvT
+9DAKBggqhkjOPQQDAwNoADBlAjEA2S6Jfl5OpBEHvVnCB96rMjhTKkZEBhd6zlHp
+4P9mLQlO4E/0BdGF9jVg3PVys0Z9AjBEmEYagoUeYWmJSwdLZrWeqrqgHkHZAXQ6
+bkU6iYAZezKYVWOr62Nuk22rGwlgMU4=
+-----END CERTIFICATE-----
+Certificate:
+    Data:
+        Version: 3 (0x2)
+        Serial Number:
+            16:15:c7:c3:d8:49:a7:be:69:0c:8a:88:ed:f0:70:f9:dd:b7:3e:87
+        Signature Algorithm: ecdsa-with-SHA384
+        Issuer: C=JP, O=Cybertrust Japan Co., Ltd., CN=SecureSign Root CA15
+        Validity
+            Not Before: Apr  8 08:32:56 2020 GMT
+            Not After : Apr  8 08:32:56 2045 GMT
+        Subject: C=JP, O=Cybertrust Japan Co., Ltd., CN=SecureSign Root CA15
+        X509v3 extensions:
+            X509v3 Basic Constraints: critical
+                CA:TRUE
+            X509v3 Key Usage: critical
+                Certificate Sign, CRL Sign
+            X509v3 Subject Key Identifier: 
+                EB:41:C8:AE:FC:D5:9E:51:48:F5:BD:8B:F4:87:20:93:41:2B:D3:F4
+SHA1 Fingerprint=CB:BA:83:C8:C1:5A:5D:F1:F9:73:6F:CA:D7:EF:28:13:06:4A:07:7D

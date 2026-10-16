@@ -1,0 +1,13 @@
+# CVE-2018-0732 - DH generate_key DoS on a huge modulus (hang class: decided by work done, timeout = safety bound)
+class=hang
+lib=noasan
+needs_ssl=0
+timeout_host=15
+timeout_arm32=60
+timeout_x86=15
+timeout_mips=60
+arm32=yes
+x86=yes
+mips=yes
+target=yes
+desc=DH_generate_key has no modulus-size cap; a huge DHE p stalls the client

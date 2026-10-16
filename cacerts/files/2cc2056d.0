@@ -1,0 +1,33 @@
+-----BEGIN CERTIFICATE-----
+MIICMTCCAbegAwIBAgIUNnThTXxlE8msg1UloD5Sfi9QaMcwCgYIKoZIzj0EAwMw
+WDELMAkGA1UEBhMCQ04xJTAjBgNVBAoTHFRydXN0QXNpYSBUZWNobm9sb2dpZXMs
+IEluYy4xIjAgBgNVBAMTGVRydXN0QXNpYSBUTFMgRUNDIFJvb3QgQ0EwHhcNMjQw
+NTE1MDU0MTU2WhcNNDQwNTE1MDU0MTU1WjBYMQswCQYDVQQGEwJDTjElMCMGA1UE
+ChMcVHJ1c3RBc2lhIFRlY2hub2xvZ2llcywgSW5jLjEiMCAGA1UEAxMZVHJ1c3RB
+c2lhIFRMUyBFQ0MgUm9vdCBDQTB2MBAGByqGSM49AgEGBSuBBAAiA2IABLh/pVs/
+AT598IhtrimY4ZtcU5nb9wj/1WrgjstEpvDBjL1P1M7UiFPoXlfXTr4sP/MSpwDp
+guMqWzJ8S5sUKZ74LYO1644xST0mYekdcouJtgq7nDM1D9rs3qlKH8kzsaNCMEAw
+DwYDVR0TAQH/BAUwAwEB/zAdBgNVHQ4EFgQULIVTu7FDzTLqnqOH/qKYqKaT6RAw
+DgYDVR0PAQH/BAQDAgEGMAoGCCqGSM49BAMDA2gAMGUCMFRH18MtYYZI9HlaVQ01
+L18N9mdsd0AaRuf4aFtOJx24mH1/k78ITcTaRTChD15KeAIxAKORh/IRM4PDwYqR
+OkwrULG9IpRdNYlzg8WbGf60oenUoWa2AaU2+dhoYSi3dOGiMQ==
+-----END CERTIFICATE-----
+Certificate:
+    Data:
+        Version: 3 (0x2)
+        Serial Number:
+            36:74:e1:4d:7c:65:13:c9:ac:83:55:25:a0:3e:52:7e:2f:50:68:c7
+        Signature Algorithm: ecdsa-with-SHA384
+        Issuer: C=CN, O=TrustAsia Technologies, Inc., CN=TrustAsia TLS ECC Root CA
+        Validity
+            Not Before: May 15 05:41:56 2024 GMT
+            Not After : May 15 05:41:55 2044 GMT
+        Subject: C=CN, O=TrustAsia Technologies, Inc., CN=TrustAsia TLS ECC Root CA
+        X509v3 extensions:
+            X509v3 Basic Constraints: critical
+                CA:TRUE
+            X509v3 Subject Key Identifier: 
+                2C:85:53:BB:B1:43:CD:32:EA:9E:A3:87:FE:A2:98:A8:A6:93:E9:10
+            X509v3 Key Usage: critical
+                Certificate Sign, CRL Sign
+SHA1 Fingerprint=B5:EC:39:F3:A1:66:37:AE:C3:05:94:57:E2:BE:11:BE:B7:A1:7F:36

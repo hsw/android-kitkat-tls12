@@ -1,0 +1,13 @@
+# CVE-2022-0778 - BN_mod_sqrt infinite loop (hang class: decided by work done, timeout = safety bound)
+class=hang
+lib=noasan
+needs_ssl=0
+timeout_host=10
+timeout_arm32=40
+timeout_x86=10
+timeout_mips=40
+arm32=yes
+x86=yes
+mips=yes
+target=yes
+desc=BN_mod_sqrt loops forever on a composite modulus (crafted EC cert params)

@@ -1,0 +1,408 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: android-kitkat-tls12 <android-kitkat-tls12@users.noreply.github.com>
+Date: Fri, 9 Oct 2026 12:00:00 +0000
+Subject: [PATCH 18/31] Tests for the intermediate CA cache, index duplicates
+ and session reuse
+
+The three picks (cm-11 02e4d22, 5549787, 3f575a6 = conscrypt
+04e7d1d, 4bdc877, 5af5e93) carry no tests upstream. These are tests
+for their behaviour:
+
+- TrustManagerImplTest.testLearnedIntermediateIsNotTrustAnchor
+  (02e4d22): an intermediate CA with an IP name constraint (10/8) is
+  learned from a valid chain; afterwards a leaf outside the constraint
+  (192.168.0.1) is still rejected, with and without the intermediate in
+  the presented chain, while a short chain inside it is still
+  completed. Before 02e4d22 the learned intermediate became a trust
+  anchor, whose own constraints PKIX does not apply;
+- TrustManagerImplTest.testLearnedIntermediateCompletesChainToRoot
+  (02e4d22): the assertions of testGetFullChain (a chain completed from
+  the learned intermediate ends at the root) on a directly constructed
+  TrustManagerImpl. testGetFullChain takes its trust manager from the
+  default provider, which on host Dalvik is the jarjar'd
+  com.android.org.conscrypt class, so its instanceof check fails there
+  before the chains are compared;
+- TrustedCertificateIndexTest (5549787): indexing one certificate many
+  times stores it once; two different CAs with the same subject are
+  both kept and each leaf finds its own issuer;
+- NativeCryptoTest.test_SSL_session_reused (3f575a6): NULL throws, a
+  new SSL and a full handshake report false, a resumed session reports
+  true on both sides, and a session offered to a server that cannot
+  resume it reports false;
+- SSLSocketTest.test_SSLSocket_sessionReuse_onlyWhenResumed (3f575a6):
+  with the same wrapped host and port, the client keeps its cached
+  session object only when the server resumes it, and a server that
+  cannot resume gets a new session that then replaces the cached one.
+---
+ .../java/org/conscrypt/NativeCryptoTest.java  | 99 +++++++++++++++++++
+ .../org/conscrypt/TrustManagerImplTest.java   | 77 +++++++++++++++
+ .../TrustedCertificateIndexTest.java          | 98 ++++++++++++++++++
+ .../libcore/javax/net/ssl/SSLSocketTest.java  | 52 ++++++++++
+ 4 files changed, 326 insertions(+)
+ create mode 100644 crypto/src/test/java/org/conscrypt/TrustedCertificateIndexTest.java
+
+diff --git a/crypto/src/test/java/org/conscrypt/NativeCryptoTest.java b/crypto/src/test/java/org/conscrypt/NativeCryptoTest.java
+index 7ed2f7f49..9790ddb16 100644
+--- a/crypto/src/test/java/org/conscrypt/NativeCryptoTest.java
++++ b/crypto/src/test/java/org/conscrypt/NativeCryptoTest.java
+@@ -1226,6 +1226,105 @@ public class NativeCryptoTest extends TestCase {
+         }
+     }
+ 
++    /**
++     * kktls test for cm-11 3f575a6 (= conscrypt 5af5e93): SSL_session_reused reports whether
++     * OpenSSL resumed the offered session, on both sides of the handshake.
++     */
++    public void test_SSL_session_reused() throws Exception {
++        try {
++            NativeCrypto.SSL_session_reused(NULL);
++            fail();
++        } catch (NullPointerException expected) {
++        }
++
++        {
++            long c = NativeCrypto.SSL_CTX_new();
++            long s = NativeCrypto.SSL_new(c);
++            assertFalse(NativeCrypto.SSL_session_reused(s));
++            NativeCrypto.SSL_free(s);
++            NativeCrypto.SSL_CTX_free(c);
++        }
++
++        final long clientContext = NativeCrypto.SSL_CTX_new();
++        final long serverContext = NativeCrypto.SSL_CTX_new();
++        final long otherServerContext = NativeCrypto.SSL_CTX_new();
++        final ServerSocket listener = new ServerSocket(0);
++        final long[] clientSession = new long[] { NULL };
++        try {
++            // full handshake: nothing offered, nothing reused
++            assertSessionReused(listener, clientContext, serverContext, NULL, clientSession, false);
++            // the client offers the session and the server resumes it
++            assertSessionReused(listener, clientContext, serverContext, clientSession[0], null, true);
++            // the client offers the session to a server that does not know it: full handshake
++            assertSessionReused(listener, clientContext, otherServerContext, clientSession[0], null,
++                                false);
++        } finally {
++            if (clientSession[0] != NULL) {
++                NativeCrypto.SSL_SESSION_free(clientSession[0]);
++            }
++            NativeCrypto.SSL_CTX_free(otherServerContext);
++            NativeCrypto.SSL_CTX_free(serverContext);
++            NativeCrypto.SSL_CTX_free(clientContext);
++            listener.close();
++        }
++    }
++
++    private static void assertSessionReused(ServerSocket listener, final long clientContext,
++                                            final long serverContext, final long sessionToOffer,
++                                            final long[] sessionOut, boolean expected)
++            throws Exception {
++        final boolean[] clientReused = new boolean[] { !expected };
++        final boolean[] serverReused = new boolean[] { !expected };
++        Hooks cHooks = new Hooks() {
++            @Override
++            public long getContext() throws SSLException {
++                return clientContext;
++            }
++            @Override
++            public long beforeHandshake(long c) throws SSLException {
++                long s = super.beforeHandshake(c);
++                if (sessionToOffer != NULL) {
++                    NativeCrypto.SSL_set_session(s, sessionToOffer);
++                }
++                return s;
++            }
++            @Override
++            public void afterHandshake(long session, long s, long c,
++                                       Socket sock, FileDescriptor fd,
++                                       SSLHandshakeCallbacks callback)
++                    throws Exception {
++                clientReused[0] = NativeCrypto.SSL_session_reused(s);
++                if (sessionOut != null) {
++                    sessionOut[0] = session;
++                    session = NULL;
++                }
++                super.afterHandshake(session, s, NULL, sock, fd, callback);
++            }
++        };
++        Hooks sHooks = new ServerHooks(getServerPrivateKey(), getServerCertificates()) {
++            @Override
++            public long getContext() throws SSLException {
++                return serverContext;
++            }
++            @Override
++            public void afterHandshake(long session, long s, long c,
++                                       Socket sock, FileDescriptor fd,
++                                       SSLHandshakeCallbacks callback)
++                    throws Exception {
++                serverReused[0] = NativeCrypto.SSL_session_reused(s);
++                super.afterHandshake(session, s, NULL, sock, fd, callback);
++            }
++        };
++        Future<TestSSLHandshakeCallbacks> client
++                = handshake(listener, 0, true, cHooks, null, null);
++        Future<TestSSLHandshakeCallbacks> server
++                = handshake(listener, 0, false, sHooks, null, null);
++        client.get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
++        server.get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
++        assertEquals("client SSL_session_reused", expected, clientReused[0]);
++        assertEquals("server SSL_session_reused", expected, serverReused[0]);
++    }
++
+     public void test_SSL_set_session_creation_enabled() throws Exception {
+         try {
+             NativeCrypto.SSL_set_session_creation_enabled(NULL, false);
+diff --git a/crypto/src/test/java/org/conscrypt/TrustManagerImplTest.java b/crypto/src/test/java/org/conscrypt/TrustManagerImplTest.java
+index 639ed95d3..966b02235 100644
+--- a/crypto/src/test/java/org/conscrypt/TrustManagerImplTest.java
++++ b/crypto/src/test/java/org/conscrypt/TrustManagerImplTest.java
+@@ -160,6 +160,83 @@ public class TrustManagerImplTest extends TestCase {
+                                                                                             chain2);
+     }
+ 
++    /**
++     * kktls test for cm-11 02e4d22 (= conscrypt 04e7d1d, Dec-2015 security bulletin): a learned
++     * intermediate CA is cached to complete short chains, but it must not become a trust anchor.
++     * Its own constraints (here: an IP name constraint) still apply to every chain through it.
++     */
++    public void testLearnedIntermediateIsNotTrustAnchor() throws Exception {
++        TestKeyStore rootCa = TestKeyStore.getRootCa();
++        X509Certificate root = rootCa.getRootCertificate("RSA");
++        TestKeyStore constrainedCa = new TestKeyStore.Builder()
++                .keyAlgorithms("RSA")
++                .aliasPrefix("ConstrainedCA")
++                .subject("CN=TLS Test Constrained Intermediate CA")
++                .ca(true)
++                .addNameConstraint(true, new byte[] { 10, 0, 0, 0, (byte) 255, 0, 0, 0 })
++                .signer(rootCa.getPrivateKey("RSA", "RSA"))
++                .rootCa(root)
++                .build();
++        X509Certificate intermediate =
++                (X509Certificate) constrainedCa.getPrivateKey("RSA", "RSA").getCertificate();
++        X509Certificate inside = leafWithIpAddress(constrainedCa, new byte[] { 10, 0, 0, 1 });
++        X509Certificate outside =
++                leafWithIpAddress(constrainedCa, new byte[] { (byte) 192, (byte) 168, 0, 1 });
++        X509Certificate[] insideChain = new X509Certificate[] { inside, intermediate };
++        X509Certificate[] outsideChain = new X509Certificate[] { outside, intermediate };
++
++        // A fresh trust manager enforces the intermediate's name constraint.
++        assertInvalid(outsideChain, trustManagerImpl(root));
++
++        TrustManagerImpl tm = trustManagerImpl(root);
++        assertValid(insideChain, tm);
++        // The learned intermediate is not an anchor: its constraint still rejects the other leaf,
++        // with or without the intermediate in the presented chain ...
++        assertInvalid(outsideChain, tm);
++        assertInvalid(new X509Certificate[] { outside }, tm);
++        // ... and it still completes a chain that lacks it (http://b/3404902).
++        assertValid(new X509Certificate[] { inside }, tm);
++    }
++
++    /**
++     * kktls test for cm-11 02e4d22: a chain completed from the learned intermediate ends at the
++     * root, not at the intermediate. Same assertions as testGetFullChain, but on a directly
++     * constructed TrustManagerImpl: testGetFullChain takes the trust manager from the default
++     * provider, which on host Dalvik is the jarjar'd com.android.org.conscrypt class, so its
++     * instanceof check fails there before it gets to the chains.
++     */
++    public void testLearnedIntermediateCompletesChainToRoot() throws Exception {
++        KeyStore.PrivateKeyEntry pke = TestKeyStore.getServer().getPrivateKey("RSA", "RSA");
++        X509Certificate[] chain3 = (X509Certificate[]) pke.getCertificateChain();
++        X509Certificate root = chain3[2];
++        X509Certificate[] chain2 = new X509Certificate[] { chain3[0], chain3[1] };
++        X509Certificate[] chain1 = new X509Certificate[] { chain3[0] };
++
++        TrustManagerImpl tm = trustManagerImpl(root);
++        assertEquals(Arrays.asList(chain3), tm.checkServerTrusted(chain2, "RSA", "purple.com"));
++        assertEquals(Arrays.asList(chain3), tm.checkServerTrusted(chain1, "RSA", "purple.com"));
++        assertEquals(Arrays.asList(chain3), tm.checkServerTrusted(chain2, "RSA", "purple.com"));
++    }
++
++    private static TrustManagerImpl trustManagerImpl(X509Certificate ca) throws Exception {
++        KeyStore keyStore = TestKeyStore.createKeyStore();
++        keyStore.setCertificateEntry("alias", ca);
++        return new TrustManagerImpl(keyStore);
++    }
++
++    private static X509Certificate leafWithIpAddress(TestKeyStore ca, byte[] ipAddress)
++            throws Exception {
++        return (X509Certificate) new TestKeyStore.Builder()
++                .keyAlgorithms("RSA")
++                .aliasPrefix("ConstrainedLeaf")
++                .addSubjectAltNameIpAddress(ipAddress)
++                .signer(ca.getPrivateKey("RSA", "RSA"))
++                .rootCa(ca.getRootCertificate("RSA"))
++                .build()
++                .getPrivateKey("RSA", "RSA")
++                .getCertificate();
++    }
++
+     private X509TrustManager trustManager(X509Certificate ca) throws Exception {
+         KeyStore keyStore = TestKeyStore.createKeyStore();
+         keyStore.setCertificateEntry("alias", ca);
+diff --git a/crypto/src/test/java/org/conscrypt/TrustedCertificateIndexTest.java b/crypto/src/test/java/org/conscrypt/TrustedCertificateIndexTest.java
+new file mode 100644
+index 000000000..4c7722db5
+--- /dev/null
++++ b/crypto/src/test/java/org/conscrypt/TrustedCertificateIndexTest.java
+@@ -0,0 +1,98 @@
++/*
++ * Copyright (C) 2026 The android-kitkat-tls12 authors
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.conscrypt;
++
++import java.lang.reflect.Field;
++import java.security.cert.TrustAnchor;
++import java.security.cert.X509Certificate;
++import java.util.ArrayList;
++import java.util.Collections;
++import java.util.List;
++import java.util.Map;
++import javax.security.auth.x500.X500Principal;
++import junit.framework.TestCase;
++import libcore.java.security.TestKeyStore;
++
++/**
++ * kktls tests for cm-11 5549787 (= conscrypt 4bdc877, Dec-2015 security bulletin): since 02e4d22
++ * TrustManagerImpl indexes the intermediates of every validated chain, so the same certificate
++ * must be stored once, however often it is indexed.
++ */
++public class TrustedCertificateIndexTest extends TestCase {
++
++    public void testIndexSameCertificateOnce() throws Exception {
++        X509Certificate[] chain = (X509Certificate[]) TestKeyStore.getServer()
++                .getPrivateKey("RSA", "RSA").getCertificateChain();
++        X509Certificate server = chain[0];
++        X509Certificate intermediate = chain[1];
++
++        TrustedCertificateIndex index = new TrustedCertificateIndex();
++        for (int i = 0; i < 5; i++) {
++            index.index(intermediate);
++        }
++        index.index(new TrustAnchor(intermediate, null));
++
++        assertEquals(1, anchorsFor(index, intermediate.getSubjectX500Principal()).size());
++        assertNotNull(index.findBySubjectAndPublicKey(intermediate));
++        TrustAnchor issuer = index.findByIssuerAndSignature(server);
++        assertNotNull(issuer);
++        assertEquals(intermediate, issuer.getTrustedCert());
++    }
++
++    public void testIndexKeepsDistinctCertificatesWithSameSubject() throws Exception {
++        String subject = "CN=TLS Test Same Subject CA";
++        TestKeyStore ca1 = new TestKeyStore.Builder()
++                .keyAlgorithms("RSA").aliasPrefix("SameSubjectCA1").subject(subject).ca(true)
++                .build();
++        TestKeyStore ca2 = new TestKeyStore.Builder()
++                .keyAlgorithms("RSA").aliasPrefix("SameSubjectCA2").subject(subject).ca(true)
++                .build();
++        X509Certificate cert1 = ca1.getRootCertificate("RSA");
++        X509Certificate cert2 = ca2.getRootCertificate("RSA");
++        assertFalse(cert1.equals(cert2));
++        X509Certificate leaf2 = (X509Certificate) new TestKeyStore.Builder()
++                .keyAlgorithms("RSA").aliasPrefix("SameSubjectLeaf")
++                .signer(ca2.getPrivateKey("RSA", "RSA")).rootCa(cert2)
++                .build().getPrivateKey("RSA", "RSA").getCertificate();
++
++        TrustedCertificateIndex index = new TrustedCertificateIndex();
++        index.index(cert1);
++        index.index(cert2);
++        index.index(cert1);
++        index.index(cert2);
++
++        assertEquals(2, anchorsFor(index, new X500Principal(subject)).size());
++        TrustAnchor issuer = index.findByIssuerAndSignature(leaf2);
++        assertNotNull(issuer);
++        assertEquals(cert2, issuer.getTrustedCert());
++    }
++
++    @SuppressWarnings("unchecked")
++    private static List<TrustAnchor> anchorsFor(TrustedCertificateIndex index,
++            X500Principal subject) throws Exception {
++        Field field = TrustedCertificateIndex.class.getDeclaredField("subjectToTrustAnchors");
++        field.setAccessible(true);
++        Map<X500Principal, List<TrustAnchor>> map =
++                (Map<X500Principal, List<TrustAnchor>>) field.get(index);
++        synchronized (map) {
++            List<TrustAnchor> anchors = map.get(subject);
++            return (anchors == null)
++                    ? Collections.<TrustAnchor>emptyList()
++                    : new ArrayList<TrustAnchor>(anchors);
++        }
++    }
++}
+diff --git a/luni/src/test/java/libcore/javax/net/ssl/SSLSocketTest.java b/luni/src/test/java/libcore/javax/net/ssl/SSLSocketTest.java
+index 76325e5f5..35bf07989 100644
+--- a/luni/src/test/java/libcore/javax/net/ssl/SSLSocketTest.java
++++ b/luni/src/test/java/libcore/javax/net/ssl/SSLSocketTest.java
+@@ -424,6 +424,58 @@ public class SSLSocketTest extends TestCase {
+         c.close();
+     }
+ 
++    /**
++     * kktls test for cm-11 3f575a6 (= conscrypt 5af5e93): the client takes over its cached session
++     * object only when OpenSSL resumed it. Every connection wraps a plain socket with the same
++     * host and port, so the client offers the cached session to whichever server it reaches.
++     */
++    public void test_SSLSocket_sessionReuse_onlyWhenResumed() throws Exception {
++        TestSSLContext a = TestSSLContext.create();
++        // b has its own server session cache, so it cannot resume a's sessions
++        TestSSLContext b = TestSSLContext.create();
++        SSLSocketFactory cf = a.clientContext.getSocketFactory();
++        try {
++            SSLSession first = handshakeWrapped(cf, a, "reuse.tls.test", 443);
++            SSLSession resumed = handshakeWrapped(cf, a, "reuse.tls.test", 443);
++            assertSame(first, resumed);
++
++            SSLSession fresh = handshakeWrapped(cf, b, "reuse.tls.test", 443);
++            assertNotSame(first, fresh);
++            assertFalse(Arrays.equals(first.getId(), fresh.getId()));
++            assertTrue(fresh.isValid());
++
++            // the new session replaced the old one in the client cache
++            SSLSession resumedFresh = handshakeWrapped(cf, b, "reuse.tls.test", 443);
++            assertSame(fresh, resumedFresh);
++        } finally {
++            a.close();
++            b.close();
++        }
++    }
++
++    private static SSLSession handshakeWrapped(SSLSocketFactory cf, TestSSLContext server,
++                                               String host, int port) throws Exception {
++        Socket plain = new Socket(server.host, server.port);
++        SSLSocket client = (SSLSocket) cf.createSocket(plain, host, port, true);
++        final SSLSocket accepted = (SSLSocket) server.serverSocket.accept();
++        ExecutorService executor = Executors.newSingleThreadExecutor();
++        Future<Void> future = executor.submit(new Callable<Void>() {
++            @Override public Void call() throws Exception {
++                accepted.startHandshake();
++                return null;
++            }
++        });
++        executor.shutdown();
++        try {
++            client.startHandshake();
++            future.get();
++            return client.getSession();
++        } finally {
++            client.close();
++            accepted.close();
++        }
++    }
++
+     public void test_SSLSocket_startHandshake_noKeyStore() throws Exception {
+         TestSSLContext c = TestSSLContext.create(null, null, null, null, null, null, null, null,
+                                                  SSLContext.getDefault(), SSLContext.getDefault());

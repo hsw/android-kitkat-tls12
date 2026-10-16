@@ -1,0 +1,58 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: android-kitkat-tls12 <android-kitkat-tls12@users.noreply.github.com>
+Date: Fri, 9 Oct 2026 12:00:00 +0000
+Subject: [PATCH 06/31] Default protocols TLSv1, TLSv1.1, TLSv1.2 for client
+ and server sockets
+
+The behaviour of conscrypt 1f63d2c ("Enable TLSv1.1 and TLSv1.2 by
+default for SSLSocket", 5.0) and dee4e55 ("Remove SSLv3 from default
+protocols list for TLS", 6.0): getDefaultProtocols() returns TLSv1,
+TLSv1.1, TLSv1.2. SSLv3 stays in getSupportedProtocols() and can still
+be enabled with setEnabledProtocols().
+
+Server sockets enable the same defaults instead of every supported
+protocol, as conscrypt ae2ecac ("SSLParametersImpl is the source of
+enabled cipher suites and protocols") made them: OpenSSLServerSocketImpl
+initialises enabledProtocols from getDefaultProtocols().
+
+The Harmony SSLEngine (SSLParametersImpl, ProtocolVersion) is not
+changed.
+---
+ crypto/src/main/java/org/conscrypt/NativeCrypto.java     | 9 +++++++--
+ .../main/java/org/conscrypt/OpenSSLServerSocketImpl.java | 2 +-
+ 2 files changed, 8 insertions(+), 3 deletions(-)
+
+diff --git a/crypto/src/main/java/org/conscrypt/NativeCrypto.java b/crypto/src/main/java/org/conscrypt/NativeCrypto.java
+index 14ed830c8..4d4885683 100644
+--- a/crypto/src/main/java/org/conscrypt/NativeCrypto.java
++++ b/crypto/src/main/java/org/conscrypt/NativeCrypto.java
+@@ -851,9 +851,14 @@ public final class NativeCrypto {
+ 
+     public static native long SSL_clear_options(long ssl, long options);
+ 
++    /**
++     * kktls default protocols for client and server sockets: TLSv1, TLSv1.1 and TLSv1.2
++     * (Android 6.0+). SSLv3 stays supported, but only when enabled explicitly.
++     */
+     public static String[] getDefaultProtocols() {
+-        return new String[] { SUPPORTED_PROTOCOL_SSLV3,
+-                              SUPPORTED_PROTOCOL_TLSV1,
++        return new String[] { SUPPORTED_PROTOCOL_TLSV1,
++                              SUPPORTED_PROTOCOL_TLSV1_1,
++                              SUPPORTED_PROTOCOL_TLSV1_2,
+         };
+     }
+ 
+diff --git a/crypto/src/main/java/org/conscrypt/OpenSSLServerSocketImpl.java b/crypto/src/main/java/org/conscrypt/OpenSSLServerSocketImpl.java
+index aa917c36f..232118550 100644
+--- a/crypto/src/main/java/org/conscrypt/OpenSSLServerSocketImpl.java
++++ b/crypto/src/main/java/org/conscrypt/OpenSSLServerSocketImpl.java
+@@ -25,7 +25,7 @@ import java.net.Socket;
+  */
+ public class OpenSSLServerSocketImpl extends javax.net.ssl.SSLServerSocket {
+     private final SSLParametersImpl sslParameters;
+-    private String[] enabledProtocols = NativeCrypto.getSupportedProtocols();
++    private String[] enabledProtocols = NativeCrypto.getDefaultProtocols();
+     private String[] enabledCipherSuites = NativeCrypto.getDefaultCipherSuites();
+     private boolean channelIdEnabled;
+ 

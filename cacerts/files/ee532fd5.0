@@ -1,0 +1,33 @@
+-----BEGIN CERTIFICATE-----
+MIICDzCCAZWgAwIBAgIUbmq8WapTvpg5Z6LSa6Q75m0c1towCgYIKoZIzj0EAwMw
+RzELMAkGA1UEBhMCQ04xHDAaBgNVBAoTE2lUcnVzQ2hpbmEgQ28uLEx0ZC4xGjAY
+BgNVBAMTEXZUcnVzIEVDQyBSb290IENBMB4XDTE4MDczMTA3MjY0NFoXDTQzMDcz
+MTA3MjY0NFowRzELMAkGA1UEBhMCQ04xHDAaBgNVBAoTE2lUcnVzQ2hpbmEgQ28u
+LEx0ZC4xGjAYBgNVBAMTEXZUcnVzIEVDQyBSb290IENBMHYwEAYHKoZIzj0CAQYF
+K4EEACIDYgAEZVBKrox5lkqqHAjDo6LN/llWQXf9JpRCux3NCNtzslt188+cToL0
+v/hhJoVs1oVbcnDS/dtitN9Ti72xRFhiQgnH+n9bEOf+QP3A2MMrMudwpremIFUd
+e4BdS49nTPEQo0IwQDAdBgNVHQ4EFgQUmDnNvtiyjPeyq+GtJK97fKHbH88wDwYD
+VR0TAQH/BAUwAwEB/zAOBgNVHQ8BAf8EBAMCAQYwCgYIKoZIzj0EAwMDaAAwZQIw
+V53dVvHH4+m4SVBrm2nDb+zDfSXkV5UTQJtS0zvzQBm8JsctBp61ezaf9SXUY2sA
+AjEA6dPGnlaaKsyh2j/IZivTWJwghfqrkYpwcBE4YGQLYgmRWAD5Tfs0aNoJrSEG
+GJTO
+-----END CERTIFICATE-----
+Certificate:
+    Data:
+        Version: 3 (0x2)
+        Serial Number:
+            6e:6a:bc:59:aa:53:be:98:39:67:a2:d2:6b:a4:3b:e6:6d:1c:d6:da
+        Signature Algorithm: ecdsa-with-SHA384
+        Issuer: C=CN, O=iTrusChina Co.,Ltd., CN=vTrus ECC Root CA
+        Validity
+            Not Before: Jul 31 07:26:44 2018 GMT
+            Not After : Jul 31 07:26:44 2043 GMT
+        Subject: C=CN, O=iTrusChina Co.,Ltd., CN=vTrus ECC Root CA
+        X509v3 extensions:
+            X509v3 Subject Key Identifier: 
+                98:39:CD:BE:D8:B2:8C:F7:B2:AB:E1:AD:24:AF:7B:7C:A1:DB:1F:CF
+            X509v3 Basic Constraints: critical
+                CA:TRUE
+            X509v3 Key Usage: critical
+                Certificate Sign, CRL Sign
+SHA1 Fingerprint=F6:9C:DB:B0:FC:F6:02:13:B6:52:32:A6:A3:91:3F:16:70:DA:C3:E1

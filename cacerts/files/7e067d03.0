@@ -1,0 +1,33 @@
+-----BEGIN CERTIFICATE-----
+MIICJTCCAaugAwIBAgIQLBcIfWQqwP6FGFkGz7RK6zAKBggqhkjOPQQDAzBUMQsw
+CQYDVQQGEwJDTjEmMCQGA1UECgwdQkVJSklORyBDRVJUSUZJQ0FURSBBVVRIT1JJ
+VFkxHTAbBgNVBAMMFEJKQ0EgR2xvYmFsIFJvb3QgQ0EyMB4XDTE5MTIxOTAzMTgy
+MVoXDTQ0MTIxMjAzMTgyMVowVDELMAkGA1UEBhMCQ04xJjAkBgNVBAoMHUJFSUpJ
+TkcgQ0VSVElGSUNBVEUgQVVUSE9SSVRZMR0wGwYDVQQDDBRCSkNBIEdsb2JhbCBS
+b290IENBMjB2MBAGByqGSM49AgEGBSuBBAAiA2IABJ3LgJGNU2e1uVCxA/jlSR9B
+IgmwUVJY1is0j8USRhTFiy8shP8sbqjV8QnjAyEUxEM9fMEsxEtqSs3ph+B99iK+
++kpRuDCK/eHeGBIK9ke35xe/J4rUQUyWPGCWwf0VHKNCMEAwHQYDVR0OBBYEFNJK
+sVF/BvDRgh9Obl+rg/xI1LCRMA8GA1UdEwEB/wQFMAMBAf8wDgYDVR0PAQH/BAQD
+AgEGMAoGCCqGSM49BAMDA2gAMGUCMBq8W9f+qdJUDkpd0m2xQNz0Q9XSSpkZElaA
+94M04TVOSG0ED1cxMDAtsaqdAzjbBgIxAMvMh1PLet8gUXOQwKhbYdDFUDn9hf7B
+43j4ptZLvZuHjw/l1lOWqzzIQNph91Oj9w==
+-----END CERTIFICATE-----
+Certificate:
+    Data:
+        Version: 3 (0x2)
+        Serial Number:
+            2c:17:08:7d:64:2a:c0:fe:85:18:59:06:cf:b4:4a:eb
+        Signature Algorithm: ecdsa-with-SHA384
+        Issuer: C=CN, O=BEIJING CERTIFICATE AUTHORITY, CN=BJCA Global Root CA2
+        Validity
+            Not Before: Dec 19 03:18:21 2019 GMT
+            Not After : Dec 12 03:18:21 2044 GMT
+        Subject: C=CN, O=BEIJING CERTIFICATE AUTHORITY, CN=BJCA Global Root CA2
+        X509v3 extensions:
+            X509v3 Subject Key Identifier: 
+                D2:4A:B1:51:7F:06:F0:D1:82:1F:4E:6E:5F:AB:83:FC:48:D4:B0:91
+            X509v3 Basic Constraints: critical
+                CA:TRUE
+            X509v3 Key Usage: critical
+                Certificate Sign, CRL Sign
+SHA1 Fingerprint=F4:27:86:EB:6E:B8:6D:88:31:67:02:FB:BA:66:A4:53:00:AA:7A:A6

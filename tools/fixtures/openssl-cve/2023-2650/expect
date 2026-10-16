@@ -1,0 +1,13 @@
+# CVE-2023-2650 - OBJ_obj2txt DoS on a huge OID (hang class: decided by work done, timeout = safety bound)
+class=hang
+lib=noasan
+needs_ssl=0
+timeout_host=10
+timeout_arm32=40
+timeout_x86=10
+timeout_mips=40
+arm32=yes
+x86=yes
+mips=yes
+target=yes
+desc=OBJ_obj2txt is O(n^2) on an unbounded OID sub-identifier (cert OID printing)

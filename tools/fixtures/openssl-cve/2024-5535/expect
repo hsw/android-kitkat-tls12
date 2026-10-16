@@ -1,0 +1,15 @@
+# CVE-2024-5535 - SSL_select_next_proto empty-list read overrun (asan class)
+class=asan
+lib=asan
+needs_ssl=1
+timeout_host=20
+timeout_arm32=90
+timeout_x86=20
+timeout_mips=90
+arm32=skip
+arm32_skip_reason=ASan under qemu-user armhf is unreliable; cross libasan run skipped
+x86=yes
+mips=skip
+mips_skip_reason=no libasan for mipsel in the Debian cross gcc (bookworm 12, trixie 14; ld: cannot find -lasan)
+target=no
+desc=SSL_select_next_proto reads client[0] past an empty supported-protocol list

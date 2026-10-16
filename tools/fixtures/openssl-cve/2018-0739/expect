@@ -1,0 +1,13 @@
+# CVE-2018-0739 - recursive ASN.1 stack exhaustion (crash class)
+class=crash
+lib=noasan
+needs_ssl=0
+timeout_host=20
+timeout_arm32=90
+timeout_x86=20
+timeout_mips=90
+arm32=yes
+x86=yes
+mips=yes
+target=yes
+desc=d2i_PKCS7 recurses unbounded on nested ContentInfo and overflows the stack

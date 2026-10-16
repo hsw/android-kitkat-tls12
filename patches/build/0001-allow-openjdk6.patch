@@ -1,0 +1,15 @@
+diff --git a/core/main.mk b/core/main.mk
+index d424b25..f38fe7b 100644
+--- a/core/main.mk
++++ b/core/main.mk
+@@ -140,8 +140,8 @@ $(warning ************************************************************)
+ $(error Directory names containing spaces not supported)
+ endif
+ 
+-# Check for the corrent jdk
+-ifneq ($(shell java -version 2>&1 | grep -i openjdk),)
++# Check for the corrent jdk (kktls: OpenJDK 6 allowed, ALLOW_OPENJDK unset = original behaviour)
++ifneq ($(if $(ALLOW_OPENJDK),,$(shell java -version 2>&1 | grep -i openjdk)),)
+ $(info ************************************************************)
+ $(info You are attempting to build with an unsupported JDK.)
+ $(info $(space))

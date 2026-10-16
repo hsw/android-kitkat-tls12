@@ -1,0 +1,22 @@
+/* Synthetic fixture for check_tls_lists.py --selftest (SSL_CIPHER algorithm bits, shape of OpenSSL 1.0.1e ssl/ssl_locl.h). */
+#define SSL_kRSA		0x00000001L
+#define SSL_kDHr		0x00000002L
+#define SSL_kDHd		0x00000004L
+#define SSL_kEDH		0x00000008L
+#define SSL_kKRB5		0x00000010L
+#define SSL_kECDHr		0x00000020L
+#define SSL_kECDHe		0x00000040L
+#define SSL_kEECDH		0x00000080L
+#define SSL_kPSK		0x00000100L
+#define SSL_kGOST		0x00000200L
+#define SSL_kSRP		0x00000400L
+#define SSL_aRSA		0x00000001L
+#define SSL_aDSS		0x00000002L
+#define SSL_aNULL		0x00000004L
+#define SSL_aDH		0x00000008L
+#define SSL_aECDH		0x00000010L
+#define SSL_aKRB5		0x00000020L
+#define SSL_aECDSA		0x00000040L
+#define SSL_aPSK		0x00000080L
+#define SSL_aGOST94		0x00000100L
+#define SSL_aGOST01		0x00000200L

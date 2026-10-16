@@ -1,0 +1,220 @@
+# Release build on GitHub-hosted runners: host tests, the build image (docker/Dockerfile.build, cached in GHCR under the
+# repository owner, tagged by the Dockerfile's hash; the build jobs pull it by the digest the image job saw), one
+# partial AOSP build per tag (both ABIs in one out/, every step of tools/kktls-release-build.sh inside the image with
+# --runner direct), then the recovery zips (tools/mkzips.sh) with the installer tests on the real output. release.yml calls this workflow for a tag and publishes the zips.
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      release:
+        description: release name written into the zips and their markers (e.g. v1)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  # zips of a non-release run are named ci-<commit>
+  RELEASE: ${{ inputs.release || format('ci-{0}', github.sha) }}
+
+jobs:
+  host-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: packages
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends busybox-static zip file junit default-jdk-headless
+          # installer tests enter fake device roots with `unshare -r` (Ubuntu 24.04 restricts it by default)
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: build-tools 37.0.0 (d8, dexdump for the checkers; the pin of docker/Dockerfile.build)
+        run: |
+          sdk=$RUNNER_TEMP/android-sdk
+          mkdir -p "$sdk/build-tools"
+          curl -fsSL --retry 3 -o "$sdk/bt.zip" https://dl.google.com/android/repository/build-tools_r37_linux.zip
+          echo "01af179347cbcd9c208b7f8171f7b21f6dd1d2f85bcd15e88caa51d5d7b86060  $sdk/bt.zip" | sha256sum -c --quiet
+          unzip -q "$sdk/bt.zip" -d "$sdk/bt" && mv "$sdk"/bt/android-* "$sdk/build-tools/37.0.0" && rm -r "$sdk/bt.zip" "$sdk/bt"
+          echo "ANDROID_HOME=$sdk" >> "$GITHUB_ENV"
+      - name: checkers
+        run: |
+          python3 -I tools/check_tls_lists.py --selftest
+          python3 -I tools/openssl-abi-check.py --selftest
+          python3 -I tools/clienthello_probe.py --selftest
+          python3 -I tools/check_artifacts.py --selftest
+          python3 -I tools/zipnorm.py --selftest
+          python3 -I conscrypt/apicheck.py --selftest
+          python3 -I conscrypt/rename_jni.py --selftest
+          python3 -I conscrypt/dexparse.py --selftest
+          tools/fetch-openssl.sh --selftest
+          tools/openssl-cve-test.sh --classify-test
+          tools/tls-probe.sh selftest
+          tools/kktls-release-build.sh --dry-run
+      - name: sslfactory host tests
+        run: conscrypt/sslfactory/test/run-host-tests.sh
+      - name: symbol helper tests
+        run: symcheck/test.sh
+      - name: util helper tests (setcon, has-entry, sha256)
+        run: symcheck/test-util.sh
+      - name: installer tests
+        run: installer/test/run-tests.sh
+
+  image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      ref: ${{ steps.ref.outputs.ref }}
+      # ghcr.io/...@sha256:... of the image in the registry; empty when it is not there (pull request: not pushed)
+      pinned: ${{ steps.push.outputs.pinned }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: ref
+        name: image name
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          # the image carries the uid of the runner user (the owner of the bind-mounted trees)
+          h=$(sha256sum docker/Dockerfile.build | cut -c1-16)
+          echo "ref=ghcr.io/${OWNER,,}/kktls-aosp-build:${h}-uid$(id -u)" >> "$GITHUB_OUTPUT"
+      - id: push
+        name: build and push when missing
+        env:
+          REF: ${{ steps.ref.outputs.ref }}
+          PUSH: ${{ github.event_name != 'pull_request' }}
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          if docker manifest inspect "$REF" > /dev/null 2>&1; then
+            echo "$REF present"
+          else
+            docker build -q --build-arg UID="$(id -u)" -t "$REF" -f docker/Dockerfile.build docker
+            if [ "$PUSH" != true ]; then
+              echo "pull request: image not pushed; the build jobs build it themselves"
+              exit 0
+            fi
+            printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+            docker push -q "$REF"
+          fi
+          # the tag is mutable: the build jobs pull this digest, the image checked here
+          digest=$(docker buildx imagetools inspect "$REF" --format '{{.Manifest.Digest}}')
+          case $digest in sha256:????????????????????????????????????????????????????????????????) ;;
+            *) echo "no digest for $REF: '$digest'" >&2; exit 1 ;;
+          esac
+          echo "pinned=${REF%:*}@$digest" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        tag: [android-4.4.2_r2, android-4.4.4_r2]
+    env:
+      IMG: ${{ needs.image.outputs.ref }}
+      PINNED: ${{ needs.image.outputs.pinned }}
+    steps:
+      - name: free disk
+        run: |
+          df -h /
+          # toolchains this job does not use (the build image brings its own SDK tools)
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL \
+            /usr/local/share/boost /usr/local/share/powershell /usr/local/julia* /opt/microsoft
+          docker system prune -af > /dev/null
+          df -h /
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: image
+        run: |
+          # by digest when the image job found it in the registry (a pull failure fails the job); else built here
+          if [ -n "$PINNED" ]; then
+            docker pull -q "$PINNED"
+            docker tag "$PINNED" "$IMG"
+          else
+            docker build -q --build-arg UID="$(id -u)" -t "$IMG" -f docker/Dockerfile.build docker
+          fi
+      - name: build
+        run: |
+          mkdir -p "$RUNNER_TEMP/kktls"
+          docker run --rm --ulimit nofile=1024:524288 -v "$GITHUB_WORKSPACE:/src" -v "$RUNNER_TEMP/kktls:/work" "$IMG" \
+            bash /src/tools/kktls-release-build.sh --runner direct --work /work --tags "${{ matrix.tag }}" \
+            --jobs "$(nproc)" all
+      - name: disk use
+        if: always()
+        run: df -h / && du -sh "$RUNNER_TEMP/kktls" || true
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-${{ matrix.tag }}
+          path: ${{ runner.temp }}/kktls/out/kktls/${{ matrix.tag }}/
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: stock-${{ matrix.tag }}
+          path: ${{ runner.temp }}/kktls/${{ matrix.tag }}/stock-openssl/
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure()
+        with:
+          name: logs-${{ matrix.tag }}
+          path: |
+            ${{ runner.temp }}/kktls/${{ matrix.tag }}/logs/
+            ${{ runner.temp }}/kktls/out/kktls/checks.tsv
+          retention-days: 14
+
+  zips:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: release-*
+          path: ${{ runner.temp }}/dl
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: stock-*
+          path: ${{ runner.temp }}/dl
+      - name: packages
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends busybox-static zip file
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: pack
+        run: |
+          dl=$RUNNER_TEMP/dl in=$RUNNER_TEMP/in
+          mkdir -p "$in" "$RUNNER_TEMP/stock"
+          for d in "$dl"/release-*; do mv "$d" "$in/${d##*/release-}"; done
+          for d in "$dl"/stock-*; do mv "$d" "$RUNNER_TEMP/stock/${d##*/stock-}"; done
+          tools/mkzips.sh --in "$in" --release "$RELEASE" --cacerts cacerts/files --conscrypt-notice conscrypt/NOTICE \
+            --out "$RUNNER_TEMP/zips"
+          (cd "$RUNNER_TEMP/zips" && sha256sum -c --quiet SHA256SUMS && cat SHA256SUMS)
+      - name: installer tests on the release output
+        run: |
+          installer/test/run-tests.sh --real "$RUNNER_TEMP/in" cacerts/files conscrypt/NOTICE \
+            "$RUNNER_TEMP/stock/android-4.4.2_r2/x86"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: zips
+          path: ${{ runner.temp }}/zips/
+          if-no-files-found: error
+          retention-days: 30

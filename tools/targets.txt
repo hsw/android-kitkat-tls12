@@ -1,0 +1,119 @@
+# Release build inputs of tools/kktls-release-build.sh (one keyword per line, # starts a comment).
+#   target  TAG LUNCH ABI   one release build: AOSP tag, lunch combo, Android ABI name (output dir out/kktls/TAG/ABI)
+#   project PATH            AOSP manifest path synced (depth 1) for every tag; found by the Task 1 discovery builds
+#   rev     TAG PATH SHA    the commit PATH must have after `sync` of TAG (every project of every tag needs one)
+#   module  NAME            make goal built for every target (layer A modules, then the layer D modules)
+#   file    PATH            release file collected from PRODUCT_OUT/system/PATH; a missing one fails the build
+# Variant: -user (no gnu_debuglink in stripped .so files) with WITH_DEXPREOPT=false on the make command line, so every
+# jar keeps its classes.dex (the release replaces jars on devices whose other .odex files then get re-dexopted).
+
+target  android-4.4.2_r2  aosp_arm-user  armeabi-v7a
+target  android-4.4.2_r2  aosp_x86-user  x86
+target  android-4.4.4_r2  aosp_arm-user  armeabi-v7a
+target  android-4.4.4_r2  aosp_x86-user  x86
+
+project build
+project bionic
+project abi/cpp
+project libcore
+project libnativehelper
+project dalvik
+project system/core
+project external/openssl
+project external/okhttp
+project external/zlib
+project external/fdlibm
+project external/expat
+project external/icu4c
+project external/stlport
+project external/clang
+project external/llvm
+project external/compiler-rt
+project prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.7
+project prebuilts/gcc/linux-x86/x86/i686-linux-android-4.7
+project prebuilts/gcc/linux-x86/host/i686-linux-glibc2.7-4.6
+project prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.7-4.6
+project prebuilts/tools
+project prebuilts/misc
+project prebuilts/sdk
+project prebuilts/ndk
+
+# synced revisions: after `sync` every project's checkout must be this commit (a moved or re-pointed tag fails
+# the build); recorded from the first release build (refs/remotes/m/<tag> of each project)
+rev  android-4.4.2_r2  build                                                   54004d146e0532a5d2ded2bbca55d496e081c08b
+rev  android-4.4.2_r2  bionic                                                  5ab8d33aa64a4ca12172dba92df172f70629874d
+rev  android-4.4.2_r2  abi/cpp                                                 18f1b5e28734183ff8073fe86dc46bc4ebba8a59
+rev  android-4.4.2_r2  libcore                                                 8629cea4bb842ac8e13caf1979a5463215be259f
+rev  android-4.4.2_r2  libnativehelper                                         feeb36c2bd4adfe285f98f5de92e0f3771b2c115
+rev  android-4.4.2_r2  dalvik                                                  6e21232cf2bca0e73bd418413564cb140ab9ccbd
+rev  android-4.4.2_r2  system/core                                             e65b7ea8801145626504c724c28aedd0e5038a28
+rev  android-4.4.2_r2  external/openssl                                        bb8428f762b3632f493572c4f73957e1281ade79
+rev  android-4.4.2_r2  external/okhttp                                         49d9ce3394234904623bdcc8d781017e58008a37
+rev  android-4.4.2_r2  external/zlib                                           a5c7131da47c991585a6c6ac0c063b6d7d56e3fc
+rev  android-4.4.2_r2  external/fdlibm                                         0da5f683c9ddc9442af3b389b4220e91ccffb320
+rev  android-4.4.2_r2  external/expat                                          0af0cb3bc7519e567bd9daff3dcd315ab0134a99
+rev  android-4.4.2_r2  external/icu4c                                          0a61a367aa48577edf1c9ba57c501b8f5e7555d5
+rev  android-4.4.2_r2  external/stlport                                        628e14d37c5b239839a466e81c74bf66255b770b
+rev  android-4.4.2_r2  external/clang                                          a902511dd22624b15cc61e36d167d1cf3549bc74
+rev  android-4.4.2_r2  external/llvm                                           5d63c52424acc972d6370c50e1f3930d695790b7
+rev  android-4.4.2_r2  external/compiler-rt                                    7cba5f1d950495b02bc8da53d27bdbb1b0d4f117
+rev  android-4.4.2_r2  prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.7   a1e239a0bb5cd1d69680bf1075883aa9a7bf2429
+rev  android-4.4.2_r2  prebuilts/gcc/linux-x86/x86/i686-linux-android-4.7      c7931763d41be602407ed9d71e2c0292c6597e00
+rev  android-4.4.2_r2  prebuilts/gcc/linux-x86/host/i686-linux-glibc2.7-4.6    95bb5b66b3ec5769c3de8d3f25d681787418e7d2
+rev  android-4.4.2_r2  prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.7-4.6  ebdad82e61c16772f6cd47e9f11936bf6ebe9aa0
+rev  android-4.4.2_r2  prebuilts/tools                                         5a48c04c4bb5f079bc757e29864a42427378e051
+rev  android-4.4.2_r2  prebuilts/misc                                          87aad85f81ccb4871d6125709f74a9eeadb90588
+rev  android-4.4.2_r2  prebuilts/sdk                                           cfcef469537869947abb9aa1d656774cc2678d4c
+rev  android-4.4.2_r2  prebuilts/ndk                                           c792f0bd9fff7aea2887c60bbb3a9bbdb534ffa3
+rev  android-4.4.4_r2  build                                                   b34d556982095a8fe84273ffceadd80f41325acf
+rev  android-4.4.4_r2  bionic                                                  081db840befec895fb86e709ae95832ade2d065c
+rev  android-4.4.4_r2  abi/cpp                                                 18f1b5e28734183ff8073fe86dc46bc4ebba8a59
+rev  android-4.4.4_r2  libcore                                                 9b24ebf95f897a75c60c9c68d00694406afa6fbc
+rev  android-4.4.4_r2  libnativehelper                                         feeb36c2bd4adfe285f98f5de92e0f3771b2c115
+rev  android-4.4.4_r2  dalvik                                                  36e356c96640775f0a3f167bd2426ea0f0093b8b
+rev  android-4.4.4_r2  system/core                                             efbf36f2dad8f083de6f48dbb682461d7cfa9781
+rev  android-4.4.4_r2  external/openssl                                        dd1da36b0baa39942f0aef42c4712ef0ad628a83
+rev  android-4.4.4_r2  external/okhttp                                         49d9ce3394234904623bdcc8d781017e58008a37
+rev  android-4.4.4_r2  external/zlib                                           a5c7131da47c991585a6c6ac0c063b6d7d56e3fc
+rev  android-4.4.4_r2  external/fdlibm                                         0da5f683c9ddc9442af3b389b4220e91ccffb320
+rev  android-4.4.4_r2  external/expat                                          0af0cb3bc7519e567bd9daff3dcd315ab0134a99
+rev  android-4.4.4_r2  external/icu4c                                          18668f3b015a110275f5cc9a8722b2f65f3333bf
+rev  android-4.4.4_r2  external/stlport                                        628e14d37c5b239839a466e81c74bf66255b770b
+rev  android-4.4.4_r2  external/clang                                          a902511dd22624b15cc61e36d167d1cf3549bc74
+rev  android-4.4.4_r2  external/llvm                                           5d63c52424acc972d6370c50e1f3930d695790b7
+rev  android-4.4.4_r2  external/compiler-rt                                    7cba5f1d950495b02bc8da53d27bdbb1b0d4f117
+rev  android-4.4.4_r2  prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.7   a1e239a0bb5cd1d69680bf1075883aa9a7bf2429
+rev  android-4.4.4_r2  prebuilts/gcc/linux-x86/x86/i686-linux-android-4.7      c7931763d41be602407ed9d71e2c0292c6597e00
+rev  android-4.4.4_r2  prebuilts/gcc/linux-x86/host/i686-linux-glibc2.7-4.6    95bb5b66b3ec5769c3de8d3f25d681787418e7d2
+rev  android-4.4.4_r2  prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.7-4.6  ebdad82e61c16772f6cd47e9f11936bf6ebe9aa0
+rev  android-4.4.4_r2  prebuilts/tools                                         5a48c04c4bb5f079bc757e29864a42427378e051
+rev  android-4.4.4_r2  prebuilts/misc                                          8446ac516fb6320eedd4e0b7522862661355e0a1
+rev  android-4.4.4_r2  prebuilts/sdk                                           cfcef469537869947abb9aa1d656774cc2678d4c
+rev  android-4.4.4_r2  prebuilts/ndk                                           c792f0bd9fff7aea2887c60bbb3a9bbdb534ffa3
+
+# layer A (OpenSSL, Java TLS)
+module libcrypto
+module libssl
+module libjavacrypto
+module core
+module core-libart
+module conscrypt
+module okhttp
+# layer D (Conscrypt 2.6-alpha2 stage + the SSLv3 filter)
+module kktls-conscrypt
+module libkktls_conscrypt_jni
+module kktls-sslfilter
+
+# kktls-openssl-<abi>
+file lib/libssl.so
+file lib/libcrypto.so
+# kktls-java-<ver>-<abi>
+file framework/core.jar
+file framework/core-libart.jar
+file framework/conscrypt.jar
+file framework/okhttp.jar
+file lib/libjavacrypto.so
+# kktls-conscrypt-<abi>
+file framework/kktls-conscrypt.jar
+file framework/kktls-sslfilter.jar
+file lib/libkktls_conscrypt_jni.so

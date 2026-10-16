@@ -1,0 +1,34 @@
+# Known failures of tls-probe.sh cts (route (b): the CTS libcore APKs on the emulator), one Class#method per line,
+# compared with the failing set of the classes that ran (tls-probe.sh cts_compare): every failure must be listed and
+# every listed failure of a class that ran must fail. "? Class#glob EXCEPTION" = may pass, or fail with exactly that
+# exception (the root cause of the test's stack: its last "Caused by:", else its first line; EXCEPTION is the class name,
+# a ":" and the message may follow; fnmatch on the test). Reasons: series README, sections "Acceptance
+# (Task 12)" and the Task 8 `cts` run.
+# Harmony SSLEngineImpl, untouched by the series (identical before any patch)
+libcore.javax.net.ssl.SSLEngineTest#test_SSLEngine_beginHandshake_noKeyStore
+libcore.javax.net.ssl.SSLEngineTest#test_SSLEngine_setEnableSessionCreation_client
+libcore.javax.net.ssl.SSLEngineTest#test_SSLEngine_setEnableSessionCreation_server
+libcore.javax.net.ssl.SSLEngineTest#test_SSLEngine_setUseClientMode
+tests.api.javax.net.ssl.SSLEngineTest#testHandshake
+tests.api.javax.net.ssl.SSLEngineTest#test_getDelegatedTask
+tests.api.javax.net.ssl.SSLEngineTest#test_wrap_02
+tests.api.javax.net.ssl.SSLEngineTest#test_wrap_04
+tests.api.javax.net.ssl.SSLEngineTest#test_wrap_ByteBuffer$ByteBuffer_03
+tests.api.javax.net.ssl.SSLEngineTest#test_wrap_ByteBuffer_ByteBuffer_03
+tests.api.javax.net.ssl.SSLEngineTest#test_unwrap_02
+tests.api.javax.net.ssl.SSLEngineTest#test_unwrap_03
+tests.api.javax.net.ssl.SSLEngineTest#test_unwrap_04
+tests.api.javax.net.ssl.SSLEngineTest#test_unwrap_ByteBuffer$ByteBuffer_02
+tests.api.javax.net.ssl.SSLEngineTest#test_unwrap_ByteBuffer$ByteBuffer_03
+tests.api.javax.net.ssl.SSLEngineTest#test_unwrap_ByteBuffer_ByteBuffer_02
+tests.api.javax.net.ssl.SSLEngineTest#test_unwrap_ByteBuffer_ByteBuffer_03
+# environment: the connect to StuckServer's full backlog ends in a java.net.ConnectException (IoBridge, root cause
+# libcore.io.ErrnoException "connect failed: ETIMEDOUT" or similar) instead of the 1 s SocketTimeoutException the test
+# wants; it depends on the kernel's listen backlog (failed in the Task 8 and review 3 emulator runs and on host Dalvik,
+# passed once on the emulator), so it may pass, or fail with exactly that root cause (review 4b: as a required entry a
+# pass on a device failed the run). Any other failure (a wrong timeout, an assertion) is UNEXPECTED. Fails before any
+# patch.
+? libcore.java.net.URLConnectionTest#testConnectTimeouts libcore.io.ErrnoException
+# (Review 3 iteration 3: the "? ...SSLSocketTest#test_SSLSocket_ClientHello_*/SNI_* CancellationException" entries are
+# gone. libcore/0031 fixed the capture helper's race and reports a client that failed before its ClientHello with the
+# client's own exception, so every failure of those tests, a CancellationException included, is UNEXPECTED.)

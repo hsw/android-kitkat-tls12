@@ -1,0 +1,39 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: android-kitkat-tls12 <android-kitkat-tls12@users.noreply.github.com>
+Date: Fri, 9 Oct 2026 12:00:00 +0000
+Subject: [PATCH 3/3] Build the target libssl with -fno-slp-vectorize (clang
+ 3.1 crashes on 1.0.1u)
+
+The KitKat clang 3.1 that builds the target libssl/libssl_static (LOCAL_CLANG)
+segfaults in its SLP vectorizer on OpenSSL 1.0.1u ssl/s3_lib.c at -O1 and
+above, with or without the Android patches (reproduced on the pristine 1.0.1u
+file); -O0 or -fno-slp-vectorize avoid it. The flag only disables an
+optimisation. libcrypto and the host libraries (gcc) are unchanged.
+---
+ Ssl.mk | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/Ssl.mk b/Ssl.mk
+index 47ccf14..7be160c 100644
+--- a/Ssl.mk
++++ b/Ssl.mk
+@@ -16,6 +16,9 @@ include $(LOCAL_PATH)/android-config.mk
+ # in the NDK.
+ ifeq (,$(TARGET_BUILD_APPS))
+ LOCAL_CLANG := true
++# The KitKat clang 3.1 crashes in its SLP vectorizer on OpenSSL 1.0.1u
++# ssl/s3_lib.c (also without the Android patches); -O0 or this flag avoid it.
++LOCAL_CFLAGS += -fno-slp-vectorize
+ else
+ LOCAL_SDK_VERSION := 9
+ endif
+@@ -39,6 +42,9 @@ include $(LOCAL_PATH)/android-config.mk
+ # in the NDK.
+ ifeq (,$(TARGET_BUILD_APPS))
+ LOCAL_CLANG := true
++# The KitKat clang 3.1 crashes in its SLP vectorizer on OpenSSL 1.0.1u
++# ssl/s3_lib.c (also without the Android patches); -O0 or this flag avoid it.
++LOCAL_CFLAGS += -fno-slp-vectorize
+ else
+ LOCAL_SDK_VERSION := 9
+ endif

@@ -1,0 +1,33 @@
+android-kitkat-tls12
+
+Own code (scripts, installer, the symbol and label helpers, the default-factory class, the SSLv3 filter module, the
+build and test tools) is licensed under the Apache License 2.0; see LICENSE.
+
+The patches modify third-party projects and keep their licences:
+
+- external/openssl (OpenSSL 1.0.1u and the backported fixes from later OpenSSL releases): the OpenSSL License and
+  the original SSLeay License (the dual licence of OpenSSL 1.x); the full text is the LICENSE file of OpenSSL 1.0.1u
+  (openssl-1.0.1u.tar.gz from openssl.org) and the NOTICE in the openssl zip. The backported fixes come from later
+  OpenSSL releases: 1.0.2 and 1.1.x are under the same OpenSSL/SSLeay licence, 3.x under the Apache License 2.0.
+- libcore (core.jar, core-libart.jar, conscrypt.jar, libjavacrypto.so): the Apache License 2.0, with parts from
+  Apache Harmony (Apache License 2.0) and Bouncy Castle (MIT-style licence); see libcore's NOTICE in AOSP.
+- external/okhttp (okhttp.jar): the Apache License 2.0.
+
+Layer D binaries are built from the published Maven artifact org.conscrypt:conscrypt-android:2.6-alpha2:
+
+- Conscrypt (https://github.com/google/conscrypt): the Apache License 2.0, with parts from Netty and Apache Harmony.
+- BoringSSL, linked statically into libkktls_conscrypt_jni.so (https://boringssl.googlesource.com/boringssl): its
+  LICENSE at the commit Conscrypt 2.6-alpha2 was built from, including the OpenSSL/SSLeay licences of the code it
+  inherited and the fiat-crypto licence. conscrypt/NOTICE holds the complete texts.
+
+The CA store (cacerts/) is generated from the Mozilla root store (NSS certdata, as published by curl at
+https://curl.se/ca/cacert.pem) and is licensed under the Mozilla Public License 2.0.
+
+The static helpers kktls-symcheck and kktls-util in the recovery zips link the bionic C library of AOSP 4.4 (BSD-style
+licences; see its NOTICE in AOSP).
+
+Every release zip carries a NOTICE file with the full licence texts for the files it installs.
+
+busybox (GPL-2.0) is not part of this repository or the release zips. tools/install-adb.sh downloads a static
+upstream build from busybox.net at run time (source: https://busybox.net/downloads/busybox-1.31.0.tar.bz2), pushes
+it to the device for the duration of the run and deletes it afterwards.

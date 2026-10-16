@@ -1,0 +1,35 @@
+-----BEGIN CERTIFICATE-----
+MIICOjCCAcCgAwIBAgIQFAP1q/s3ixdAW+JDsqXRxDAKBggqhkjOPQQDAzBOMQsw
+CQYDVQQGEwJVUzEYMBYGA1UECgwPU1NMIENvcnBvcmF0aW9uMSUwIwYDVQQDDBxT
+U0wuY29tIFRMUyBFQ0MgUm9vdCBDQSAyMDIyMB4XDTIyMDgyNTE2MzM0OFoXDTQ2
+MDgxOTE2MzM0N1owTjELMAkGA1UEBhMCVVMxGDAWBgNVBAoMD1NTTCBDb3Jwb3Jh
+dGlvbjElMCMGA1UEAwwcU1NMLmNvbSBUTFMgRUNDIFJvb3QgQ0EgMjAyMjB2MBAG
+ByqGSM49AgEGBSuBBAAiA2IABEUpNXP6wrgjzhR9qLFNoFs27iosU8NgCTWyJGYm
+acCzldZdkkAZDsalE3D07xJRKF3nzL35PIXBz5SQySvOkkJYWWf9lCcQZIxPBLFN
+SeR7T5v15wj4A4j3p8OSSxlUgaNjMGEwDwYDVR0TAQH/BAUwAwEB/zAfBgNVHSME
+GDAWgBSJjy+j6CugFFR781a4Jl9nOAuc0DAdBgNVHQ4EFgQUiY8vo+groBRUe/NW
+uCZfZzgLnNAwDgYDVR0PAQH/BAQDAgGGMAoGCCqGSM49BAMDA2gAMGUCMFXjIlbp
+15IkWE8elDIPDAI2wv2sdDJO4fscgIijzPvX6yv/N33w7deedWo1dlJF4AIxAMeN
+b0Igj762TVntd00pxCAgRWSGOlDGxK0tk/UYfXLtqc/ErFc2KAhl3zx5Zn6g6g==
+-----END CERTIFICATE-----
+Certificate:
+    Data:
+        Version: 3 (0x2)
+        Serial Number:
+            14:03:f5:ab:fb:37:8b:17:40:5b:e2:43:b2:a5:d1:c4
+        Signature Algorithm: ecdsa-with-SHA384
+        Issuer: C=US, O=SSL Corporation, CN=SSL.com TLS ECC Root CA 2022
+        Validity
+            Not Before: Aug 25 16:33:48 2022 GMT
+            Not After : Aug 19 16:33:47 2046 GMT
+        Subject: C=US, O=SSL Corporation, CN=SSL.com TLS ECC Root CA 2022
+        X509v3 extensions:
+            X509v3 Basic Constraints: critical
+                CA:TRUE
+            X509v3 Authority Key Identifier: 
+                89:8F:2F:A3:E8:2B:A0:14:54:7B:F3:56:B8:26:5F:67:38:0B:9C:D0
+            X509v3 Subject Key Identifier: 
+                89:8F:2F:A3:E8:2B:A0:14:54:7B:F3:56:B8:26:5F:67:38:0B:9C:D0
+            X509v3 Key Usage: critical
+                Digital Signature, Certificate Sign, CRL Sign
+SHA1 Fingerprint=9F:5F:D9:1A:54:6D:F5:0C:71:F0:EE:7A:BD:17:49:98:84:73:E2:39

@@ -1,0 +1,40 @@
+# kktls-symcheck --allow-missing list for libssl.so: exports of the stock AOSP 4.4.2_r2 / 4.4.4_r2 libssl (OpenSSL
+# 1.0.1e) that our 1.0.1u libssl no longer has. None of them is named in the public headers (include/openssl), so
+# openssl-abi-check.py `symbols` reports them as `internal ... removed`, not as failures:
+#   ssl2_*                     SSLv2 is not built (OPENSSL_NO_SSL2 in opensslconf.h, no s2_*.c in the makefiles)
+#   ssl3_check_finished        static in s3_clnt.c in 1.0.1u
+#   dtls1_clear_record_buffer  gone from 1.0.1u
+# The same 32 names on both tags and both ABIs. The release build's `check` step runs kktls-symcheck with this list
+# against the stock libraries and fails if any other export is missing. An OEM libssl's extra exports stay required.
+dtls1_clear_record_buffer
+ssl2_accept
+ssl2_callback_ctrl
+ssl2_ciphers
+ssl2_clear
+ssl2_connect
+ssl2_ctrl
+ssl2_ctx_callback_ctrl
+ssl2_ctx_ctrl
+ssl2_default_timeout
+ssl2_do_write
+ssl2_enc
+ssl2_enc_init
+ssl2_free
+ssl2_generate_key_material
+ssl2_get_cipher
+ssl2_get_cipher_by_char
+ssl2_mac
+ssl2_new
+ssl2_num_ciphers
+ssl2_part_read
+ssl2_peek
+ssl2_pending
+ssl2_put_cipher_by_char
+ssl2_read
+ssl2_return_error
+ssl2_set_certificate
+ssl2_shutdown
+ssl2_version_str
+ssl2_write
+ssl2_write_error
+ssl3_check_finished

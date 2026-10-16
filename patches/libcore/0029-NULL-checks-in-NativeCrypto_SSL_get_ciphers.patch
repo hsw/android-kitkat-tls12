@@ -1,0 +1,36 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: android-kitkat-tls12 <android-kitkat-tls12@users.noreply.github.com>
+Date: Fri, 9 Oct 2026 12:00:00 +0000
+Subject: [PATCH 29/31] NULL checks in NativeCrypto_SSL_get_ciphers
+
+The port of conscrypt 2d089e18 (libcore/0002) added
+NativeCrypto_SSL_get_ciphers as upstream wrote it: neither the
+NewLongArray result nor the GetLongArrayElements pointer was checked, so
+an allocation failure would write through NULL (a native crash) instead
+of leaving the OutOfMemoryError for the caller. Both now return NULL
+with the exception pending. No test: the failure needs an exhausted
+Java heap.
+---
+ crypto/src/main/native/org_conscrypt_NativeCrypto.cpp | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/crypto/src/main/native/org_conscrypt_NativeCrypto.cpp b/crypto/src/main/native/org_conscrypt_NativeCrypto.cpp
+index 00e1f025e..7dfd20ccc 100644
+--- a/crypto/src/main/native/org_conscrypt_NativeCrypto.cpp
++++ b/crypto/src/main/native/org_conscrypt_NativeCrypto.cpp
+@@ -6642,7 +6642,15 @@ static jlongArray NativeCrypto_SSL_get_ciphers(JNIEnv* env, jclass, jlong ssl_ad
+     STACK_OF(SSL_CIPHER)* cipherStack = SSL_get_ciphers(ssl);
+     int count = (cipherStack != NULL) ? sk_SSL_CIPHER_num(cipherStack) : 0;
+     ScopedLocalRef<jlongArray> ciphersArray(env, env->NewLongArray(count));
++    if (ciphersArray.get() == NULL) {
++        JNI_TRACE("NativeCrypto_SSL_get_ciphers(%p) => NewLongArray failed", ssl);
++        return NULL;  // OutOfMemoryError pending
++    }
+     ScopedLongArrayRW ciphers(env, ciphersArray.get());
++    if (ciphers.get() == NULL) {
++        JNI_TRACE("NativeCrypto_SSL_get_ciphers(%p) => GetLongArrayElements failed", ssl);
++        return NULL;  // OutOfMemoryError pending
++    }
+     for (int i = 0; i < count; i++) {
+         ciphers[i] = reinterpret_cast<jlong>(sk_SSL_CIPHER_value(cipherStack, i));
+     }

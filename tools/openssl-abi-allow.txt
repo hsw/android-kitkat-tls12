@@ -1,0 +1,36 @@
+# Justified exceptions for openssl-abi-check.py (symbol|objsize|struct<TAB>name<TAB>reason; name is an fnmatch pattern,
+# but list exact names: a glob would also excuse a size change nobody has looked at). series README, "OpenSSL 1.0.1u (Task 7c)".
+# objsize: the OpenSSL version strings ("... part of OpenSSL 1.0.1u  22 Sep 2016" is one byte longer than the 1.0.1e
+# one); no scanned user imports them (`users` fails on an imported data object whose size changed). Exactly the 31
+# names the Task 7c/12 runs reported (libssl 3, libcrypto 28).
+objsize	dtls1_version_str	libssl version string, 1.0.1u one byte longer than 1.0.1e; not imported by any scanned user
+objsize	ssl3_version_str	libssl version string, 1.0.1u one byte longer than 1.0.1e; not imported by any scanned user
+objsize	tls1_version_str	libssl version string, 1.0.1u one byte longer than 1.0.1e; not imported by any scanned user
+objsize	AES_version	libcrypto version string, 1.0.1u one byte longer than 1.0.1e; not imported by any scanned user
+objsize	ASN1_version	libcrypto version string, 1.0.1u one byte longer than 1.0.1e; not imported by any scanned user
+objsize	BF_version	libcrypto version string, 1.0.1u one byte longer than 1.0.1e; not imported by any scanned user
+objsize	BN_version	libcrypto version string, 1.0.1u one byte longer than 1.0.1e; not imported by any scanned user
+objsize	CONF_def_version	libcrypto version string, 1.0.1u one byte longer than 1.0.1e; not imported by any scanned user
+objsize	CONF_version	libcrypto version string, 1.0.1u one byte longer than 1.0.1e; not imported by any scanned user
+objsize	DH_version	libcrypto version string, 1.0.1u one byte longer than 1.0.1e; not imported by any scanned user
+objsize	DSA_version	libcrypto version string, 1.0.1u one byte longer than 1.0.1e; not imported by any scanned user
+objsize	ECDH_version	libcrypto version string, 1.0.1u one byte longer than 1.0.1e; not imported by any scanned user
+objsize	ECDSA_version	libcrypto version string, 1.0.1u one byte longer than 1.0.1e; not imported by any scanned user
+objsize	EVP_version	libcrypto version string, 1.0.1u one byte longer than 1.0.1e; not imported by any scanned user
+objsize	MD4_version	libcrypto version string, 1.0.1u one byte longer than 1.0.1e; not imported by any scanned user
+objsize	MD5_version	libcrypto version string, 1.0.1u one byte longer than 1.0.1e; not imported by any scanned user
+objsize	OSSL_DES_version	libcrypto version string, 1.0.1u one byte longer than 1.0.1e; not imported by any scanned user
+objsize	OSSL_libdes_version	libcrypto version string, 1.0.1u one byte longer than 1.0.1e; not imported by any scanned user
+objsize	PEM_version	libcrypto version string, 1.0.1u one byte longer than 1.0.1e; not imported by any scanned user
+objsize	RAND_version	libcrypto version string, 1.0.1u one byte longer than 1.0.1e; not imported by any scanned user
+objsize	RC2_version	libcrypto version string, 1.0.1u one byte longer than 1.0.1e; not imported by any scanned user
+objsize	RC4_version	libcrypto version string, 1.0.1u one byte longer than 1.0.1e; not imported by any scanned user
+objsize	RMD160_version	libcrypto version string, 1.0.1u one byte longer than 1.0.1e; not imported by any scanned user
+objsize	RSA_version	libcrypto version string, 1.0.1u one byte longer than 1.0.1e; not imported by any scanned user
+objsize	SHA1_version	libcrypto version string, 1.0.1u one byte longer than 1.0.1e; not imported by any scanned user
+objsize	SHA256_version	libcrypto version string, 1.0.1u one byte longer than 1.0.1e; not imported by any scanned user
+objsize	SHA512_version	libcrypto version string, 1.0.1u one byte longer than 1.0.1e; not imported by any scanned user
+objsize	STACK_version	libcrypto version string, 1.0.1u one byte longer than 1.0.1e; not imported by any scanned user
+objsize	TXT_DB_version	libcrypto version string, 1.0.1u one byte longer than 1.0.1e; not imported by any scanned user
+objsize	X509_version	libcrypto version string, 1.0.1u one byte longer than 1.0.1e; not imported by any scanned user
+objsize	lh_version	libcrypto version string, 1.0.1u one byte longer than 1.0.1e; not imported by any scanned user

@@ -1,0 +1,36 @@
+-----BEGIN CERTIFICATE-----
+MIICVTCCAdygAwIBAgIUTyNkuI6XY57GU4HBdk7LKnQV1tcwCgYIKoZIzj0EAwMw
+WjELMAkGA1UEBhMCQ04xJTAjBgNVBAoMHFRydXN0QXNpYSBUZWNobm9sb2dpZXMs
+IEluYy4xJDAiBgNVBAMMG1RydXN0QXNpYSBHbG9iYWwgUm9vdCBDQSBHNDAeFw0y
+MTA1MjAwMjEwMjJaFw00NjA1MTkwMjEwMjJaMFoxCzAJBgNVBAYTAkNOMSUwIwYD
+VQQKDBxUcnVzdEFzaWEgVGVjaG5vbG9naWVzLCBJbmMuMSQwIgYDVQQDDBtUcnVz
+dEFzaWEgR2xvYmFsIFJvb3QgQ0EgRzQwdjAQBgcqhkjOPQIBBgUrgQQAIgNiAATx
+s8045CVD5d4ZCbuBeaIVXxVjAd7Cq92zphtnS4CDr5nLrBfbK5bKfFJV4hrhPVbw
+LxYI+hW8m7tH5j/uqOFMjPXTNvk4XatwmkcN4oFBButJ+bAp3TPsUKV/eSm4IJij
+YzBhMA8GA1UdEwEB/wQFMAMBAf8wHwYDVR0jBBgwFoAUpbtKl86zK3+kMd6Xg1mD
+pm9xy94wHQYDVR0OBBYEFKW7SpfOsyt/pDHel4NZg6ZvccveMA4GA1UdDwEB/wQE
+AwIBBjAKBggqhkjOPQQDAwNnADBkAjBe8usGzEkxn0AAbbd+NvBNEU/zy4k6LHiR
+UKNbwMp1JvK/kF0LgoxgKJ/GcJpo5PECMFxYDlZ2z1jD1xCMuo6u47xkdUfFVZDj
+/bpV6wfEU6s3qe4hsiFbYI89MvHVI5TWWA==
+-----END CERTIFICATE-----
+Certificate:
+    Data:
+        Version: 3 (0x2)
+        Serial Number:
+            4f:23:64:b8:8e:97:63:9e:c6:53:81:c1:76:4e:cb:2a:74:15:d6:d7
+        Signature Algorithm: ecdsa-with-SHA384
+        Issuer: C=CN, O=TrustAsia Technologies, Inc., CN=TrustAsia Global Root CA G4
+        Validity
+            Not Before: May 20 02:10:22 2021 GMT
+            Not After : May 19 02:10:22 2046 GMT
+        Subject: C=CN, O=TrustAsia Technologies, Inc., CN=TrustAsia Global Root CA G4
+        X509v3 extensions:
+            X509v3 Basic Constraints: critical
+                CA:TRUE
+            X509v3 Authority Key Identifier: 
+                A5:BB:4A:97:CE:B3:2B:7F:A4:31:DE:97:83:59:83:A6:6F:71:CB:DE
+            X509v3 Subject Key Identifier: 
+                A5:BB:4A:97:CE:B3:2B:7F:A4:31:DE:97:83:59:83:A6:6F:71:CB:DE
+            X509v3 Key Usage: critical
+                Certificate Sign, CRL Sign
+SHA1 Fingerprint=57:73:A5:61:5D:80:B2:E6:AC:38:82:FC:68:07:31:AC:9F:B5:92:5A

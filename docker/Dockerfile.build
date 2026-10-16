@@ -1,0 +1,67 @@
+# kktls-aosp-build: the AOSP 4.4 build environment (Ubuntu 14.04, OpenJDK 6, the 32-bit host libraries), also the CI
+# image: `tools/kktls-release-build.sh --runner direct` runs every step in it (repo sync, make, the layer D stage with
+# d8, the checks), so it carries a current git and Python 3 (repo needs git >= 2.7.4, Python >= 3.6; 14.04 has
+# 1.9.1 and 3.4), a Java 17 runtime for d8 only (not on PATH:
+# the 4.4 build must see Java 6), Android build-tools 37.0.0 (d8, dexdump) and busybox-static, zip, file, libc.a (the
+# installer and helper tests). Every download is pinned by sha256 (ADD --checksum); the base by digest.
+# linux/amd64 only (the 4.4 host prebuilts are x86). tools/docker-image.sh aosp-build builds it with UID = the caller's
+# uid (the owner of the bind-mounted trees; a GitHub-hosted runner is uid 1001).
+# Ubuntu 14.04 packages still come from archive.ubuntu.com (trusty is not on old-releases as of 2026-10-16); when it
+# moves, build with --build-arg APT_MIRROR=http://old-releases.ubuntu.com/ubuntu.
+# SPDX-License-Identifier: Apache-2.0
+FROM --platform=linux/amd64 ubuntu:14.04@sha256:64483f3496c1373bfd55348e88694d1c4d0c9b660dee6bfef5e12f43b9933b30 AS base
+ARG APT_MIRROR=
+ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8 LC_ALL=C.UTF-8 USE_CCACHE=1 CCACHE_DIR=/aosp/ccache
+RUN if [ -n "$APT_MIRROR" ]; then sed -i "s#http://archive.ubuntu.com/ubuntu#$APT_MIRROR#; s#http://security.ubuntu.com/ubuntu#$APT_MIRROR#" /etc/apt/sources.list; fi \
+    && dpkg --add-architecture i386 && apt-get update && apt-get install -y --no-install-recommends \
+      openjdk-6-jdk python python-markdown make git-core gnupg flex bison gperf build-essential \
+      zip unzip curl zlib1g-dev gcc-multilib g++-multilib libc6-dev-i386 lib32ncurses5-dev \
+      x11proto-core-dev libx11-dev lib32z1-dev libgl1-mesa-dev libxml2-utils xsltproc \
+      ccache bc lzop u-boot-tools ca-certificates file less vim-tiny rsync \
+      busybox-static bsdmainutils xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+# git from source (pinned tarball), built in a throw-away stage against the 14.04 libraries (2.39: newer git needs
+# curl >= 7.37, 14.04 has 7.35)
+FROM base AS git
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends libcurl4-openssl-dev libexpat1-dev libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+ADD --checksum=sha256:c58da92c378df4a986ca33266897a7397e86c22ee266a284d8c2432c39066b59 \
+    https://www.kernel.org/pub/software/scm/git/git-2.39.5.tar.xz /dl/git.tar.xz
+RUN mkdir /tmp/git && tar -xJf /dl/git.tar.xz -C /tmp/git --strip-components=1 && cd /tmp/git \
+    && make -j"$(nproc)" prefix=/opt/kktls/git CFLAGS="-O2 -std=gnu99" NO_PERL=1 NO_PYTHON=1 NO_TCLTK=1 NO_GETTEXT=1 INSTALL_SYMLINKS=1 install >/dev/null \
+    && /opt/kktls/git/bin/git --version
+
+# pinned downloads, unpacked in a throw-away stage (the archives stay out of the image layers)
+FROM base AS fetch
+ADD --checksum=sha256:5eae8cf79dd47fc2496a4fccc892936be831ce7a84d984b2299dfb1cdb592682 \
+    https://github.com/astral-sh/python-build-standalone/releases/download/20260924/cpython-3.12.14%2B20260924-x86_64-unknown-linux-gnu-install_only.tar.gz /dl/python.tar.gz
+ADD --checksum=sha256:0b2b640e3046b64c8ec504de0ab9d91bb5610182bda21fad454681ce54d45a62 \
+    https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.20.1%2B1/OpenJDK17U-jre_x64_linux_hotspot_17.0.20.1_1.tar.gz /dl/jre17.tar.gz
+ADD --checksum=sha256:01af179347cbcd9c208b7f8171f7b21f6dd1d2f85bcd15e88caa51d5d7b86060 \
+    https://dl.google.com/android/repository/build-tools_r37_linux.zip /dl/build-tools.zip
+ADD --checksum=sha256:6ed2f6325705b6ea0af99466d6ebd04adec387a5b6a906cd77bc8c6da65123e5 \
+    https://storage.googleapis.com/git-repo-downloads/repo-2.69 /dl/repo
+RUN mkdir -p /opt/kktls/python /opt/kktls/jre17 /opt/kktls/android-sdk/build-tools /opt/kktls/bin \
+    && tar -xzf /dl/python.tar.gz -C /opt/kktls/python --strip-components=1 \
+    && tar -xzf /dl/jre17.tar.gz -C /opt/kktls/jre17 --strip-components=1 \
+    && unzip -q /dl/build-tools.zip -d /tmp/bt && mv /tmp/bt/android-* /opt/kktls/android-sdk/build-tools/37.0.0 \
+    && cd /opt/kktls/android-sdk/build-tools/37.0.0 && mv d8 d8.real \
+    && printf '#!/bin/sh\n# d8 needs Java 17; the AOSP 4.4 build keeps Java 6 on PATH\nPATH=/opt/kktls/jre17/bin:$PATH exec "$(dirname "$0")/d8.real" "$@"\n' > d8 \
+    && chmod 755 d8 \
+    && install -m 755 /dl/repo /opt/kktls/bin/repo \
+    && sed -i '1s|.*|#!/opt/kktls/python/bin/python3|' /opt/kktls/bin/repo \
+    && ln -s ../python/bin/python3 /opt/kktls/bin/python3
+
+FROM base
+COPY --from=fetch /opt/kktls /opt/kktls
+COPY --from=git /opt/kktls/git /opt/kktls/git
+# git, python3 and repo first on PATH (python stays the system 2.7 the 4.4 build uses); d8/dexdump via ANDROID_HOME
+ENV PATH=/opt/kktls/git/bin:/opt/kktls/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin ANDROID_HOME=/opt/kktls/android-sdk
+ARG UID=1000
+RUN useradd -m -u $UID -s /bin/bash build
+USER build
+WORKDIR /aosp/src
+RUN git config --global safe.directory "*" && git config --global user.name build && git config --global user.email build@localhost \
+    && git config --global color.ui false

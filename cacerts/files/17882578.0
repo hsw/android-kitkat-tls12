@@ -1,0 +1,35 @@
+-----BEGIN CERTIFICATE-----
+MIICMjCCAbegAwIBAgIPAYvSIlRjTQSLbOVHH9K1MAoGCCqGSM49BAMDMEoxCzAJ
+BgNVBAYTAlNFMRkwFwYDVQQKDBBUZWxpYSBDb21wYW55IEFCMSAwHgYDVQQDDBdU
+ZWxpYSBFQyBUTFMgUm9vdCBDQSB2MzAeFw0yMzExMTUwODU1MjZaFw00ODA1MjMx
+MTAwMDBaMEoxCzAJBgNVBAYTAlNFMRkwFwYDVQQKDBBUZWxpYSBDb21wYW55IEFC
+MSAwHgYDVQQDDBdUZWxpYSBFQyBUTFMgUm9vdCBDQSB2MzB2MBAGByqGSM49AgEG
+BSuBBAAiA2IABMHIlhVDLbmFKUpW0iK4dpryT6emYOeS31JPwWnWPmkWRrAkTbPX
+40sQfHI9mpR7Rbktu3ngg6W+BBSXSechtMCnBmWXj/EaVlmV5cY1jD2HoTfhBQ3A
+acpCNMLJK4NpZaNjMGEwHwYDVR0jBBgwFoAU1GToQ4g6cy/QGnGCNgtehd7H3kMw
+HQYDVR0OBBYEFNRk6EOIOnMv0BpxgjYLXoXex95DMA4GA1UdDwEB/wQEAwIBBjAP
+BgNVHRMBAf8EBTADAQH/MAoGCCqGSM49BAMDA2kAMGYCMQCXAUdS/9bbJ8A1JYaG
+f/bWt/s7Ta0ot5Ulno8OjSNYRWQIlS4tVWldvTAVA7heOFgCMQCvKr8+Z2Rn+OBr
+5UHzlgBObpad1LuwNTRcdNgUJxIWadcki+UBLEi1/AURKV5md2M=
+-----END CERTIFICATE-----
+Certificate:
+    Data:
+        Version: 3 (0x2)
+        Serial Number:
+            01:8b:d2:22:54:63:4d:04:8b:6c:e5:47:1f:d2:b5
+        Signature Algorithm: ecdsa-with-SHA384
+        Issuer: C=SE, O=Telia Company AB, CN=Telia EC TLS Root CA v3
+        Validity
+            Not Before: Nov 15 08:55:26 2023 GMT
+            Not After : May 23 11:00:00 2048 GMT
+        Subject: C=SE, O=Telia Company AB, CN=Telia EC TLS Root CA v3
+        X509v3 extensions:
+            X509v3 Authority Key Identifier: 
+                D4:64:E8:43:88:3A:73:2F:D0:1A:71:82:36:0B:5E:85:DE:C7:DE:43
+            X509v3 Subject Key Identifier: 
+                D4:64:E8:43:88:3A:73:2F:D0:1A:71:82:36:0B:5E:85:DE:C7:DE:43
+            X509v3 Key Usage: critical
+                Certificate Sign, CRL Sign
+            X509v3 Basic Constraints: critical
+                CA:TRUE
+SHA1 Fingerprint=B4:D6:07:C2:A5:95:BC:5B:F4:67:4D:C9:DC:6F:6F:0A:00:7A:A5:35

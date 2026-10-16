@@ -1,0 +1,16 @@
+# CVE-2026-35189 - x509v3_cache_extensions memory amplification (mem class)
+# The baseline attack peak RSS must exceed rss_kb; the control stays far below.
+# (threshold tuned from the measured host/arm32 baseline, recorded in BASELINE.txt)
+class=mem
+lib=noasan
+needs_ssl=0
+timeout_host=30
+timeout_arm32=120
+timeout_x86=30
+timeout_mips=120
+rss_kb=60000
+arm32=yes
+x86=yes
+mips=yes
+target=no
+desc=setup_dp dups the issuer name per relative CRL DP; a small cert pins hundreds of MiB

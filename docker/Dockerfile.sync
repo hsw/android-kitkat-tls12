@@ -1,0 +1,17 @@
+# kktls-aosp-sync: the repo/git client that syncs the AOSP 4.4 projects (synced sources are untrusted: they are only
+# touched inside this container and the build container). Base pinned by digest, the repo launcher by sha256 (2.69);
+# gnupg lets the launcher verify the signed repo tool tag it fetches.
+# SPDX-License-Identifier: Apache-2.0
+FROM ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
+ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8
+ADD --checksum=sha256:6ed2f6325705b6ea0af99466d6ebd04adec387a5b6a906cd77bc8c6da65123e5 \
+    https://storage.googleapis.com/git-repo-downloads/repo-2.69 /usr/local/bin/repo
+RUN apt-get update && apt-get install -y --no-install-recommends git python3 curl ca-certificates gnupg tmux procps \
+    && rm -rf /var/lib/apt/lists/* \
+    && chmod 755 /usr/local/bin/repo \
+    && (userdel -r ubuntu 2>/dev/null || true)
+ARG UID=1000
+RUN useradd -m -u $UID build
+USER build
+RUN git config --global user.name build && git config --global user.email build@localhost && git config --global color.ui false && git config --global safe.directory "*"
+WORKDIR /aosp/src

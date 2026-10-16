@@ -1,0 +1,32 @@
+-----BEGIN CERTIFICATE-----
+MIIB9zCCAX2gAwIBAgIQBiUzsUcDMydc+Y2aub/M+DAKBggqhkjOPQQDAzA9MQsw
+CQYDVQQGEwJVUzESMBAGA1UEChMJQ2VydGFpbmx5MRowGAYDVQQDExFDZXJ0YWlu
+bHkgUm9vdCBFMTAeFw0yMTA0MDEwMDAwMDBaFw00NjA0MDEwMDAwMDBaMD0xCzAJ
+BgNVBAYTAlVTMRIwEAYDVQQKEwlDZXJ0YWlubHkxGjAYBgNVBAMTEUNlcnRhaW5s
+eSBSb290IEUxMHYwEAYHKoZIzj0CAQYFK4EEACIDYgAE3m/4fxzf7flHh4axpMCK
++IKXgOqPyEpeKn2IaKcBYhSRJHpcnqMXfYqGITQYUBsQ3tA3SybHGWCA6TS9YBk2
+QNYphwk8kXr2vBMj3VlOBF7PyAIcGFPBMdjaIOlEjeR2o0IwQDAOBgNVHQ8BAf8E
+BAMCAQYwDwYDVR0TAQH/BAUwAwEB/zAdBgNVHQ4EFgQU8ygYy2R17ikq6+2uI1g4
+hevIIgcwCgYIKoZIzj0EAwMDaAAwZQIxALGOWiDDshliTd6wT99u0nCK8Z9+aozm
+ut6Dacpps6kFtZaSF4fC0urQe87YQVt8rgIwRt7qy12a7DLCZRawTDBcMPPaTnOG
+BtjOiQRINzf43TNRnXCve1XYAS59BWQOhriR
+-----END CERTIFICATE-----
+Certificate:
+    Data:
+        Version: 3 (0x2)
+        Serial Number:
+            06:25:33:b1:47:03:33:27:5c:f9:8d:9a:b9:bf:cc:f8
+        Signature Algorithm: ecdsa-with-SHA384
+        Issuer: C=US, O=Certainly, CN=Certainly Root E1
+        Validity
+            Not Before: Apr  1 00:00:00 2021 GMT
+            Not After : Apr  1 00:00:00 2046 GMT
+        Subject: C=US, O=Certainly, CN=Certainly Root E1
+        X509v3 extensions:
+            X509v3 Key Usage: critical
+                Certificate Sign, CRL Sign
+            X509v3 Basic Constraints: critical
+                CA:TRUE
+            X509v3 Subject Key Identifier: 
+                F3:28:18:CB:64:75:EE:29:2A:EB:ED:AE:23:58:38:85:EB:C8:22:07
+SHA1 Fingerprint=F9:E1:6D:DC:01:89:CF:D5:82:45:63:3E:C5:37:7D:C2:EB:93:6F:2B

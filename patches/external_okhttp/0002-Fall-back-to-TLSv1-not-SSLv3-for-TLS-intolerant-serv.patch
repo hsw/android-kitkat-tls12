@@ -1,0 +1,39 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: android-kitkat-tls12 <android-kitkat-tls12@users.noreply.github.com>
+Date: Fri, 9 Oct 2026 12:00:00 +0000
+Subject: [PATCH 2/3] Fall back to TLSv1, not SSLv3, for TLS-intolerant servers
+
+okhttp c3f6560 (KitKat variant of "SCSV support") adds
+TLS_FALLBACK_SCSV to the retry after a failed handshake but keeps the
+KitKat retry protocol {"SSLv3"}. With this libcore series SSLv3 is
+supported but no longer enabled by default anywhere (libcore/0006), and servers
+that still speak SSLv3 are vulnerable to POODLE, so an SSLv3 retry
+either fails or downgrades the connection to a broken protocol.
+
+The retry now enables {"TLSv1"} only, with TLS_FALLBACK_SCSV when the
+socket lists it in getSupportedCipherSuites() (unchanged from c3f6560).
+This is the behaviour of Android 6/7 (okhttp 2.x ConnectionSpec
+fallback ends at TLSv1 with the SCSV). A server whose highest version
+is TLSv1 accepts the retry; a server that supports TLSv1.1 or TLSv1.2
+rejects it with the inappropriate_fallback alert, so a middlebox cannot
+force the downgrade.
+
+Tests: libcore URLConnectionTest.testSslFallback and
+testSslFallback_rejectedByTls12Server (libcore/0021 of the series).
+---
+ android/main/java/com/squareup/okhttp/internal/Platform.java | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/android/main/java/com/squareup/okhttp/internal/Platform.java b/android/main/java/com/squareup/okhttp/internal/Platform.java
+index 0fb5f26..dd921d2 100644
+--- a/android/main/java/com/squareup/okhttp/internal/Platform.java
++++ b/android/main/java/com/squareup/okhttp/internal/Platform.java
+@@ -93,7 +93,7 @@ public final class Platform {
+             newEnabledCipherSuites[newEnabledCipherSuites.length - 1] = fallbackScsv;
+             socket.setEnabledCipherSuites(newEnabledCipherSuites);
+         }
+-        socket.setEnabledProtocols(new String[]{"SSLv3"});
++        socket.setEnabledProtocols(new String[]{"TLSv1"});
+     }
+ 
+     /**

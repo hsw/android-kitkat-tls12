@@ -1,0 +1,49 @@
+#!/sbin/sh
+# shellcheck shell=dash
+# kktls recovery zip installer (TWRP/CWM: run by the recovery as `update-binary API OUTFD ZIP` with its busybox).
+# SPDX-License-Identifier: Apache-2.0
+#
+# Unpacks the zip, mounts /system and /data read-write, then runs kk_main of kktls/install.sh: the pre-checks of
+# kktls/checks.sh (any failure aborts before anything is written), a backup with a manifest in /data/kktls-backup/
+# plus a copy on /sdcard, the copy into /system with owner, mode and the system_file label, and a marker in
+# /system/etc/kktls/. The restore zip runs the same script with kind=restore.
+#
+# Tests: KKTLS_ROOT=<fake root> runs against that tree instead (no mounts), KKTLS_TMP=<dir> unpacks there.
+
+OUTFD=$2
+ZIP=$3
+KK_OUTFD=$OUTFD
+case $OUTFD in ''|*[!0-9]*) KK_OUTFD= ;; esac
+export KK_OUTFD
+
+ui() { if [ -n "$KK_OUTFD" ]; then echo "ui_print $*" >> "/proc/self/fd/$KK_OUTFD"; echo "ui_print" >> "/proc/self/fd/$KK_OUTFD"; else echo "$*"; fi; }
+
+[ -n "$ZIP" ] && [ -f "$ZIP" ] || { ui "kktls: usage: update-binary API OUTFD ZIP"; exit 1; }
+
+KK_ROOT=${KKTLS_ROOT:-}
+KK_DIR=${KKTLS_TMP:-/tmp/kktls}
+rm -rf "$KK_DIR"
+mkdir -p "$KK_DIR" && unzip -o -q "$ZIP" -d "$KK_DIR" || { ui "kktls: cannot unpack $ZIP"; exit 1; }
+chmod 0755 "$KK_DIR"/kktls/bin/*/* 2> /dev/null
+
+MOUNTED=
+if [ -z "$KK_ROOT" ]; then
+  for p in /system /data; do
+    if ! grep -q " $p " /proc/mounts; then
+      mount "$p" 2> /dev/null && MOUNTED="$MOUNTED $p"
+    fi
+  done
+  mount -o remount,rw /system 2> /dev/null
+  if ! grep -q ' /sdcard ' /proc/mounts && [ ! -L /sdcard ]; then mount /sdcard 2> /dev/null && MOUNTED="$MOUNTED /sdcard"; fi
+fi
+
+. "$KK_DIR/kktls/checks.sh"
+. "$KK_DIR/kktls/install.sh"
+kk_main
+rc=$?
+
+sync
+for p in $MOUNTED; do umount "$p" 2> /dev/null; done  # what this script mounted (/system, /data, /sdcard)
+[ -n "$KK_ROOT" ] || rm -rf "$KK_DIR"
+[ $rc = 0 ] && ui "kktls: done" || ui "kktls: FAILED"
+exit $rc

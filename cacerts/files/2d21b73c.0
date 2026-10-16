@@ -1,0 +1,33 @@
+-----BEGIN CERTIFICATE-----
+MIICFTCCAZugAwIBAgIQPZg7pmY9kGP3fiZXOATvADAKBggqhkjOPQQDAzBMMS4w
+LAYDVQQDDCVBdG9zIFRydXN0ZWRSb290IFJvb3QgQ0EgRUNDIFRMUyAyMDIxMQ0w
+CwYDVQQKDARBdG9zMQswCQYDVQQGEwJERTAeFw0yMTA0MjIwOTI2MjNaFw00MTA0
+MTcwOTI2MjJaMEwxLjAsBgNVBAMMJUF0b3MgVHJ1c3RlZFJvb3QgUm9vdCBDQSBF
+Q0MgVExTIDIwMjExDTALBgNVBAoMBEF0b3MxCzAJBgNVBAYTAkRFMHYwEAYHKoZI
+zj0CAQYFK4EEACIDYgAEloZYKDcKZ9Cg3iQZGeHkBQcfl+3oZIK59sRxUM6KDP/X
+tXa7oWyTbIOiaG6l2b4siJVBzV3dscqDY4PMwL502eCdpO5KTlbgmClBk1IQ1SQ4
+AjJn8ZQSb+/Xxd4u/RmAo0IwQDAPBgNVHRMBAf8EBTADAQH/MB0GA1UdDgQWBBR2
+KCXWfeBmmnoJsmo7jjPXNtNPojAOBgNVHQ8BAf8EBAMCAYYwCgYIKoZIzj0EAwMD
+aAAwZQIwW5kp85wxtolrbNa9d+F851F+uDrNozZffPc8dz7kUK2o59JZDCaOMDtu
+CCrCp1rIAjEAmeMM56PDr9NJLkaCI2ZdyQAUEv049OGYa3cpetskz2VAv9LcjBHo
+9H1/IISpQuQo
+-----END CERTIFICATE-----
+Certificate:
+    Data:
+        Version: 3 (0x2)
+        Serial Number:
+            3d:98:3b:a6:66:3d:90:63:f7:7e:26:57:38:04:ef:00
+        Signature Algorithm: ecdsa-with-SHA384
+        Issuer: CN=Atos TrustedRoot Root CA ECC TLS 2021, O=Atos, C=DE
+        Validity
+            Not Before: Apr 22 09:26:23 2021 GMT
+            Not After : Apr 17 09:26:22 2041 GMT
+        Subject: CN=Atos TrustedRoot Root CA ECC TLS 2021, O=Atos, C=DE
+        X509v3 extensions:
+            X509v3 Basic Constraints: critical
+                CA:TRUE
+            X509v3 Subject Key Identifier: 
+                76:28:25:D6:7D:E0:66:9A:7A:09:B2:6A:3B:8E:33:D7:36:D3:4F:A2
+            X509v3 Key Usage: critical
+                Digital Signature, Certificate Sign, CRL Sign
+SHA1 Fingerprint=9E:BC:75:10:42:B3:02:F3:81:F4:F7:30:62:D4:8F:C3:A7:51:B2:DD

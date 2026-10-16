@@ -1,0 +1,167 @@
+CVE reproducer harness - baseline FAIL output
+==========================================================================
+
+Recorded by tools/openssl-cve-test.sh against the baseline:
+openssl-port ref `cve-baseline` (1.0.1u + the 9 Android patches of the recipe,
+before the first cve-* patch). On this ref every kept
+CVE must reproduce (FAIL = vulnerable) and every benign control must be clean
+(PASS). Re-create with (arch and --asm compose):
+
+    tools/openssl-cve-test.sh --selftest                   # host (x86_64)
+    tools/openssl-cve-test.sh --arm32 --selftest [--asm]   # armhf, qemu-user
+    tools/openssl-cve-test.sh --x86   --selftest [--asm]   # i386, native
+    tools/openssl-cve-test.sh --mips  --selftest [--asm]   # mipsel o32, qemu-user
+
+All libraries are built in Docker (never host gcc): host = `kktls-aosp-build`
+(Ubuntu 14.04 / gcc 4.8, libasan); arm32 = Debian sid crossbuild-essential-
+armhf; x86 = Debian sid gcc-multilib (gcc -m32, lib32asan); mips = Debian
+bookworm crossbuild-essential-mipsel (gcc 12, no libasan for mipsel).
+Since 2026-10-13 every arch builds on debian:trixie (gcc 14; mipsel cross
+gcc 14 still has no libasan); --selftest there passes in all 7 cells.
+--asm = the asm modules AOSP 4.4 ships for the arch (openssl.config
+OPENSSL_CRYPTO_SOURCES/_EXCLUDES/_DEFINES_<arch>, .S generated like
+import_openssl.sh; byte-identical to the .S of the import):
+arm32 7 modules, x86 16, mips 5 (bn-mips.S included). AOSP 4.4 builds no
+x86_64 asm, so --asm needs an arch flag.
+
+Failure class per CVE (fixtures/openssl-cve/<cve>/expect):
+  hang  = decided by work done: the call returned with
+          KKTLS_CVE_RESULT=accepted (did the unbounded work) or never returned
+          within the expect timeout (safety bound) -> 2018-0732, 2022-0778,
+          2023-2650; fixed = KKTLS_CVE_RESULT=rejected with the fix's error
+  crash = attack dies on a signal (rc >128) -> 2018-0739 (SIGSEGV)
+  asan  = AddressSanitizer report           -> 2024-5535 (SKIP on arm32/mips)
+  mem   = peak RSS (ru_maxrss) >= rss_kb     -> 2026-35189 (threshold 60000 KB)
+  kat   = known-answer test: wrong vs correct against a hard-coded expected
+          value -> 2021-4160 (only under --mips --asm; SKIP elsewhere)
+
+2023-3446 / 2021-4160 rows: added to each block
+from a restricted run `--selftest 2023-3446 2021-4160` (same cve-baseline
+(debian:trixie images); the block headers above them still list
+the 6 original CVEs of the full re-record. 2021-4160 is a SKIP row everywhere
+except mips+asm. Patched ref u-android c32541c: ALL PASS in
+all 7 cells.
+
+2020-1971 rows added to each
+block from a restricted run `--selftest 2020-1971` (same cve-baseline). The kat
+reproduces the template part only (EDIPartyName explicit tags, aa0ad2011d):
+the RFC 5280 DER of an API-built EDIPartyName is not produced (encode:differ)
+and not read back (decode:fail) on the baseline. Patched ref u-android
+a4b203b: PASS in all 7 cells, `--target` COMPILED.
+
+Every run.c prints KKTLS_CVE_CALL=<fn> before and KKTLS_CVE_REACHED=<fn> after the
+call under test (cve_common.h); hang/kat also print KKTLS_CVE_RESULT=<word> <detail>.
+A hang/crash verdict needs CALL without REACHED (or, hang only, REACHED +
+accepted), a PASS needs rc 0 + REACHED (+ the class's fixed result word / a
+valid RSS for mem), a control needs rc 0 + REACHED (+ accepted for hang);
+anything else is ERROR / BAD.
+
+Note the hang rows that read "did the unbounded work": the vulnerable
+OBJ_obj2txt finished inside the timeout (x86 9 s < 10 s, mips+asm 35 s < 40 s).
+The pre-7a rule (rc 0 -> fixed) reported those as PASS - the same false PASS
+the Mac/Rosetta benchmark hit (commit 821623d3).
+
+
+--- host (kktls-aosp-build, gcc 4.8) --------------------------------------------
+== openssl-cve-test.sh: mode=run arch=host asm=0 selftest=1 ref=cve-baseline (8a7edfddffc6) cves=2018-0732 2018-0739 2022-0778 2023-2650 2024-5535 2026-35189
+CVE            host      ATTACK                             CONTROL
+2018-0732      host      FAIL (vuln: hang (no return within 15s bound)) PASS
+2018-0739      host      FAIL (vuln: crash (signal 11, 0s)) PASS
+2022-0778      host      FAIL (vuln: hang (no return within 10s bound)) PASS
+2023-2650      host      FAIL (vuln: hang (no return within 10s bound)) PASS
+2024-5535      host      FAIL (vuln: ASan report (rc=134))  PASS
+2026-35189     host      FAIL (vuln: peak RSS 545324KB >= 60000KB) PASS
+2023-3446      host      FAIL (vuln: hang (no return within 25s bound)) PASS
+2021-4160      host      SKIP (kat)                         -- only for arches: mips
+2020-1971      host      FAIL (vuln: wrong answer (kat:A:encode:differ+decode:fail)) PASS
+SELFTEST OK (host): every non-skipped CVE is VULNERABLE on cve-baseline and every control PASSes.
+
+
+--- arm32 (Debian sid cross, qemu-user armhf) -----------------------------------
+== openssl-cve-test.sh: mode=run arch=arm32 asm=0 selftest=1 ref=cve-baseline (8a7edfddffc6) cves=2018-0732 2018-0739 2022-0778 2023-2650 2024-5535 2026-35189
+CVE            arm32     ATTACK                             CONTROL
+2018-0732      arm32     FAIL (vuln: hang (no return within 60s bound)) PASS
+2018-0739      arm32     FAIL (vuln: crash (signal 11, 0s)) PASS
+2022-0778      arm32     FAIL (vuln: hang (no return within 40s bound)) PASS
+2023-2650      arm32     FAIL (vuln: hang (no return within 40s bound)) PASS
+2024-5535      arm32     SKIP (asan)                        -- ASan under qemu-user armhf is unreliable; cross libasan run skipped
+2026-35189     arm32     FAIL (vuln: peak RSS 553096KB >= 60000KB) PASS
+2023-3446      arm32     FAIL (vuln: hang (no return within 90s bound)) PASS
+2021-4160      arm32     SKIP (kat)                         -- only for arches: mips
+2020-1971      arm32     FAIL (vuln: wrong answer (kat:A:encode:differ+decode:fail)) PASS
+SELFTEST OK (arm32): every non-skipped CVE is VULNERABLE on cve-baseline and every control PASSes.
+
+
+--- arm32 --asm -----------------------------------------------------------------
+== openssl-cve-test.sh: mode=run arch=arm32 asm=1 selftest=1 ref=cve-baseline (8a7edfddffc6) cves=2018-0732 2018-0739 2022-0778 2023-2650 2024-5535 2026-35189
+CVE            arm32+asm ATTACK                             CONTROL
+2018-0732      arm32+asm FAIL (vuln: hang (no return within 60s bound)) PASS
+2018-0739      arm32+asm FAIL (vuln: crash (signal 11, 1s)) PASS
+2022-0778      arm32+asm FAIL (vuln: hang (no return within 40s bound)) PASS
+2023-2650      arm32+asm FAIL (vuln: hang (no return within 40s bound)) PASS
+2024-5535      arm32+asm SKIP (asan)                        -- ASan under qemu-user armhf is unreliable; cross libasan run skipped
+2026-35189     arm32+asm FAIL (vuln: peak RSS 553120KB >= 60000KB) PASS
+2023-3446      arm32+asm FAIL (vuln: hang (no return within 90s bound)) PASS
+2021-4160      arm32+asm SKIP (kat)                         -- only for arches: mips
+2020-1971      arm32+asm FAIL (vuln: wrong answer (kat:A:encode:differ+decode:fail)) PASS
+SELFTEST OK (arm32+asm): every non-skipped CVE is VULNERABLE on cve-baseline and every control PASSes.
+
+
+--- x86 (Debian sid gcc -m32, native i386) --------------------------------------
+== openssl-cve-test.sh: mode=run arch=x86 asm=0 selftest=1 ref=cve-baseline (8a7edfddffc6) cves=2018-0732 2018-0739 2022-0778 2023-2650 2024-5535 2026-35189
+CVE            x86       ATTACK                             CONTROL
+2018-0732      x86       FAIL (vuln: hang (no return within 15s bound)) PASS
+2018-0739      x86       FAIL (vuln: crash (signal 11, 0s)) PASS
+2022-0778      x86       FAIL (vuln: hang (no return within 10s bound)) PASS
+2023-2650      x86       FAIL (vuln: hang (did the unbounded work: len=316084, 9s)) PASS
+2024-5535      x86       FAIL (vuln: ASan report (rc=134))  PASS
+2026-35189     x86       FAIL (vuln: peak RSS 543816KB >= 60000KB) PASS
+2023-3446      x86       FAIL (vuln: hang (no return within 25s bound)) PASS
+2021-4160      x86       SKIP (kat)                         -- only for arches: mips
+2020-1971      x86       FAIL (vuln: wrong answer (kat:A:encode:differ+decode:fail)) PASS
+SELFTEST OK (x86): every non-skipped CVE is VULNERABLE on cve-baseline and every control PASSes.
+
+
+--- x86 --asm -------------------------------------------------------------------
+== openssl-cve-test.sh: mode=run arch=x86 asm=1 selftest=1 ref=cve-baseline (8a7edfddffc6) cves=2018-0732 2018-0739 2022-0778 2023-2650 2024-5535 2026-35189
+CVE            x86+asm   ATTACK                             CONTROL
+2018-0732      x86+asm   FAIL (vuln: hang (no return within 15s bound)) PASS
+2018-0739      x86+asm   FAIL (vuln: crash (signal 11, 0s)) PASS
+2022-0778      x86+asm   FAIL (vuln: hang (no return within 10s bound)) PASS
+2023-2650      x86+asm   FAIL (vuln: hang (did the unbounded work: len=316084, 9s)) PASS
+2024-5535      x86+asm   FAIL (vuln: ASan report (rc=134))  PASS
+2026-35189     x86+asm   FAIL (vuln: peak RSS 544696KB >= 60000KB) PASS
+2023-3446      x86+asm   FAIL (vuln: hang (no return within 25s bound)) PASS
+2021-4160      x86+asm   SKIP (kat)                         -- only for arches: mips
+2020-1971      x86+asm   FAIL (vuln: wrong answer (kat:A:encode:differ+decode:fail)) PASS
+SELFTEST OK (x86+asm): every non-skipped CVE is VULNERABLE on cve-baseline and every control PASSes.
+
+
+--- mips (Debian bookworm cross, qemu-user mipsel) ------------------------------
+== openssl-cve-test.sh: mode=run arch=mips asm=0 selftest=1 ref=cve-baseline (8a7edfddffc6) cves=2018-0732 2018-0739 2022-0778 2023-2650 2024-5535 2026-35189
+CVE            mips      ATTACK                             CONTROL
+2018-0732      mips      FAIL (vuln: hang (no return within 60s bound)) PASS
+2018-0739      mips      FAIL (vuln: crash (signal 11, 1s)) PASS
+2022-0778      mips      FAIL (vuln: hang (no return within 40s bound)) PASS
+2023-2650      mips      FAIL (vuln: hang (no return within 40s bound)) PASS
+2024-5535      mips      SKIP (asan)                        -- no libasan for mipsel in the Debian bookworm cross gcc 12 (ld: cannot find -lasan)
+2026-35189     mips      FAIL (vuln: peak RSS 561064KB >= 60000KB) PASS
+2023-3446      mips      FAIL (vuln: hang (no return within 90s bound)) PASS
+2021-4160      mips      SKIP (kat)                         -- needs --asm (tests the shipped asm)
+2020-1971      mips      FAIL (vuln: wrong answer (kat:A:encode:differ+decode:fail)) PASS
+SELFTEST OK (mips): every non-skipped CVE is VULNERABLE on cve-baseline and every control PASSes.
+
+
+--- mips --asm ------------------------------------------------------------------
+== openssl-cve-test.sh: mode=run arch=mips asm=1 selftest=1 ref=cve-baseline (8a7edfddffc6) cves=2018-0732 2018-0739 2022-0778 2023-2650 2024-5535 2026-35189
+CVE            mips+asm  ATTACK                             CONTROL
+2018-0732      mips+asm  FAIL (vuln: hang (no return within 60s bound)) PASS
+2018-0739      mips+asm  FAIL (vuln: crash (signal 11, 1s)) PASS
+2022-0778      mips+asm  FAIL (vuln: hang (no return within 40s bound)) PASS
+2023-2650      mips+asm  FAIL (vuln: hang (did the unbounded work: len=316084, 35s)) PASS
+2024-5535      mips+asm  SKIP (asan)                        -- no libasan for mipsel in the Debian bookworm cross gcc 12 (ld: cannot find -lasan)
+2026-35189     mips+asm  FAIL (vuln: peak RSS 561000KB >= 60000KB) PASS
+2023-3446      mips+asm  FAIL (vuln: hang (no return within 90s bound)) PASS
+2021-4160      mips+asm  FAIL (vuln: wrong answer (kat:simple:differ)) PASS
+2020-1971      mips+asm  FAIL (vuln: wrong answer (kat:A:encode:differ+decode:fail)) PASS
+SELFTEST OK (mips+asm): every non-skipped CVE is VULNERABLE on cve-baseline and every control PASSes.

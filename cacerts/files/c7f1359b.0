@@ -1,0 +1,33 @@
+-----BEGIN CERTIFICATE-----
+MIICODCCAb6gAwIBAgIJANZdm7N4gS7rMAoGCCqGSM49BAMDMGExCzAJBgNVBAYT
+AkpQMSUwIwYDVQQKExxTRUNPTSBUcnVzdCBTeXN0ZW1zIENPLixMVEQuMSswKQYD
+VQQDEyJTZWN1cml0eSBDb21tdW5pY2F0aW9uIEVDQyBSb290Q0ExMB4XDTE2MDYx
+NjA1MTUyOFoXDTM4MDExODA1MTUyOFowYTELMAkGA1UEBhMCSlAxJTAjBgNVBAoT
+HFNFQ09NIFRydXN0IFN5c3RlbXMgQ08uLExURC4xKzApBgNVBAMTIlNlY3VyaXR5
+IENvbW11bmljYXRpb24gRUNDIFJvb3RDQTEwdjAQBgcqhkjOPQIBBgUrgQQAIgNi
+AASkpW9gAwPDvTH00xecK4R1rOX9PVdu12O/5gSJko6BnOPpR27KkBLIE+Cnnfdl
+dB9sELLo5OnvbYUymUSxXv3MdhDYW72ixvnWQuRXdtyQwjWpS4g8EkdtXP9JTxpK
+ULGjQjBAMB0GA1UdDgQWBBSGHOf+LaVKiwj+KBH6vqNm+GBZLzAOBgNVHQ8BAf8E
+BAMCAQYwDwYDVR0TAQH/BAUwAwEB/zAKBggqhkjOPQQDAwNoADBlAjAVXUI9/Lbu
+9zuxNuie9sRGKEkz0FhDKmMpzE2xtHqiuQ04pV1IKv3LsnNdo4gIxwwCMQDAqy0O
+be0YottT6SXbVQjgUMzfRGEWgqtJsLKB7HOHeLRMsmIbEvoWTSVLY70eN9k=
+-----END CERTIFICATE-----
+Certificate:
+    Data:
+        Version: 3 (0x2)
+        Serial Number:
+            d6:5d:9b:b3:78:81:2e:eb
+        Signature Algorithm: ecdsa-with-SHA384
+        Issuer: C=JP, O=SECOM Trust Systems CO.,LTD., CN=Security Communication ECC RootCA1
+        Validity
+            Not Before: Jun 16 05:15:28 2016 GMT
+            Not After : Jan 18 05:15:28 2038 GMT
+        Subject: C=JP, O=SECOM Trust Systems CO.,LTD., CN=Security Communication ECC RootCA1
+        X509v3 extensions:
+            X509v3 Subject Key Identifier: 
+                86:1C:E7:FE:2D:A5:4A:8B:08:FE:28:11:FA:BE:A3:66:F8:60:59:2F
+            X509v3 Key Usage: critical
+                Certificate Sign, CRL Sign
+            X509v3 Basic Constraints: critical
+                CA:TRUE
+SHA1 Fingerprint=B8:0E:26:A9:BF:D2:B2:3B:C0:EF:46:C9:BA:C7:BB:F6:1D:0D:41:41

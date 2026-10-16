@@ -1,0 +1,494 @@
+/*
+ * Copyright (C) 2026 The android-kitkat-tls12 authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package io.github.hsw.kktls;
+
+import java.io.File;
+import java.io.IOException;
+import java.io.RandomAccessFile;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.net.InetAddress;
+import java.net.Socket;
+import java.net.UnknownHostException;
+import java.security.Provider;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.logging.Level;
+import java.util.logging.Logger;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLSocket;
+import javax.net.ssl.SSLSocketFactory;
+
+/**
+ * The default {@link SSLSocketFactory} of Android 4.4 with the android-kitkat-tls12 series: standalone Conscrypt
+ * 2.6-alpha2 (BoringSSL, TLS 1.3; TLS 1.0/1.1 kept on, step 4) when layer D is installed and loads, else the platform
+ * factory of layer A.
+ *
+ * <p>libcore's {@code security.properties} names this class as {@code ssl.SocketFactory.provider}, and
+ * {@code SSLSocketFactory.getDefault()} creates it with {@code Class.newInstance()} through the caller's class loader,
+ * so it must be a boot class. It is part of libcore ({@code luni}, built into {@code core.jar} for Dalvik and
+ * {@code core-libart.jar} for ART), so layer D changes neither the boot class path nor the ramdisk: it is three files
+ * in /system, {@value #CONSCRYPT_JAR}, {@value #FILTER_JAR} and {@code libkktls_conscrypt_jni.so} in
+ * {@value #CONSCRYPT_LIBRARY_PATH}. Conscrypt itself is <b>not</b> on the boot class path: a boot copy of
+ * {@code org.conscrypt} would shadow an app's own Conscrypt (parent-first loading). The constructor:
+ * <ol>
+ * <li>reads the <b>kill switch</b>, the system property {@value #GATE_PROPERTY}: exactly {@code "0"} keeps layer D off
+ *     even when its files are installed; any other value, unset included, leaves the choice to step 2. It is read once
+ *     per process, when this class is initialised, with {@code android.os.SystemProperties.get(String, String)} by
+ *     reflection (libcore cannot link against the framework); if that lookup fails in any way (no framework, natives
+ *     not registered, ...), it counts as unset. <b>Off:</b> the wrapper creates no class loader, never looks up any
+ *     {@code org.conscrypt} class (so neither the jar nor {@code libkktls_conscrypt_jni.so} is opened), logs nothing,
+ *     and uses the platform factory as in step 5, so {@code toString()} says {@code gate-off};</li>
+ * <li>checks whether layer D is <b>installed</b>: {@value #CONSCRYPT_JAR} exists (checked once per process, at class
+ *     initialisation). Not installed: as off in step 1 (no class loader, no lookup, no log, platform factory), and
+ *     {@code toString()} says {@code absent}. An installed jar that cannot be used (empty, broken, a missing
+ *     {@value #FILTER_JAR} or {@code .so}) is a failure as in step 5, not "absent";</li>
+ * <li>installed, first: if the system property {@value #SNI_PROPERTY} holds a value other than {@code true}/{@code
+ *     false} (any case) when the wrapper is constructed, uses the platform factory as in step 5 and logs one warning
+ *     per process, without loading Conscrypt. Conscrypt (2.5.3 and 2.6-alpha2) would throw
+ *     {@code RuntimeException("Can only set \"jsse.enableSNIExtension\" to \"true\" or \"false\"")} from every
+ *     handshake (SSLParametersImpl, read per socket), after this constructor, where nothing can fall back; layer A
+ *     keeps SNI on for such a value instead. The check runs at each construction, so only a value set <b>after</b> the
+ *     process's default factory exists (getDefault() creates it once) still reaches Conscrypt. {@code toString()} says
+ *     {@code platform-sni};</li>
+ * <li>installed, otherwise: once per process, first checks {@value #CONSCRYPT_LIBRARY} without loading it
+ *     ({@link #checkLibrary}: a 32-bit little-endian ELF shared object for ARM or x86 whose every {@code PT_LOAD}
+ *     segment ends within the file; a failure is one as in step 5): the 4.4 linker maps the segments without that
+ *     check, so a truncated library (bad flash, interrupted copy) would kill the process with SIGBUS inside
+ *     {@code System.loadLibrary}, where nothing can fall back. Then it creates its own
+ *     {@code dalvik.system.PathClassLoader(}{@value #CONSCRYPT_JAR}{@code :}{@value #FILTER_JAR}{@code , }{@value
+ *     #CONSCRYPT_LIBRARY_PATH}{@code , <this class's loader>)} (the boot class loader on the device, so the KitKat
+ *     adapter resolves {@code com.android.org.conscrypt.OpenSSLSocketImpl} from the boot class path, and Conscrypt's
+ *     {@code System.loadLibrary("kktls_conscrypt_jni")} finds {@code libkktls_conscrypt_jni.so} through this loader:
+ *     the build renames the aar's {@code "conscrypt_jni"} in {@code NativeCryptoJni}, because the 4.4 linker dedups
+ *     libraries by basename and an app that bundles Conscrypt loads its own {@code libconscrypt_jni.so}), loads
+ *     {@code org.conscrypt.Conscrypt} from it <b>by reflection only</b> (the classes are Java 8, major 52, which a
+ *     KitKat javac 6 cannot read) and builds the provider with
+ *     {@code Conscrypt.newProviderBuilder().isTlsV1Deprecated(false).isTlsV1Enabled(true).build()}: 2.6-alpha2's
+ *     {@code newProvider()} takes the Android defaults (TLSv1 deprecated and unsupported), which enable and support
+ *     only TLS 1.2/1.3, so TLS 1.0/1.1-only servers and the 4.4 okhttp TLSv1 + SCSV retry would fail; with these flags
+ *     the defaults and the supported list are {@code [TLSv1, TLSv1.1, TLSv1.2, TLSv1.3]}, as with 2.5.3. The flags are
+ *     static per class loader ({@code Platform.setup}), so an app's own Conscrypt in its own loader is not affected.
+ *     A Conscrypt without these builder methods (2.5.3 API) is a failure as in step 5, never a TLS 1.2/1.3-only
+ *     provider. The loader and the provider are kept for the process (a second loader could not open the same .so).
+ *     Each construction takes {@code SSLContext.getInstance("TLS", provider)}, initialised with the platform defaults
+ *     ({@code init(null, null, null)}: key and trust managers come from the installed providers, so trust stays with
+ *     the platform TrustManagerImpl and the system CA store); the provider is not installed in {@code Security};</li>
+ * <li>installed, on <b>any</b> {@link Throwable} (a class missing from the jar, the {@code IOException} of the library
+ *     check, {@code UnsatisfiedLinkError} from libkktls_conscrypt_jni.so, {@code ExceptionInInitializerError},
+ *     {@code NoSuchAlgorithmException}, {@code KeyManagementException}, ...) logs one warning per process
+ *     (java.util.logging, tag {@value #LOG_TAG}) and uses {@code com.android.org.conscrypt.OpenSSLSocketFactoryImpl},
+ *     created exactly as the 4.4 {@code getDefault()} created it from the previous {@code ssl.SocketFactory.provider}
+ *     value: by name, public no-arg constructor. A failure to load Conscrypt is kept for the process (no retry, no second loader);</li>
+ * <li>if the platform factory fails too (any path), throws {@link IllegalStateException}, a RuntimeException, so
+ *     {@code getDefault()}'s own {@code catch (Exception)} falls back to {@code SSLContext.getDefault()}. No
+ *     {@code Error} ever leaves the constructor (getDefault() would not catch it).</li>
+ * </ol>
+ * Every method of the 4.4 {@code SocketFactory}/{@code SSLSocketFactory} API is delegated, including the
+ * non-abstract {@code createSocket()}. Java 6 source with no compile-time dependency beyond {@code java.*} and
+ * {@code javax.*}: the same file is tested on a host JVM (the sslfactory host tests).
+ *
+ * @hide
+ */
+public final class KktlsDefaultSSLSocketFactory extends SSLSocketFactory {
+    /** java.util.logging logger name; on Android it becomes the logcat tag (at most 23 characters). */
+    static final String LOG_TAG = "KktlsSslFactory";
+    static final String CONSCRYPT_CLASS = "org.conscrypt.Conscrypt";
+    static final String PLATFORM_FACTORY_CLASS = "com.android.org.conscrypt.OpenSSLSocketFactoryImpl";
+    /** The kill switch: exactly "0" keeps layer D off; persistent (persist.*), set by root only (not in 4.4
+     *  property_perms). */
+    static final String GATE_PROPERTY = "persist.kktls.conscrypt";
+    static final String SYSTEM_PROPERTIES_CLASS = "android.os.SystemProperties";
+    /** Where the layer-D files are installed. The host test compiles a copy of this file with a temporary directory
+     *  here (the only line it changes). */
+    static final String SYSTEM_ROOT = "/system";
+    /** Conscrypt 2.6-alpha2 (module kktls-conscrypt), not on the boot class path; its presence turns layer D on. */
+    static final String CONSCRYPT_JAR = SYSTEM_ROOT + "/framework/kktls-conscrypt.jar";
+    /**
+     * {@code org.conscrypt.KktlsFilteringSSLSocket} (module kktls-sslfilter), also not on the boot class path, added to
+     * the same PathClassLoader as {@value #CONSCRYPT_JAR}: the wrapper socket that restores 2.5.3's {@code "SSLv3"}
+     * filtering (2.6-alpha2 throws from {@code setEnabledProtocols} instead). In {@code org.conscrypt} and on the
+     * Conscrypt loader so a socket's class still tells which stack made it.
+     */
+    static final String FILTER_JAR = SYSTEM_ROOT + "/framework/kktls-sslfilter.jar";
+    static final String FILTER_SOCKET_CLASS = "org.conscrypt.KktlsFilteringSSLSocket";
+    /** Native library directory of that loader (libkktls_conscrypt_jni.so, module libkktls_conscrypt_jni). */
+    static final String CONSCRYPT_LIBRARY_PATH = SYSTEM_ROOT + "/lib";
+    /** The JNI library that Conscrypt's {@code System.loadLibrary("kktls_conscrypt_jni")} opens from that directory. */
+    static final String CONSCRYPT_LIBRARY = CONSCRYPT_LIBRARY_PATH + "/libkktls_conscrypt_jni.so";
+    static final String PATH_CLASS_LOADER_CLASS = "dalvik.system.PathClassLoader";
+    /** Conscrypt accepts only "true"/"false" (ignoring case) here and throws from every handshake otherwise. */
+    static final String SNI_PROPERTY = "jsse.enableSNIExtension";
+
+    /** The kill switch, read once per process (initialisation of this class). */
+    private static final boolean KILLED = readKillSwitch();
+    /** Layer D installed ({@value #CONSCRYPT_JAR} exists), checked once per process unless the kill switch is on. */
+    private static final boolean INSTALLED = !KILLED && installed();
+
+    private static final AtomicBoolean FALLBACK_LOGGED = new AtomicBoolean(false);
+    private static final AtomicBoolean SNI_LOGGED = new AtomicBoolean(false);
+
+    /** Guards the per-process Conscrypt state below: one loader, one provider, or the failure that stopped them. */
+    private static final Object CONSCRYPT_LOCK = new Object();
+    private static Loaded conscryptLoaded;
+    private static Throwable conscryptFailure;
+
+    /** What the Conscrypt loader yields, set together under {@link #CONSCRYPT_LOCK}: the provider and the constructor
+     *  of {@value #FILTER_SOCKET_CLASS} from the same loader. */
+    private static final class Loaded {
+        final Provider provider;
+        final Constructor<?> filterSocketCtor;
+
+        Loaded(Provider provider, Constructor<?> filterSocketCtor) {
+            this.provider = provider;
+            this.filterSocketCtor = filterSocketCtor;
+        }
+    }
+
+    private final SSLSocketFactory delegate;
+    private final String origin;
+    /** The {@value #FILTER_SOCKET_CLASS} constructor when {@link #origin} is "conscrypt", else null; a final field, so it
+     *  is published safely with this factory to any thread that creates sockets. */
+    private final Constructor<?> filterSocketCtor;
+
+    public KktlsDefaultSSLSocketFactory() {
+        if (KILLED) {
+            // kill switch: no class loader, no org.conscrypt lookup (no jar, no .so), no log line, layer A
+            delegate = newPlatformFactory("gate off");
+            origin = "gate-off";
+            filterSocketCtor = null;
+            return;
+        }
+        if (!INSTALLED) {
+            // layer D not installed: the same as the kill switch, layer A
+            delegate = newPlatformFactory("layer D not installed");
+            origin = "absent";
+            filterSocketCtor = null;
+            return;
+        }
+        String sni = invalidSniValue();
+        if (sni != null) {
+            // Conscrypt would refuse every handshake of this factory; layer A keeps SNI on for such a value
+            logSniOnce(sni);
+            delegate = newPlatformFactory("Conscrypt not tried: invalid " + SNI_PROPERTY);
+            origin = "platform-sni";
+            filterSocketCtor = null;
+            return;
+        }
+        SSLSocketFactory f = null;
+        Constructor<?> ctor = null;
+        Throwable failure = null;
+        try {
+            Loaded loaded = conscryptLoaded();
+            f = newConscryptFactory(loaded.provider);
+            ctor = loaded.filterSocketCtor;
+        } catch (Throwable t) {
+            failure = unwrap(t);
+        }
+        if (f != null) {
+            origin = "conscrypt";
+        } else {
+            logFallbackOnce(failure);
+            f = newPlatformFactory("layer D installed, Conscrypt not usable either");
+            origin = "platform";
+            ctor = null;
+        }
+        delegate = f;
+        filterSocketCtor = ctor;
+    }
+
+    /**
+     * {@code SystemProperties.get(GATE_PROPERTY, "")} by reflection; true only for exactly "0". Never throws: any
+     * failure (class or method missing, UnsatisfiedLinkError of native_get, ...) counts as unset, silently.
+     */
+    private static boolean readKillSwitch() {
+        try {
+            Object v = Class.forName(SYSTEM_PROPERTIES_CLASS).getMethod("get", String.class, String.class)
+                    .invoke(null, GATE_PROPERTY, "");
+            return "0".equals(v);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** {@value #CONSCRYPT_JAR} exists; never throws (a SecurityException or any other failure means not installed). */
+    private static boolean installed() {
+        try {
+            return new File(CONSCRYPT_JAR).exists();
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /**
+     * The value of {@value #SNI_PROPERTY} if Conscrypt would reject it (not null, not "true"/"false" in any
+     * case), else null. A SecurityException means "true" there, so it is null here too.
+     */
+    static String invalidSniValue() {
+        String v;
+        try {
+            v = System.getProperty(SNI_PROPERTY);
+        } catch (SecurityException e) {
+            return null;
+        }
+        if (v == null || "true".equalsIgnoreCase(v) || "false".equalsIgnoreCase(v)) {
+            return null;
+        }
+        return v;
+    }
+
+    /** The process's Conscrypt state: created on the first call, or the first call's failure rethrown. */
+    private static Loaded conscryptLoaded() throws Throwable {
+        synchronized (CONSCRYPT_LOCK) {
+            if (conscryptLoaded == null && conscryptFailure == null) {
+                try {
+                    conscryptLoaded = loadConscrypt();
+                } catch (Throwable t) {
+                    conscryptFailure = unwrap(t);
+                }
+            }
+            if (conscryptFailure != null) {
+                throw conscryptFailure;
+            }
+            return conscryptLoaded;
+        }
+    }
+
+    private static Loaded loadConscrypt() throws Exception {
+        // Before anything can dlopen the library: a truncated .so is a SIGBUS in the linker, not an exception.
+        checkLibrary(CONSCRYPT_LIBRARY);
+        // One loader for Conscrypt and our SSLv3-filtering socket: both off the boot class path, both org.conscrypt, so
+        // a wrapped socket's class still tells which stack made it. A missing/unloadable kktls-sslfilter then fails
+        // here exactly like a broken Conscrypt: the usual layer-A fallback with one log line.
+        ClassLoader loader = (ClassLoader) Class.forName(PATH_CLASS_LOADER_CLASS)
+                .getConstructor(String.class, String.class, ClassLoader.class)
+                .newInstance(CONSCRYPT_JAR + File.pathSeparator + FILTER_JAR, CONSCRYPT_LIBRARY_PATH,
+                        KktlsDefaultSSLSocketFactory.class.getClassLoader());
+        Class<?> conscrypt = Class.forName(CONSCRYPT_CLASS, true, loader);
+        // newProviderBuilder().isTlsV1Deprecated(false).isTlsV1Enabled(true).build(); the declared return type, not
+        // getClass() of the builder, names the public builder class
+        Method newBuilder = conscrypt.getMethod("newProviderBuilder");
+        Class<?> builderClass = newBuilder.getReturnType();
+        Object builder = newBuilder.invoke(null);
+        builder = builderClass.getMethod("isTlsV1Deprecated", boolean.class).invoke(builder, Boolean.FALSE);
+        builder = builderClass.getMethod("isTlsV1Enabled", boolean.class).invoke(builder, Boolean.TRUE);
+        Provider provider = (Provider) builderClass.getMethod("build").invoke(builder);
+        if (provider == null) {
+            throw new IllegalStateException(CONSCRYPT_CLASS + ".newProviderBuilder()...build() returned null");
+        }
+        // The SSLv3-filtering wrapper socket's constructor, from the same loader (an org.conscrypt class on the
+        // Conscrypt loader). Loaded now so any failure joins the single Conscrypt-load fallback above.
+        Constructor<?> ctor = Class.forName(FILTER_SOCKET_CLASS, true, loader).getConstructor(SSLSocket.class);
+        return new Loaded(provider, ctor);
+    }
+
+    /**
+     * Throws {@link IOException} unless {@code path} is a 32-bit little-endian ELF shared object ({@code ET_DYN}) for
+     * ARM or x86 with 1 to 2048 program headers inside the file, at least one {@code PT_LOAD}, and every
+     * {@code PT_LOAD} ending within the file ({@code p_offset + p_filesz <= length}). Reads the 52-byte header and the
+     * program headers once, with one 52-byte buffer. Catches truncation (what the linker turns into SIGBUS), not
+     * arbitrary corruption, and not a file replaced between this check and the load.
+     */
+    static void checkLibrary(String path) throws IOException {
+        RandomAccessFile f = new RandomAccessFile(path, "r");
+        try {
+            long size = f.length();
+            byte[] b = new byte[52]; // Elf32_Ehdr, then reused for each 32-byte Elf32_Phdr
+            if (size < b.length) {
+                throw elfError(path, "shorter than an ELF header (" + size + " bytes)");
+            }
+            f.readFully(b);
+            if (b[0] != 0x7f || b[1] != 'E' || b[2] != 'L' || b[3] != 'F') {
+                throw elfError(path, "no ELF magic");
+            }
+            if (b[4] != 1 || b[5] != 1) { // EI_CLASS ELFCLASS32, EI_DATA ELFDATA2LSB
+                throw elfError(path, "not a 32-bit little-endian ELF (class " + b[4] + ", data " + b[5] + ")");
+            }
+            int type = u16(b, 16);
+            int machine = u16(b, 18);
+            if (type != 3 || (machine != 40 && machine != 3)) { // ET_DYN; EM_ARM, EM_386
+                throw elfError(path, "e_type " + type + ", e_machine " + machine + " (want 3, and 40 or 3)");
+            }
+            long phoff = u32(b, 28);
+            int phentsize = u16(b, 42);
+            int phnum = u16(b, 44);
+            if (phentsize != 32 || phnum < 1 || phnum > 2048 || phoff + 32L * phnum > size) {
+                throw elfError(path, "program headers (offset " + phoff + ", " + phnum + " x " + phentsize
+                        + " bytes) do not fit the file (" + size + " bytes)");
+            }
+            f.seek(phoff);
+            int loads = 0;
+            for (int i = 0; i < phnum; i++) {
+                f.readFully(b, 0, 32);
+                if (u32(b, 0) != 1) { // PT_LOAD
+                    continue;
+                }
+                loads++;
+                long end = u32(b, 4) + u32(b, 16); // p_offset + p_filesz
+                if (end > size) {
+                    throw elfError(path, "PT_LOAD segment " + i + " ends at byte " + end
+                            + ", past the end of the file (" + size + " bytes): truncated");
+                }
+            }
+            if (loads == 0) {
+                throw elfError(path, "no PT_LOAD segment");
+            }
+        } finally {
+            try {
+                f.close();
+            } catch (IOException ignored) {
+                // read-only file; nothing to flush
+            }
+        }
+    }
+
+    private static IOException elfError(String path, String what) {
+        return new IOException("ELF check of " + path + ": " + what);
+    }
+
+    private static int u16(byte[] b, int o) {
+        return (b[o] & 0xff) | (b[o + 1] & 0xff) << 8;
+    }
+
+    private static long u32(byte[] b, int o) {
+        return (b[o] & 0xffL) | (b[o + 1] & 0xffL) << 8 | (b[o + 2] & 0xffL) << 16 | (b[o + 3] & 0xffL) << 24;
+    }
+
+    private static SSLSocketFactory newConscryptFactory(Provider provider) throws Exception {
+        SSLContext context = SSLContext.getInstance("TLS", provider);
+        context.init(null, null, null);
+        SSLSocketFactory f = context.getSocketFactory();
+        if (f == null) {
+            throw new IllegalStateException(provider.getName() + " SSLContext TLS returned no socket factory");
+        }
+        return f;
+    }
+
+    /** The platform factory (layer A); {@code context} says which path asked for it, for the exception message. */
+    private static SSLSocketFactory newPlatformFactory(String context) {
+        try {
+            return (SSLSocketFactory) Class.forName(PLATFORM_FACTORY_CLASS).getConstructor().newInstance();
+        } catch (Throwable t) {
+            throw new IllegalStateException("the platform factory " + PLATFORM_FACTORY_CLASS + " is not usable ("
+                    + context + ")", unwrap(t));
+        }
+    }
+
+    private static Throwable unwrap(Throwable t) {
+        return (t instanceof InvocationTargetException && t.getCause() != null) ? t.getCause() : t;
+    }
+
+    private static void logFallbackOnce(Throwable failure) {
+        if (!FALLBACK_LOGGED.compareAndSet(false, true)) {
+            return;
+        }
+        try {
+            Logger.getLogger(LOG_TAG).log(Level.WARNING, "Conscrypt is not usable; the default SSLSocketFactory is "
+                    + PLATFORM_FACTORY_CLASS + " (layer A)", failure);
+        } catch (Throwable ignored) {
+            // logging must never break the default factory
+        }
+    }
+
+    private static void logSniOnce(String value) {
+        if (!SNI_LOGGED.compareAndSet(false, true)) {
+            return;
+        }
+        try {
+            Logger.getLogger(LOG_TAG).log(Level.WARNING, SNI_PROPERTY + " is \"" + value + "\", which Conscrypt rejects"
+                    + " in every handshake (only true or false); the default SSLSocketFactory is "
+                    + PLATFORM_FACTORY_CLASS + " (layer A, SNI stays on)");
+        } catch (Throwable ignored) {
+            // logging must never break the default factory
+        }
+    }
+
+    @Override
+    public String toString() {
+        return "KktlsDefaultSSLSocketFactory[" + origin + ": " + delegate.getClass().getName() + "]";
+    }
+
+    @Override
+    public String[] getDefaultCipherSuites() {
+        return delegate.getDefaultCipherSuites();
+    }
+
+    @Override
+    public String[] getSupportedCipherSuites() {
+        return delegate.getSupportedCipherSuites();
+    }
+
+    @Override
+    public Socket createSocket() throws IOException {
+        return wrap(delegate.createSocket());
+    }
+
+    @Override
+    public Socket createSocket(Socket s, String host, int port, boolean autoClose) throws IOException {
+        return wrap(delegate.createSocket(s, host, port, autoClose));
+    }
+
+    @Override
+    public Socket createSocket(String host, int port) throws IOException, UnknownHostException {
+        return wrap(delegate.createSocket(host, port));
+    }
+
+    @Override
+    public Socket createSocket(String host, int port, InetAddress localHost, int localPort)
+            throws IOException, UnknownHostException {
+        return wrap(delegate.createSocket(host, port, localHost, localPort));
+    }
+
+    @Override
+    public Socket createSocket(InetAddress host, int port) throws IOException {
+        return wrap(delegate.createSocket(host, port));
+    }
+
+    @Override
+    public Socket createSocket(InetAddress address, int port, InetAddress localAddress, int localPort)
+            throws IOException {
+        return wrap(delegate.createSocket(address, port, localAddress, localPort));
+    }
+
+    /**
+     * Conscrypt in use: wrap the Conscrypt socket in {@value #FILTER_SOCKET_CLASS} (restores 2.5.3's
+     * {@code "SSLv3"} filtering). Platform sockets (layer A: kill switch, layer D not installed, or the Conscrypt
+     * fallback) and non-SSL sockets pass through unchanged, so layer A is byte-for-byte as before. The constructor is
+     * the one loaded with the provider from the Conscrypt loader, so the wrapper socket is itself an
+     * {@code org.conscrypt} class on that loader.
+     */
+    private Socket wrap(Socket s) throws IOException {
+        if (!"conscrypt".equals(origin) || !(s instanceof SSLSocket)) {
+            return s;
+        }
+        try {
+            if (filterSocketCtor == null) {
+                // cannot happen (set with origin "conscrypt"); never hand out an unfiltered Conscrypt socket
+                throw new IllegalStateException("no " + FILTER_SOCKET_CLASS + " constructor");
+            }
+            return (Socket) filterSocketCtor.newInstance((SSLSocket) s);
+        } catch (Throwable t) {
+            try {
+                s.close();
+            } catch (Throwable ignored) {
+                // closing the unwrapped socket after a wrap failure
+            }
+            throw new IOException("kktls-sslfilter: cannot wrap the Conscrypt socket " + s.getClass().getName(),
+                    unwrap(t));
+        }
+    }
+}

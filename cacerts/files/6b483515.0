@@ -1,0 +1,34 @@
+-----BEGIN CERTIFICATE-----
+MIICQjCCAcmgAwIBAgIQNjqWjMlcsljN0AFdxeVXADAKBggqhkjOPQQDAzBjMQsw
+CQYDVQQGEwJERTEnMCUGA1UECgweRGV1dHNjaGUgVGVsZWtvbSBTZWN1cml0eSBH
+bWJIMSswKQYDVQQDDCJUZWxla29tIFNlY3VyaXR5IFRMUyBFQ0MgUm9vdCAyMDIw
+MB4XDTIwMDgyNTA3NDgyMFoXDTQ1MDgyNTIzNTk1OVowYzELMAkGA1UEBhMCREUx
+JzAlBgNVBAoMHkRldXRzY2hlIFRlbGVrb20gU2VjdXJpdHkgR21iSDErMCkGA1UE
+AwwiVGVsZWtvbSBTZWN1cml0eSBUTFMgRUNDIFJvb3QgMjAyMDB2MBAGByqGSM49
+AgEGBSuBBAAiA2IABM6//leov9Wq9xCazbzREaK9Z0LMkOsVGJDZos0MKiXrPk/O
+tdKPD/M12kOLAoC+b1EkHQ9rK8qfwm9QMuU3ILYg/4gND21Ju9sGpIeQkpT0CdDP
+f8iAC8GXs7s1J8nCG6NCMEAwHQYDVR0OBBYEFONyzG6VmUex5rNhTNHLq+O6zd6f
+MA8GA1UdEwEB/wQFMAMBAf8wDgYDVR0PAQH/BAQDAgEGMAoGCCqGSM49BAMDA2cA
+MGQCMHVSi7ekEE+uShCLsoRbQuHmKjYC2qBuGT8lv9pZMo7k+5Dck2TOrbRBR2Di
+z6fLHgIwN0GMZt9Ba9aDAEH9L1r3ULRn0SyocddDypwnJJGDSA3PzfdUga/sf+Rn
+27iQ7t0l
+-----END CERTIFICATE-----
+Certificate:
+    Data:
+        Version: 3 (0x2)
+        Serial Number:
+            36:3a:96:8c:c9:5c:b2:58:cd:d0:01:5d:c5:e5:57:00
+        Signature Algorithm: ecdsa-with-SHA384
+        Issuer: C=DE, O=Deutsche Telekom Security GmbH, CN=Telekom Security TLS ECC Root 2020
+        Validity
+            Not Before: Aug 25 07:48:20 2020 GMT
+            Not After : Aug 25 23:59:59 2045 GMT
+        Subject: C=DE, O=Deutsche Telekom Security GmbH, CN=Telekom Security TLS ECC Root 2020
+        X509v3 extensions:
+            X509v3 Subject Key Identifier: 
+                E3:72:CC:6E:95:99:47:B1:E6:B3:61:4C:D1:CB:AB:E3:BA:CD:DE:9F
+            X509v3 Basic Constraints: critical
+                CA:TRUE
+            X509v3 Key Usage: critical
+                Certificate Sign, CRL Sign
+SHA1 Fingerprint=C0:F8:96:C5:A9:3B:01:06:21:07:DA:18:42:48:BC:E9:9D:88:D5:EC

@@ -1,0 +1,21 @@
+# CVE-2021-4160 - MIPS bn_sqr_comba carry bug: BN_mod_exp returns a wrong
+# result for a specific input on the 32-bit mips/mipsel asm build (KAT class).
+# Benign numeric known-answer test, not an exploit: upstream e9e726506c's own
+# regression vector (carried in the port at 6e92ffd) computed two ways, each
+# compared with a hard-coded expected value (Python pow, cross-checked on the
+# no-asm build). Either path differs -> KKTLS_CVE_RESULT=wrong; both equal -> correct.
+# MIPS-asm only: SKIP on every other arch (arches=mips) and without --asm
+# (needs_asm=yes). timeout is a safety bound (two 2048-bit modexps under qemu).
+class=kat
+lib=noasan
+needs_ssl=0
+arches=mips
+needs_asm=yes
+timeout_mips=300
+timeout_arm32=300
+timeout_host=120
+arm32=yes
+x86=yes
+mips=yes
+target=no
+desc=bn_sqr_comba4/8 drops a carry on 32-bit MIPS asm; known-answer test: consttime and simple modexp of upstream's e9e726506c vector must both equal the expected value
