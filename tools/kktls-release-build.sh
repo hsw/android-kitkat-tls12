@@ -9,10 +9,16 @@
 #
 # Steps per tag (all = every step in this order; each step leaves WORK/<tag>/<step>.done and is skipped next time):
 #   sync     repo init --depth=1 + repo sync of the `project` lines of the targets file (sync image); every project must
-#            then be at its `rev` line's commit (a moved tag fails); the repo tool tag is verified by the launcher
+#            then be at its `rev` line's commit (a moved tag fails); the repo tool tag is verified by the launcher; the
+#            compilers (prebuilts/gcc projects, prebuilts/tools/gcc-sdk/) get their commit's time as mtime (the
+#            prebuilt ccache 2.4 hashes the compiler's size and mtime: a checkout's mtime would miss a ccache kept from
+#            an earlier tree, as in CI)
 #   stock    pristine tree: `make clang`, then libcrypto/libssl (+ libc/libdl/libm/liblog) per ABI; the OpenSSL libraries,
 #            include/ and the bionic export list go to WORK/<tag>/stock-openssl/<abi>/ (the old side of the ABI check, the
-#            bionic of the Conscrypt .so check); out/target is removed afterwards
+#            bionic of the Conscrypt .so check); out/target is removed afterwards. WORK/<tag>/stock-openssl.manifest
+#            records the inputs (target rows, project revs, this script, the JDK patch, check_prebuilt.py) and the sha256
+#            of every file; with --reuse-stock a stock-openssl/ that matches its manifest and this run's inputs is kept
+#            and the makes are skipped (else it is removed and built)
 #   apply    kktls-apply-series.sh (the committed series, `git archive HEAD`); device/kktls/conscrypt/sslfilter/ (the
 #            SSLv3 filter module, built with layer A)
 #   build    per ABI: every `module` except the two Conscrypt stage modules (core and conscrypt are needed by `stage`)
@@ -44,6 +50,8 @@
 #                     docker; repo, make, python3, d8 and the checks run here
 #   --aar FILE        Conscrypt 2.6-alpha2 aar (default: downloaded from Maven Central into WORK/dl/, sha256-pinned)
 #   --d8 FILE --dexdump FILE  Android build-tools 37.0.0 (default $D8/$DEXDUMP, else $ANDROID_HOME/build-tools/37.0.0/)
+#   --reuse-stock     keep a complete stock-openssl/ of the same inputs (e.g. restored from a CI cache), see `stock`
+# Environment: KKTLS_CCACHE_MAX  ccache -M of WORK/<tag>/ccache (default 30G)
 #
 # Inputs: everything from this repository comes from `git archive HEAD` into WORK/inputs/ (the series, the layer D
 # files, the checkers, the targets file); the inputs must be committed (exit 4 if any is modified or untracked), and a
@@ -83,7 +91,7 @@ if [ "${1:-}" = --inner-make ]; then
   source build/envsetup.sh >/dev/null
   lunch "$combo" > "$tree/logs/$label.lunch" 2>&1 || { echo "INNER rc=90 wall=0 (lunch $combo failed)"; exit 0; }
   export ALLOW_OPENJDK=1 USE_CCACHE=1 CCACHE_DIR=$tree/ccache
-  prebuilts/misc/linux-x86/ccache/ccache -M 30G >/dev/null
+  prebuilts/misc/linux-x86/ccache/ccache -M "${KKTLS_CCACHE_MAX:-30G}" >/dev/null
   t0=$(date +%s)
   make -j"$jobs" WITH_DEXPREOPT=false "$@" > "$tree/logs/$label.log" 2>&1
   rc=$?
@@ -93,7 +101,7 @@ fi
 
 # ---------------------------------------------------------------- options
 WORK=./kktls-release-work; TARGETS=""; SEL_TAGS=""; SEL_ABIS=""; CPUS=4; JOBS=4; IMAGE=""; SYNC_IMAGE=""
-RUNNER=docker; AAR=""; D8=${D8:-${ANDROID_HOME:-$HOME/Android/sdk}/build-tools/37.0.0/d8}; DEXDUMP=${DEXDUMP:-}; DRY=0; CMDS=()
+RUNNER=docker; AAR=""; REUSE_STOCK=0; D8=${D8:-${ANDROID_HOME:-$HOME/Android/sdk}/build-tools/37.0.0/d8}; DEXDUMP=${DEXDUMP:-}; DRY=0; CMDS=()
 while [ $# -gt 0 ]; do
   case $1 in
     --work) WORK=${2:?}; shift 2 ;;
@@ -109,8 +117,9 @@ while [ $# -gt 0 ]; do
     --d8) D8=${2:?}; shift 2 ;;
     --dexdump) DEXDUMP=${2:?}; shift 2 ;;
     --dry-run) DRY=1; shift ;;
+    --reuse-stock) REUSE_STOCK=1; shift ;;
     all|sync|stock|apply|build|stage|build-d|collect|symcheck|check) CMDS+=("$1"); shift ;;
-    -h|--help) sed -n '2,50p' "$ME"; exit 0 ;;
+    -h|--help) sed -n '2,61p' "$ME"; exit 0 ;;
     *) die "unknown argument: $1" 2 ;;
   esac
 done
@@ -211,7 +220,7 @@ run_make() {
   local out
   if [ $RUNNER = docker ]; then
     out=$(docker run --rm --name "kktls-rel-$(basename "$tree")-$label" --cpus="$CPUS" --ulimit nofile=1024:524288 \
-          -v "$tree:/aosp" -v "$ME:/scripts/r.sh:ro" "$IMAGE" \
+          -e KKTLS_CCACHE_MAX -v "$tree:/aosp" -v "$ME:/scripts/r.sh:ro" "$IMAGE" \
           bash /scripts/r.sh --inner-make /aosp "$combo" "$JOBS" "$label" "$@" | tail -n1)
   else
     out=$(bash "$ME" --inner-make "$tree" "$combo" "$JOBS" "$label" "$@" | tail -n1)
@@ -253,15 +262,64 @@ do_sync() {
   done
   [ $bad = 0 ] || return 1
   echo "  $(wc -w <<<"$PROJECTS") projects at their pinned commits"
+  # shellcheck disable=SC2086
+  run_sync "$d" "$(pin_mtimes_cmd $PROJECTS)" >> "$d/logs/sync.log" 2>&1 ||
+    { echo "[$t] setting the toolchain mtimes failed" >&2; tail -n 5 "$d/logs/sync.log" >&2; return 1; }
+}
+
+# pin_mtimes_cmd PROJECT...: the run_sync command that sets every file of the compilers (the prebuilts/gcc projects,
+# prebuilts/tools/gcc-sdk/: the host gcc wrappers) to its project's commit time (ccache 2.4 hashes the compiler's size
+# and mtime; a new toolchain commit still changes the hash)
+pin_mtimes_cmd() {
+  local p dir
+  for p in "$@"; do
+    case $p in prebuilts/gcc/*) dir=$p ;; prebuilts/tools) dir=$p/gcc-sdk ;; *) continue ;; esac
+    printf '[ ! -d %s ] || find %s -name .git -prune -o -type f -exec touch -d @$(git -C %s -c core.hooksPath=/dev/null log -1 --format=%%ct HEAD) {} +\n' \
+      "$dir" "$dir" "$p"
+  done
+  echo true
+}
+
+sha_of() { sha256sum < "$1" | cut -c1-64; }
+stock_inputs() { # tag: the MANIFEST header, everything besides the synced tree that the stock libraries depend on
+  local t=$1 p
+  echo "kktls-stock 1 $t"
+  rows_of "$t" | sed 's/^/target /'
+  for p in $PROJECTS; do echo "rev $p $(rev_of "$t" "$p")"; done
+  echo "script $(sha_of "$INPUTS/tools/kktls-release-build.sh")"
+  echo "jdk-patch $(sha_of "$INPUTS/patches/build/0001-allow-openjdk6.patch")"
+  echo "check_prebuilt $(sha_of "$CONS/check_prebuilt.py")"
+  echo --
+}
+stock_files() { (cd "$1" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum); }
+# stock_reusable TAG: 0 when stock-openssl/ holds exactly the files of its manifest, each with its sha256, every
+# target's libraries, bionic exports and headers, and the manifest was written for this run's inputs
+stock_reusable() {
+  local t=$1 d=$WORK/$1 m=$WORK/$1/stock-openssl.manifest abi f
+  [ -f "$m" ] && [ -d "$d/stock-openssl" ] || return 1
+  [ "$(sed -n '1,/^--$/p' "$m")" = "$(stock_inputs "$t")" ] || { echo "  stock-openssl: manifest of other inputs"; return 1; }
+  while read -r _ abi; do
+    for f in libcrypto.so libssl.so bionic-exports.txt include/openssl/ssl.h; do
+      [ -s "$d/stock-openssl/$abi/$f" ] || { echo "  stock-openssl: $abi/$f missing"; return 1; }
+    done
+  done < <(rows_of "$t")
+  [ "$(sed '1,/^--$/d' "$m")" = "$(stock_files "$d/stock-openssl")" ] || { echo "  stock-openssl: files differ from the manifest"; return 1; }
 }
 
 do_stock() {
-  local t=$1 d=$WORK/$1 combo abi
+  local t=$1 d=$WORK/$1 combo abi m=$WORK/$1/stock-openssl.manifest
   [ -f "$d/apply.done" ] && die "[$t] stock after apply: the tree is no longer pristine (rm -rf $d to start over)" 1
   # the 4.4 build insists on Oracle JDK 6; the build image has OpenJDK 6 (the series' plain build/ diff, kept by apply)
   run_sync "$d" "git -C build -c core.hooksPath=/dev/null apply -R --check \$P/patches/build/0001-allow-openjdk6.patch 2>/dev/null ||
     git -C build -c core.hooksPath=/dev/null apply \$P/patches/build/0001-allow-openjdk6.patch" > "$d/logs/stock-jdk.log" 2>&1 ||
     { cat "$d/logs/stock-jdk.log" >&2; return 1; }
+  if [ $REUSE_STOCK = 1 ]; then
+    if stock_reusable "$t"; then
+      echo "  stock-openssl: reused ($(sed '1,/^--$/d' "$m" | wc -l) files match $m)"; return 0
+    fi
+    echo "  stock-openssl: nothing to reuse, building"; rm -rf "$d/stock-openssl"
+  fi
+  rm -f "$m"
   run_make "$d" "$(rows_of "$t" | head -n1 | cut -d' ' -f1)" stock-clang clang || return 1
   while read -r combo abi; do
     run_make "$d" "$combo" "stock-$abi" libcrypto libssl libc libdl libm liblog || return 1
@@ -271,6 +329,7 @@ do_stock() {
     # the exports of this tag's bionic for the ABI (the series does not touch bionic): the Conscrypt .so check uses them
     $PY "$CONS/check_prebuilt.py" --bionic-exports "$po/system/lib" > "$o/bionic-exports.txt" || return 1
   done < <(rows_of "$t")
+  { stock_inputs "$t"; stock_files "$d/stock-openssl"; } > "$m.new" && mv "$m.new" "$m"
   rm -rf "$d/src/out/target"   # the release modules are built from scratch on the patched tree (host tools stay)
 }
 
