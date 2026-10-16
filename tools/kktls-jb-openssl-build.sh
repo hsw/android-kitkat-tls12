@@ -89,7 +89,7 @@ while [ $# -gt 0 ]; do
     --reuse-stock) REUSE_STOCK=1; shift ;;
     --dry-run) DRY=1; shift ;;
     all|sync|stock|apply|build|collect|check) CMDS+=("$1"); shift ;;
-    -h|--help) sed -n '2,52p' "$ME"; exit 0 ;;
+    -h|--help) sed -n '2,50p' "$ME"; exit 0 ;;
     *) die "unknown argument: $1" 2 ;;
   esac
 done
