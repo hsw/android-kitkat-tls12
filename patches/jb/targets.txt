@@ -1,0 +1,52 @@
+# Build inputs of tools/kktls-jb-openssl-build.sh: OpenSSL 1.0.1u (layer A, native only) for Android 4.1-4.3.
+# One keyword per line, # starts a comment.
+#   base    BASE TAG          series patches/jb/BASE/ is built on AOSP TAG (the release this base stands for)
+#   target  BASE LUNCH ABI    one build: lunch combo, Android ABI name (output dir out/kktls-jb/BASE/ABI)
+#   project BASE PATH         AOSP manifest path synced (depth 1) for this base
+#   rev     TAG PATH SHA      the commit PATH must have after `sync` of TAG
+# Modules: libcrypto libssl (the release files lib/libcrypto.so lib/libssl.so) and the openssl command-line tool
+# (a test client only, not a release file). Variant -user, as the 4.4 release build.
+
+base    4.3  android-4.3_r3
+target  4.3  full-user      armeabi-v7a
+target  4.3  full_x86-user  x86
+
+project 4.3  build
+project 4.3  bionic
+project 4.3  abi/cpp
+project 4.3  system/core
+project 4.3  external/openssl
+project 4.3  external/zlib
+project 4.3  external/stlport
+project 4.3  external/clang
+project 4.3  external/llvm
+project 4.3  external/compiler-rt
+project 4.3  prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.7
+project 4.3  prebuilts/gcc/linux-x86/x86/i686-linux-android-4.7
+project 4.3  prebuilts/gcc/linux-x86/host/i686-linux-glibc2.7-4.6
+project 4.3  prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.7-4.6
+project 4.3  prebuilts/gcc/linux-x86/host/i686-linux-glibc2.7-4.4.3
+project 4.3  prebuilts/tools
+project 4.3  prebuilts/misc
+project 4.3  prebuilts/sdk
+project 4.3  prebuilts/ndk
+
+rev  android-4.3_r3    build                                                   20fe48ac3ec082f205ddbfe22d4575b7ea7b0a90
+rev  android-4.3_r3    bionic                                                  738370d9387396922c10910edb61272e585be107
+rev  android-4.3_r3    abi/cpp                                                 eb789ea833d8d800662b67914d9c1785a58c2caa
+rev  android-4.3_r3    system/core                                             821678e1c7bd0af12fa4adc314c9024def9ba7c0
+rev  android-4.3_r3    external/openssl                                        4d2199ecb112f77bd1897047a75277c1d43d1aa9
+rev  android-4.3_r3    external/zlib                                           6a396b358e97fdbcb2dc181e52d36a9d8b5ea752
+rev  android-4.3_r3    external/stlport                                        c7253d88b7fa6f7ba115f167a59b1e9f857db728
+rev  android-4.3_r3    external/clang                                          177982bea7e4ccffd2577c8f63a5872eebebe54b
+rev  android-4.3_r3    external/llvm                                           c7ef4e40cf01397ebd25fc9622fc8eb9c61a547d
+rev  android-4.3_r3    external/compiler-rt                                    06743c2886fc26a7363ac7114c2f9b6620f63071
+rev  android-4.3_r3    prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.7   f59b0b330652def9439f594eb647be98b314d579
+rev  android-4.3_r3    prebuilts/gcc/linux-x86/x86/i686-linux-android-4.7      c7931763d41be602407ed9d71e2c0292c6597e00
+rev  android-4.3_r3    prebuilts/gcc/linux-x86/host/i686-linux-glibc2.7-4.6    95bb5b66b3ec5769c3de8d3f25d681787418e7d2
+rev  android-4.3_r3    prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.7-4.6  ebdad82e61c16772f6cd47e9f11936bf6ebe9aa0
+rev  android-4.3_r3    prebuilts/gcc/linux-x86/host/i686-linux-glibc2.7-4.4.3  10191e2f442c5409cb70783508658d474612a97e
+rev  android-4.3_r3    prebuilts/tools                                         31ec211efafde89ab39472d7bd040f00d1b71945
+rev  android-4.3_r3    prebuilts/misc                                          b0ddf9b51594fd0457bca1666373c40544669f1e
+rev  android-4.3_r3    prebuilts/sdk                                           3c1c4d0ec5801bc9210036b45bca37baec1a290d
+rev  android-4.3_r3    prebuilts/ndk                                           30ee84f92cb832c789366c516fcadb718ccc25e8
