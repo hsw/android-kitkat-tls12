@@ -121,8 +121,8 @@ Each release has these zips and a `SHA256SUMS` file:
 - **Java on 4.3 and 4.2:** the java zip replaces `core.jar` (libcore with the TLS provider
   `org.apache.harmony.xnet.provider.jsse` and the HTTPS client `libcore.net.http`) and `libjavacore.so`, which holds
   all of libcore's native code (TLS, but also ICU, zip, file and network I/O): a broken one stops the device from
-  booting, not only TLS. It is built in the same tree as the OpenSSL of that version; its exports and `NEEDED` entries are
-  compared with the stock library of that tree, and the restore zip puts both files back. The fixes of 4.4's okhttp
+  booting, not only TLS. It is built in the same tree as the OpenSSL of that version; its exports and `NEEDED` entries
+  are compared with the stock library of that tree, and the restore zip puts both files back. The fixes of 4.4's okhttp
   (the TLSv1 + `TLS_FALLBACK_SCSV` retry, wildcard matching) are made in `libcore.net.http` and its default hostname
   verifier. `SSLEngine` (the Harmony engine) is unchanged, as on 4.4.
 - **Order:** openssl, then java, then conscrypt. The CA store can go at any time. The java zip needs the openssl zip
