@@ -1,8 +1,11 @@
 # Release build on GitHub-hosted runners: host tests, the build image (docker/Dockerfile.build, cached in GHCR under the
 # repository owner, tagged by the Dockerfile's hash; the build jobs pull it by the digest the image job saw), one
 # partial AOSP build per tag (both ABIs in one out/, every step of tools/kktls-release-build.sh inside the image with
-# --runner direct), one OpenSSL build per Jelly Bean base (tools/kktls-jb-openssl-build.sh, same image), then the
-# recovery zips (tools/mkzips.sh) with the installer tests on the real output. release.yml calls this workflow for a tag and publishes the zips.
+# --runner direct), one OpenSSL build per Jelly Bean base (tools/kktls-jb-openssl-build.sh, same image; a base with a
+# libcore series, today 4.3, also builds core.jar and libjavacore.so in that tree), then the recovery zips
+# (tools/mkzips.sh) with the installer tests on the real output. release.yml calls this workflow for a tag and publishes
+# the zips. The x86 Jelly Bean java zips are packed into the separate artifact zips-unreleased (never a release asset:
+# not booted yet).
 # Caches (actions/cache; off with `cold`, which release.yml sets: a release is built from nothing, as a local rebuild):
 #   stock-<tag|base>-<image>-<inputs>   WORK/<tag>/stock-openssl/ + its manifest; the scripts' --reuse-stock keeps it only
 #                                       when the manifest matches the run's inputs and every file's sha256
@@ -77,6 +80,7 @@ jobs:
           tools/openssl-cve-test.sh --classify-test
           tools/tls-probe.sh selftest
           tools/kktls-release-build.sh --dry-run
+          tools/kktls-jb-openssl-build.sh --dry-run
       - name: sslfactory host tests
         run: conscrypt/sslfactory/test/run-host-tests.sh
       - name: symbol helper tests
@@ -357,8 +361,9 @@ jobs:
           for d in "$dl"/jb-*; do mv "$d" "$RUNNER_TEMP/jb/${d##*/jb-}"; done
           for d in "$dl"/jbstock-*; do mv "$d" "$RUNNER_TEMP/jbstock/${d##*/jbstock-}"; done
           tools/mkzips.sh --in "$in" --jb "$RUNNER_TEMP/jb" --release "$RELEASE" --cacerts cacerts/files \
-            --conscrypt-notice conscrypt/NOTICE --out "$RUNNER_TEMP/zips"
+            --conscrypt-notice conscrypt/NOTICE --out "$RUNNER_TEMP/zips" --out-unreleased "$RUNNER_TEMP/zips-unreleased"
           (cd "$RUNNER_TEMP/zips" && sha256sum -c --quiet SHA256SUMS && cat SHA256SUMS)
+          (cd "$RUNNER_TEMP/zips-unreleased" && sha256sum -c --quiet SHA256SUMS && cat SHA256SUMS)
       - name: installer tests on the release output
         run: |
           installer/test/run-tests.sh --real "$RUNNER_TEMP/in" cacerts/files conscrypt/NOTICE \
@@ -369,3 +374,10 @@ jobs:
           path: ${{ runner.temp }}/zips/
           if-no-files-found: error
           retention-days: 30
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          # built and host-tested, not released (release.yml publishes only the artifact zips)
+          name: zips-unreleased
+          path: ${{ runner.temp }}/zips-unreleased/
+          if-no-files-found: error
+          retention-days: 14
