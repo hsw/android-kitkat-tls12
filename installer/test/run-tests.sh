@@ -38,7 +38,7 @@ while [ $# -gt 0 ]; do
                   SDK=$(cd "$2" && pwd); shift 2 ;;
     --jb) [ $# -ge 3 ] && [ -d "$2" ] && [ -d "$3" ] || { echo "run-tests.sh: --jb needs JB JB_STOCK directories" >&2; exit 2; }
           RJB=("$2"); RJB_STOCK=$3; shift 3 ;;
-    -h|--help) sed -n '3,23p' "$0"; exit 0 ;;
+    -h|--help) sed -n '3,24p' "$0"; exit 0 ;;
     *) echo "run-tests.sh: unknown argument $1" >&2; exit 2 ;;
   esac
 done
