@@ -2,7 +2,7 @@
 
 ## v3 (unreleased)
 
-Android 4.3 and 4.2: the Java TLS layer (layer A) on ARM.
+Android 4.3, 4.2 and 4.1.2: the Java TLS layer (layer A) on ARM.
 
 ### New
 
@@ -14,6 +14,9 @@ Android 4.3 and 4.2: the Java TLS layer (layer A) on ARM.
 - `kktls-java-4.2-armeabi-v7a-<rel>.zip`: the same for `android-4.2.2_r1` (`patches/jb/4.2/libcore/`, the 4.3 series
   ported to 4.2: `int` handles in `NativeCrypto`, the 4.2 cut-through bit). Installs on 4.2.x (AOSP: 4.2, 4.2.1, 4.2.2)
   after the 4.2 openssl zip.
+- `kktls-java-4.1-armeabi-v7a-<rel>.zip`: the same for `android-4.1.2_r2` (`patches/jb/4.1/libcore/`, the 4.2 series
+  ported to 4.1: the older `TrustManagerImpl` chain loop and `ScopedLocalRef`). Installs on 4.1.2 only (AOSP:
+  4.1.2; 4.1.1 has another libcore JNI) after the 4.1 openssl zip.
 - The x86 builds of these zips are packed only with `tools/mkzips.sh --out-unreleased DIR` (CI: artifact
   `zips-unreleased`), not released until they have booted on an x86 system of their version.
 - `tools/kktls-jb-openssl-build.sh` builds `core` and `libjavacore` for a base with `java` lines in
@@ -24,9 +27,9 @@ Android 4.3 and 4.2: the Java TLS layer (layer A) on ARM.
 
 ### Unchanged
 
-- The 4.4 zips, the 4.1 openssl zips, the CA store and the restore zip: same payload and installer. The 4.3 and 4.2
-  openssl zips have the same libraries; their `kktls/BUILD-INFO.txt` also lists the java build.
-- 4.1: no Java layer yet.
+- The 4.4 zips, the CA store and the restore zip: same payload and installer. The 4.3, 4.2 and 4.1 openssl zips have
+  the same libraries; their `kktls/BUILD-INFO.txt` also lists the java build.
+- 4.1.1: no Java layer.
 
 ## v2
 
