@@ -38,11 +38,27 @@ testSslFallback_socketWithoutScsvSupport (0021, 0030), which failed on
 stock 4.3; testSslFallback_socketWithoutScsvSupport also checks that the
 first attempt of a non-OpenSSL socket keeps the default protocols.
 ---
+ .../javax/net/ssl/HttpsURLConnection.java     |  4 +-
  .../java/libcore/net/http/HttpConnection.java | 47 ++++++++++++++++---
  .../net/http/HttpsURLConnectionImpl.java      |  5 +-
  .../libcore/java/net/URLConnectionTest.java   |  4 ++
- 3 files changed, 47 insertions(+), 9 deletions(-)
+ 4 files changed, 49 insertions(+), 11 deletions(-)
 
+diff --git a/luni/src/main/java/javax/net/ssl/HttpsURLConnection.java b/luni/src/main/java/javax/net/ssl/HttpsURLConnection.java
+index ab86a9b7811..8284fc4abd4 100644
+--- a/luni/src/main/java/javax/net/ssl/HttpsURLConnection.java
++++ b/luni/src/main/java/javax/net/ssl/HttpsURLConnection.java
+@@ -100,8 +100,8 @@ import java.security.cert.X509Certificate;
+  * <h3>TLS Intolerance Support</h3>
+  *
+  * This class attempts to create secure connections using common TLS
+- * extensions and SSL deflate compression. Should that fail, the
+- * connection will be retried with SSLv3 only.
++ * extensions and SSL deflate compression. Should that fail, the connection
++ * is retried with TLSv1 only and {@code TLS_FALLBACK_SCSV} when the socket supports it.
+  */
+ public abstract class HttpsURLConnection extends HttpURLConnection {
+     /*
 diff --git a/luni/src/main/java/libcore/net/http/HttpConnection.java b/luni/src/main/java/libcore/net/http/HttpConnection.java
 index 4a6e65dee35..193f981dd3d 100644
 --- a/luni/src/main/java/libcore/net/http/HttpConnection.java
