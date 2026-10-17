@@ -1,0 +1,178 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: android-kitkat-tls12 <android-kitkat-tls12@users.noreply.github.com>
+Date: Fri, 9 Oct 2026 12:00:00 +0000
+Subject: [PATCH 31/32] HttpsURLConnection: fall back to TLSv1 with
+ TLS_FALLBACK_SCSV, not SSLv3
+
+Jelly Bean equivalent of external_okhttp/0001 (okhttp c3f6560, "SCSV
+support") and external_okhttp/0002 (TLSv1, not SSLv3, for the retry)
+of the 4.4 series. Android 4.1-4.3 have no okhttp: HttpsURLConnection
+is libcore.net.http, and its retry after a failed handshake is the
+tlsTolerant=false branch of HttpConnection.setupSecureSocket(), which
+enabled {"SSLv3"} only. With this series SSLv3 is supported but no
+longer enabled by default (0006), and a server that still speaks it is
+open to POODLE.
+
+The retry now enables {"TLSv1"} only and appends TLS_FALLBACK_SCSV when
+the socket lists it in getSupportedCipherSuites() (the code of okhttp's
+Platform.supportTlsIntolerantServer() after 0001 + 0002, as a private
+helper of HttpConnection). A server whose highest version is TLSv1
+accepts the retry; one that supports TLSv1.1 or TLSv1.2 rejects it with
+the inappropriate_fallback alert, so a middlebox cannot force the
+downgrade.
+
+How Jelly Bean differs: stock 4.1 also took the fallback branch on the
+first attempt for any socket that is not an OpenSSLSocketImpl (a socket
+from an app's own provider, or an app's wrapping SSLSocket). With the
+fallback now sending TLSv1 + SCSV, such a socket would be refused by
+every TLSv1.2 server on both attempts. The first attempt therefore
+keeps the factory's default protocols for every socket and sets session
+tickets and the host name only on an OpenSSLSocketImpl, as 4.4 okhttp
+does (Connection.upgradeToTls / Platform.enableTlsExtensions). The retry
+stays without session tickets and setHostname(), as before; SNI still
+goes out from the host the socket was created with (0013).
+
+Tests: URLConnectionTest testSslFallback,
+testSslFallback_rejectedByTls12Server and
+testSslFallback_socketWithoutScsvSupport (0021, 0030), which failed on
+stock 4.1; testSslFallback_socketWithoutScsvSupport also checks that the
+first attempt of a non-OpenSSL socket keeps the default protocols.
+
+Android 4.1 port (android-4.1.2_r2) of patch 0031 of the Android 4.3
+series (no 4.4 libcore counterpart: 4.4 has this change in
+external_okhttp 0001 and 0002), made from its Android 4.2 port. 4.1's
+HttpConnection.setupSecureSocket still asks for ZLIB compression on the
+tolerant path (4.2 dropped that, libcore 7695a9b): the call stays,
+inside the new OpenSSLSocketImpl branch, and the setupSecureSocket
+Javadoc keeps the compression wording (the OpenSSL 1.0.1u of the 4.1
+tree is built without zlib, so no compression method is offered either
+way); the makeSslConnection Javadoc takes the 4.2 text. The test comment
+names stock 4.1. Otherwise only line offsets differ.
+---
+ .../javax/net/ssl/HttpsURLConnection.java     |  4 +-
+ .../java/libcore/net/http/HttpConnection.java | 50 ++++++++++++++++---
+ .../net/http/HttpsURLConnectionImpl.java      |  5 +-
+ .../libcore/java/net/URLConnectionTest.java   |  4 ++
+ 4 files changed, 51 insertions(+), 12 deletions(-)
+
+diff --git a/luni/src/main/java/javax/net/ssl/HttpsURLConnection.java b/luni/src/main/java/javax/net/ssl/HttpsURLConnection.java
+index 0f22f380e39..8be53a8ecdf 100644
+--- a/luni/src/main/java/javax/net/ssl/HttpsURLConnection.java
++++ b/luni/src/main/java/javax/net/ssl/HttpsURLConnection.java
+@@ -98,8 +98,8 @@ import java.security.cert.X509Certificate;
+  * <h3>TLS Intolerance Support</h3>
+  *
+  * This class attempts to create secure connections using common TLS
+- * extensions and SSL deflate compression. Should that fail, the
+- * connection will be retried with SSLv3 only.
++ * extensions and SSL deflate compression. Should that fail, the connection
++ * is retried with TLSv1 only and {@code TLS_FALLBACK_SCSV} when the socket supports it.
+  */
+ public abstract class HttpsURLConnection extends HttpURLConnection {
+ 
+diff --git a/luni/src/main/java/libcore/net/http/HttpConnection.java b/luni/src/main/java/libcore/net/http/HttpConnection.java
+index 2f9270634a4..1b072cb9b1a 100644
+--- a/luni/src/main/java/libcore/net/http/HttpConnection.java
++++ b/luni/src/main/java/libcore/net/http/HttpConnection.java
+@@ -188,8 +188,10 @@ final class HttpConnection {
+      *
+      * @param sslSocketFactory Source of new {@code SSLSocket} instances.
+      * @param tlsTolerant If true, assume server can handle common
+-     * TLS extensions and SSL deflate compression. If false, use
+-     * an SSL3 only fallback mode without compression.
++     * TLS extensions and SSL deflate compression, and use the socket
++     * factory's default protocols. If false, use a TLSv1 only fallback
++     * mode without compression that signals the fallback with
++     * TLS_FALLBACK_SCSV.
+      */
+     public void setupSecureSocket(SSLSocketFactory sslSocketFactory, boolean tlsTolerant)
+             throws IOException {
+@@ -197,19 +199,51 @@ final class HttpConnection {
+         unverifiedSocket = (SSLSocket) sslSocketFactory.createSocket(socket,
+                 address.uriHost, address.uriPort, true /* autoClose */);
+         // tlsTolerant mimics Chrome's behavior
+-        if (tlsTolerant && unverifiedSocket instanceof OpenSSLSocketImpl) {
+-            OpenSSLSocketImpl openSslSocket = (OpenSSLSocketImpl) unverifiedSocket;
+-            openSslSocket.setEnabledCompressionMethods(new String[] { "ZLIB"});
+-            openSslSocket.setUseSessionTickets(true);
+-            openSslSocket.setHostname(address.uriHost);
++        if (tlsTolerant) {
++            if (unverifiedSocket instanceof OpenSSLSocketImpl) {
++                OpenSSLSocketImpl openSslSocket = (OpenSSLSocketImpl) unverifiedSocket;
++                openSslSocket.setEnabledCompressionMethods(new String[] { "ZLIB"});
++                openSslSocket.setUseSessionTickets(true);
++                openSslSocket.setHostname(address.uriHost);
++            }
+             // use SSLSocketFactory default enabled protocols
+         } else {
+-            unverifiedSocket.setEnabledProtocols(new String [] { "SSLv3" });
++            supportTlsIntolerantServer(unverifiedSocket);
+         }
+         // force handshake, which can throw
+         unverifiedSocket.startHandshake();
+     }
+ 
++    /**
++     * Configures {@code socket} for the retry after a failed handshake:
++     * TLSv1 only, plus TLS_FALLBACK_SCSV when the socket supports it, so
++     * that a server that speaks a higher version rejects the downgrade.
++     */
++    private static void supportTlsIntolerantServer(SSLSocket socket) {
++        // In accordance with https://tools.ietf.org/html/draft-ietf-tls-downgrade-scsv-00
++        // the SCSV cipher is added to signal that a protocol fallback has taken place.
++        final String fallbackScsv = "TLS_FALLBACK_SCSV";
++        boolean socketSupportsFallbackScsv = false;
++        String[] supportedCipherSuites = socket.getSupportedCipherSuites();
++        for (int i = supportedCipherSuites.length - 1; i >= 0; i--) {
++            String supportedCipherSuite = supportedCipherSuites[i];
++            if (fallbackScsv.equals(supportedCipherSuite)) {
++                socketSupportsFallbackScsv = true;
++                break;
++            }
++        }
++        if (socketSupportsFallbackScsv) {
++            // Add the SCSV cipher to the set of enabled ciphers.
++            String[] enabledCipherSuites = socket.getEnabledCipherSuites();
++            String[] newEnabledCipherSuites = new String[enabledCipherSuites.length + 1];
++            System.arraycopy(enabledCipherSuites, 0,
++                    newEnabledCipherSuites, 0, enabledCipherSuites.length);
++            newEnabledCipherSuites[newEnabledCipherSuites.length - 1] = fallbackScsv;
++            socket.setEnabledCipherSuites(newEnabledCipherSuites);
++        }
++        socket.setEnabledProtocols(new String[] { "TLSv1" });
++    }
++
+     /**
+      * Return an {@code SSLSocket} that is not only connected but has
+      * also passed hostname verification.
+diff --git a/luni/src/main/java/libcore/net/http/HttpsURLConnectionImpl.java b/luni/src/main/java/libcore/net/http/HttpsURLConnectionImpl.java
+index 9e3e4ef1bf2..deacc6335fc 100644
+--- a/luni/src/main/java/libcore/net/http/HttpsURLConnectionImpl.java
++++ b/luni/src/main/java/libcore/net/http/HttpsURLConnectionImpl.java
+@@ -452,8 +452,9 @@ final class HttpsURLConnectionImpl extends HttpsURLConnection {
+          * connection was reused, false otherwise.
+          *
+          * @param tlsTolerant If true, assume server can handle common
+-         * TLS extensions and SSL deflate compression. If false, use
+-         * an SSL3 only fallback mode without compression.
++         * TLS extensions and use the socket factory's default protocols.
++         * If false, use a TLSv1 only fallback mode that signals the
++         * fallback with TLS_FALLBACK_SCSV.
+          */
+         private boolean makeSslConnection(boolean tlsTolerant) throws IOException {
+             // make an SSL Tunnel on the first message pair of each SSL + proxy connection
+diff --git a/luni/src/test/java/libcore/java/net/URLConnectionTest.java b/luni/src/test/java/libcore/java/net/URLConnectionTest.java
+index 3d89215f3ec..e790838670e 100644
+--- a/luni/src/test/java/libcore/java/net/URLConnectionTest.java
++++ b/luni/src/test/java/libcore/java/net/URLConnectionTest.java
+@@ -2240,6 +2240,10 @@ public final class URLConnectionTest extends TestCase {
+ 
+         List<SSLSocket> createdSockets = clientSocketFactory.getCreatedSockets();
+         assertEquals(2, createdSockets.size());
++        // The first attempt keeps the factory's default protocols although the socket is not an
++        // OpenSSLSocketImpl (stock 4.1 put such sockets into the fallback mode on every attempt).
++        assertEquals(StandardNames.SSL_SOCKET_PROTOCOLS_CLIENT_DEFAULT,
++                newSet(createdSockets.get(0).getEnabledProtocols()));
+         SSLSocket retrySocket = createdSockets.get(1);
+         assertContainsNoneMatching(Arrays.asList(retrySocket.getSupportedCipherSuites()),
+                 StandardNames.CIPHER_SUITE_FALLBACK);

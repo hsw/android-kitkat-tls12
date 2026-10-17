@@ -1,0 +1,42 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: android-kitkat-tls12 <android-kitkat-tls12@users.noreply.github.com>
+Date: Fri, 9 Oct 2026 12:00:00 +0000
+Subject: [PATCH 28/32] NULL checks in NativeCrypto_SSL_get_ciphers
+
+The port of conscrypt 2d089e18 (libcore/0002) added
+NativeCrypto_SSL_get_ciphers as upstream wrote it: neither the
+NewLongArray result nor the GetLongArrayElements pointer was checked, so
+an allocation failure would write through NULL (a native crash) instead
+of leaving the OutOfMemoryError for the caller. Both now return NULL
+with the exception pending. No test: the failure needs an exhausted
+Java heap.
+
+Android 4.1 port (android-4.1.2_r2) of patch 0029 of the 4.4 series
+(renumbered: the 4.4 patch 0025, the ssl.SocketFactory.provider hook of
+the TLS 1.3 layer, is not part of this series), made from its Android
+4.2 port. 4.1 NativeCrypto_SSL_get_ciphers returns a plain jintArray
+local (patch 0002): the checks test that local and the ScopedIntArrayRW.
+---
+ ...org_apache_harmony_xnet_provider_jsse_NativeCrypto.cpp | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/luni/src/main/native/org_apache_harmony_xnet_provider_jsse_NativeCrypto.cpp b/luni/src/main/native/org_apache_harmony_xnet_provider_jsse_NativeCrypto.cpp
+index 35c2a4df0cf..1e874555e87 100644
+--- a/luni/src/main/native/org_apache_harmony_xnet_provider_jsse_NativeCrypto.cpp
++++ b/luni/src/main/native/org_apache_harmony_xnet_provider_jsse_NativeCrypto.cpp
+@@ -3035,7 +3035,15 @@ static jintArray NativeCrypto_SSL_get_ciphers(JNIEnv* env, jclass, jint ssl_addr
+     STACK_OF(SSL_CIPHER)* cipherStack = SSL_get_ciphers(ssl);
+     int count = (cipherStack != NULL) ? sk_SSL_CIPHER_num(cipherStack) : 0;
+     jintArray ciphersArray = env->NewIntArray(count);
++    if (ciphersArray == NULL) {
++        JNI_TRACE("NativeCrypto_SSL_get_ciphers(%p) => NewIntArray failed", ssl);
++        return NULL;  // OutOfMemoryError pending
++    }
+     ScopedIntArrayRW ciphers(env, ciphersArray);
++    if (ciphers.get() == NULL) {
++        JNI_TRACE("NativeCrypto_SSL_get_ciphers(%p) => GetIntArrayElements failed", ssl);
++        return NULL;  // OutOfMemoryError pending
++    }
+     for (int i = 0; i < count; i++) {
+         ciphers[i] = static_cast<jint>(reinterpret_cast<uintptr_t>(sk_SSL_CIPHER_value(cipherStack, i)));
+     }

@@ -1,0 +1,62 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Alex Klyubin <klyubin@google.com>
+Date: Mon, 13 Jan 2014 11:44:14 -0800
+Subject: [PATCH 08/32] Fix test breakage in Harmony SSLSessionTest.
+
+The breakage was caused by the SSLSessionTest assuming that TLS/SSL
+connections by default handshake to the SSL_RSA_WITH_RC4_128_MD5 cipher suite.
+
+Bug: 11220570
+Change-Id: Ib1ac44f83c968ec3dc7432339e1fc0f64d63733f
+(cherry picked from commit b52bc3ea9e79642c275ea6d9ac2342b5746e55c9)
+
+Android 4.1 port (android-4.1.2_r2) of patch 0008 of the 4.4 series,
+made from its Android 4.2 port. The same change; only line offsets
+differ.
+---
+ .../api/javax/net/ssl/SSLSessionTest.java      | 18 ++++++++++++++++--
+ 1 file changed, 16 insertions(+), 2 deletions(-)
+
+diff --git a/luni/src/test/java/tests/api/javax/net/ssl/SSLSessionTest.java b/luni/src/test/java/tests/api/javax/net/ssl/SSLSessionTest.java
+index 2b9818228a1..4ef0bf8f25d 100644
+--- a/luni/src/test/java/tests/api/javax/net/ssl/SSLSessionTest.java
++++ b/luni/src/test/java/tests/api/javax/net/ssl/SSLSessionTest.java
+@@ -17,6 +17,7 @@
+ 
+ package tests.api.javax.net.ssl;
+ 
++import libcore.java.security.StandardNames;
+ import java.io.ByteArrayInputStream;
+ import java.io.InputStream;
+ import java.io.OutputStream;
+@@ -93,7 +94,21 @@ public class SSLSessionTest extends TestCase {
+      * javax.net.ssl.SSLSession#getCipherSuite()
+      */
+     public void test_getCipherSuite() {
+-        assertEquals(CIPHER_SUITE, clientSession.getCipherSuite());
++        // Identify the expected cipher suite from the expected list of cipher suites enabled by
++        // default.
++        // This test class initializes the server with an RSA key. Thus, only cipher suites that
++        // authenticate the server using RSA are expected to be used.
++        String expectedCipherSuite = null;
++        for (String cipherSuite : StandardNames.CIPHER_SUITES_DEFAULT) {
++            if (cipherSuite.contains("_RSA_")) {
++                expectedCipherSuite = cipherSuite;
++                break;
++            }
++        }
++        if (expectedCipherSuite == null) {
++            fail("Failed to identify expected cipher suite");
++        }
++        assertEquals(expectedCipherSuite, clientSession.getCipherSuite());
+     }
+ 
+     /**
+@@ -391,7 +406,6 @@ public class SSLSessionTest extends TestCase {
+             + "uJk07h3IZnNxE+/IKgeMTP/H4+jmyT4mhsexJ2BFHeiKF1KT/FMcJdSi+ZK5yoNVcYuY8aZbx0Ef"
+             + "lHorCXAmLFB0W6Cz4KPP01nD9YBB4olxiK1t7m0AU9zscdivNiuUaB5OIEr+JuZ6dNw=";
+ 
+-    private static final String CIPHER_SUITE = "SSL_RSA_WITH_RC4_128_MD5";
+     /**
+      * Defines the keystore contents for the server, JKS version. Holds just a
+      * single self-generated key. The subject name is "Test Server".

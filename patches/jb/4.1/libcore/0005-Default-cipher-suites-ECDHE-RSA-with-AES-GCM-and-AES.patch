@@ -1,0 +1,105 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: android-kitkat-tls12 <android-kitkat-tls12@users.noreply.github.com>
+Date: Fri, 9 Oct 2026 12:00:00 +0000
+Subject: [PATCH 05/32] Default cipher suites = ECDHE/RSA with AES-GCM and
+ AES-CBC
+
+The behaviour of conscrypt 68f4753 (no short keys), 2a8db49, df17f02,
+f80cadc, 66cf73b, 5aa3d43 (forward secrecy first, one list), 5add959
+(AES-GCM by default), 30695d65 (no static ECDH), c1cc669 (no 3DES),
+42bd279 (no MD5) of 5.0, e53baea (no DSS) of 6.0, 77b758d and 035dad7
+(no RC4) of 7.0, and the DHE removal of 9.0, written as one list for
+our OpenSSL 1.0.1e:
+
+  TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+  TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+  TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+  TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+  TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA
+  TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA
+  TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA
+  TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA
+  TLS_RSA_WITH_AES_128_GCM_SHA256
+  TLS_RSA_WITH_AES_256_GCM_SHA384
+  TLS_RSA_WITH_AES_128_CBC_SHA
+  TLS_RSA_WITH_AES_256_CBC_SHA
+  TLS_EMPTY_RENEGOTIATION_INFO_SCSV
+
+No ChaCha20 (not in 1.0.1e) and no DHE: the 1.0.1e client accepts any
+DH group size (Logjam). Every suite that was supported stays supported,
+so apps that enable RC4, 3DES or DHE themselves keep working. Client
+sockets, server sockets and both socket factories use this list.
+The GCM suites need TLSv1.2, which the next commit enables by default.
+
+Android 4.1 port (android-4.1.2_r2) of patch 0005 of the 4.4 series,
+made from its Android 4.2 port. Paths and names: libcore/crypto of 4.4
+(org.conscrypt, org_conscrypt_NativeCrypto.cpp in libjavacrypto) is
+libcore/luni on 4.1 (org.apache.harmony.xnet.provider.jsse,
+org_apache_harmony_xnet_provider_jsse_NativeCrypto.cpp in libjavacore).
+Otherwise the same change; only line offsets differ.
+---
+ .../xnet/provider/jsse/NativeCrypto.java      | 45 +++++++------------
+ 1 file changed, 15 insertions(+), 30 deletions(-)
+
+diff --git a/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/NativeCrypto.java b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/NativeCrypto.java
+index e0fc5d9f6d5..59a02dea439 100644
+--- a/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/NativeCrypto.java
++++ b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/NativeCrypto.java
+@@ -410,42 +410,27 @@ public final class NativeCrypto {
+ 
+     public static native int SSL_CTX_new();
+ 
++    /**
++     * kktls default cipher suites, in preference order (the Android 9 list without ChaCha20,
++     * which OpenSSL 1.0.1e lacks, and without DHE, as in Android 9: our OpenSSL client
++     * accepts any DH group size). Forward secrecy first, AES-GCM before AES-CBC; RC4, 3DES,
++     * DES, EXPORT, MD5, DSS, static ECDH, NULL and anon are supported but not enabled by
++     * default. TLS_FALLBACK_SCSV is never a default. The server side uses the same list.
++     */
+     public static String[] getDefaultCipherSuites() {
+         return new String[] {
+-            "SSL_RSA_WITH_RC4_128_MD5",
+-            "SSL_RSA_WITH_RC4_128_SHA",
+-            "TLS_RSA_WITH_AES_128_CBC_SHA",
+-            "TLS_RSA_WITH_AES_256_CBC_SHA",
+-            "TLS_ECDH_ECDSA_WITH_RC4_128_SHA",
+-            "TLS_ECDH_ECDSA_WITH_AES_128_CBC_SHA",
+-            "TLS_ECDH_ECDSA_WITH_AES_256_CBC_SHA",
+-            "TLS_ECDH_RSA_WITH_RC4_128_SHA",
+-            "TLS_ECDH_RSA_WITH_AES_128_CBC_SHA",
+-            "TLS_ECDH_RSA_WITH_AES_256_CBC_SHA",
+-            "TLS_ECDHE_ECDSA_WITH_RC4_128_SHA",
++            "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
++            "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384",
++            "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
++            "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
+             "TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA",
+             "TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA",
+-            "TLS_ECDHE_RSA_WITH_RC4_128_SHA",
+             "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA",
+             "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA",
+-            "TLS_DHE_RSA_WITH_AES_128_CBC_SHA",
+-            "TLS_DHE_RSA_WITH_AES_256_CBC_SHA",
+-            "TLS_DHE_DSS_WITH_AES_128_CBC_SHA",
+-            "TLS_DHE_DSS_WITH_AES_256_CBC_SHA",
+-            "SSL_RSA_WITH_3DES_EDE_CBC_SHA",
+-            "TLS_ECDH_ECDSA_WITH_3DES_EDE_CBC_SHA",
+-            "TLS_ECDH_RSA_WITH_3DES_EDE_CBC_SHA",
+-            "TLS_ECDHE_ECDSA_WITH_3DES_EDE_CBC_SHA",
+-            "TLS_ECDHE_RSA_WITH_3DES_EDE_CBC_SHA",
+-            "SSL_DHE_RSA_WITH_3DES_EDE_CBC_SHA",
+-            "SSL_DHE_DSS_WITH_3DES_EDE_CBC_SHA",
+-            "SSL_RSA_WITH_DES_CBC_SHA",
+-            "SSL_DHE_RSA_WITH_DES_CBC_SHA",
+-            "SSL_DHE_DSS_WITH_DES_CBC_SHA",
+-            "SSL_RSA_EXPORT_WITH_RC4_40_MD5",
+-            "SSL_RSA_EXPORT_WITH_DES40_CBC_SHA",
+-            "SSL_DHE_RSA_EXPORT_WITH_DES40_CBC_SHA",
+-            "SSL_DHE_DSS_EXPORT_WITH_DES40_CBC_SHA",
++            "TLS_RSA_WITH_AES_128_GCM_SHA256",
++            "TLS_RSA_WITH_AES_256_GCM_SHA384",
++            "TLS_RSA_WITH_AES_128_CBC_SHA",
++            "TLS_RSA_WITH_AES_256_CBC_SHA",
+             TLS_EMPTY_RENEGOTIATION_INFO_SCSV
+         };
+     }

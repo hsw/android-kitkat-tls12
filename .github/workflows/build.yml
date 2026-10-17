@@ -2,7 +2,7 @@
 # repository owner, tagged by the Dockerfile's hash; the build jobs pull it by the digest the image job saw), one
 # partial AOSP build per tag (both ABIs in one out/, every step of tools/kktls-release-build.sh inside the image with
 # --runner direct), one OpenSSL build per Jelly Bean base (tools/kktls-jb-openssl-build.sh, same image; a base with a
-# libcore series, today 4.3 and 4.2, also builds core.jar and libjavacore.so in that tree), then the recovery zips
+# libcore series, today 4.3, 4.2 and 4.1, also builds core.jar and libjavacore.so in that tree), then the recovery zips
 # (tools/mkzips.sh) with the installer tests on the real output. release.yml calls this workflow for a tag and publishes
 # the zips. The x86 Jelly Bean java zips are packed into the separate artifact zips-unreleased (never a release asset:
 # not booted yet).

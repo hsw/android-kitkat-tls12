@@ -6,8 +6,8 @@ files into `/system`, with a backup and a restore zip.
 
 **Android 4.1 to 4.3** (Jelly Bean, API 16-18) get the native OpenSSL 1.0.1u and the CA store: native code that links
 the system `libssl` (WebKit's network stack in the Browser and WebView, `openssl`-based daemons and apps) can speak
-TLS 1.2 with current ciphers. **Android 4.3 and 4.2** (ARM) also get the Java TLS layer: `HttpsURLConnection`,
-`SSLSocket` and Apache HTTP speak TLS 1.2 by default, as on 4.4. On 4.1, Java apps keep the stock protocol list
+TLS 1.2 with current ciphers. **Android 4.3, 4.2 and 4.1.2** (ARM) also get the Java TLS layer: `HttpsURLConnection`,
+`SSLSocket` and Apache HTTP speak TLS 1.2 by default, as on 4.4. On 4.1.1, Java apps keep the stock protocol list
 (`SSLv3, TLSv1`) and only gain the new CA store. TLS 1.3 is **4.4 only**.
 
 ### Which zip for which Android version
@@ -17,11 +17,11 @@ TLS 1.2 with current ciphers. **Android 4.3 and 4.2** (ARM) also get the Java TL
 | 4.4.x | `kktls-openssl-4.4-<abi>` | `kktls-cacerts` | `kktls-java-4.4.2-<abi>` / `kktls-java-4.4.4-<abi>` (exact release) | `kktls-conscrypt-<abi>` |
 | 4.3.x | `kktls-openssl-4.3-<abi>` | `kktls-cacerts` | `kktls-java-4.3-armeabi-v7a` (4.3.x) | no |
 | 4.2.x | `kktls-openssl-4.2-<abi>` | `kktls-cacerts` | `kktls-java-4.2-armeabi-v7a` (4.2.x) | no |
-| 4.1.x | `kktls-openssl-4.1-<abi>` | `kktls-cacerts` | no | no |
+| 4.1.x | `kktls-openssl-4.1-<abi>` | `kktls-cacerts` | `kktls-java-4.1-armeabi-v7a` (4.1.2 only) | no |
 
 `<abi>` is `armeabi-v7a` or `x86`; `kktls-restore` undoes any of them. Each openssl zip is built from the AOSP tree of
-its Android version and installs only there. The 4.3 java zip is ARM only: its x86 build is not released until it has
-booted on an x86 4.3 system.
+its Android version and installs only there. The Jelly Bean java zips are ARM only: their x86 builds are not released
+until they have booted on an x86 system of their version.
 
 Stock Android 4.4 offers `SSLv3, TLSv1` by default, puts `SSL_RSA_WITH_RC4_128_MD5` first in a 35-suite list, has no
 AES-GCM, falls back to SSLv3 without SNI, and ships OpenSSL 1.0.1e and a 2013 CA store. TLS 1.2-only servers,
@@ -75,8 +75,8 @@ working.
 
 ## Requirements
 
-- **AOSP-based Android 4.4.x** (4.3.x and 4.2.x: the openssl, CA store and ARM java zips; 4.1.x: the openssl and CA
-  store zips only), 32-bit, ABI `armeabi-v7a` or
+- **AOSP-based Android 4.4.x** (4.3.x, 4.2.x and 4.1.2: the openssl, CA store and ARM java zips; 4.1.1: the openssl
+  and CA store zips only), 32-bit, ABI `armeabi-v7a` or
   `x86`. Builds of other ROMs are refused by the installer: CyanogenMod and its derivatives, and vendor ROMs that carry vendor properties (MIUI, EMUI, Samsung, HTC,
   Sony, LG, MediaTek and others; the list is in `installer/checks.sh`). Vendors often change the Java and OpenSSL
   sources; the jars built from AOSP would not match, and a matching symbol list does not prove that structs and
@@ -88,10 +88,12 @@ working.
   `android-4.3_r3` in Java code only (no native or removed API change), and the zip replaces all of `core.jar`. The
   4.2 java zip `kktls-java-4.2-*` installs on any 4.2.x (AOSP: 4.2, 4.2.1, 4.2.2) for the same reason: libcore of
   `android-4.2_r1` and `android-4.2.1_r1` differs from `android-4.2.2_r1` only in the package-private `DexPathList`. The
-  OpenSSL zip `kktls-openssl-4.N-*` installs on any 4.N.x that passes the checks.
+  4.1 java zip `kktls-java-4.1-*` installs on 4.1.2 only (AOSP: `android-4.1.2_r1`, `_r2`, `_r2.1`, one libcore):
+  libcore of the 4.1.1 tags differs in its JNI code (`NativeCrypto.SSL_use_OpenSSL_PrivateKey`), and their Dalvik and
+  linker differ too. The OpenSSL zip `kktls-openssl-4.N-*` installs on any 4.N.x that passes the checks.
 - The CA store zip (and the restore zip) install on **Android 4.1 to 4.4**: 4.1 to 4.3 (Jelly Bean, API 16-18) read
-  the same `/system/etc/security/cacerts/<hash>.0` format. The java zips are 4.4, 4.3 and 4.2 only, the conscrypt zip is
-  4.4 only. On 4.1/4.2 the
+  the same `/system/etc/security/cacerts/<hash>.0` format. The java zips are 4.4, 4.3, 4.2 and 4.1.2 only, the
+  conscrypt zip is 4.4 only. On 4.1/4.2 the
   installed files are labelled `system_file` only when the kernel takes labels: a kernel without SELinux, or one with SELinux but no
   policy loaded (AOSP 4.1/4.2 userspace loads none), gets no label and the install goes on. From 4.3 on they are
   labelled as on 4.4, and a failed label write fails the install.
@@ -108,7 +110,7 @@ Each release has these zips and a `SHA256SUMS` file:
 | `kktls-openssl-4.3-<abi>-<rel>.zip`, `-4.2-`, `-4.1-` | the same, built from `android-4.3_r3`, `android-4.2.2_r1`, `android-4.1.2_r2` | Android 4.3.x, 4.2.x resp. 4.1.x; the same checks with the allow lists of that version (`patches/jb/<ver>/allow-missing-*.txt`: internal symbols only, plus `BIO_f_zlib` on 4.1, see below) |
 | `kktls-cacerts-<rel>.zip` | the CA store | Android 4.1.x to 4.4.x |
 | `kktls-java-<ver>-<abi>-<rel>.zip` (`4.4.2`, `4.4.4`) | the four jars and `libjavacrypto.so` | release equals `<ver>`; AOSP-like; ABI; the openssl zip is installed; dex check |
-| `kktls-java-4.3-armeabi-v7a-<rel>.zip`, `-4.2-` | `core.jar` and `libjavacore.so`, built from `android-4.3_r3` resp. `android-4.2.2_r1` | Android 4.3.x resp. 4.2.x; AOSP-like; ABI; the openssl zip of that version is installed; dex check |
+| `kktls-java-4.3-armeabi-v7a-<rel>.zip`, `-4.2-`, `-4.1-` | `core.jar` and `libjavacore.so`, built from `android-4.3_r3`, `android-4.2.2_r1`, `android-4.1.2_r2` | Android 4.3.x, 4.2.x resp. 4.1.2; AOSP-like; ABI; the openssl zip of that version is installed; dex check |
 | `kktls-conscrypt-<abi>-<rel>.zip` | layer D | AOSP-like; ABI; the java zip of the same release is installed |
 | `kktls-restore-<rel>.zip` | none | a backup exists; every backup has an intact copy and was taken on this ROM |
 
@@ -118,7 +120,7 @@ Each release has these zips and a `SHA256SUMS` file:
   `SSL`/`SSL_CTX` layouts stay those of the stock library. Stock 4.1 built `libcrypto` with zlib (TLS compression,
   CRIME); like stock 4.2 this build does not, so `BIO_f_zlib` is gone: nothing in AOSP 4.1 imports it, but a
   vendor app that does would fail to load.
-- **Java on 4.3 and 4.2:** the java zip replaces `core.jar` (libcore with the TLS provider
+- **Java on 4.3, 4.2 and 4.1.2:** the java zip replaces `core.jar` (libcore with the TLS provider
   `org.apache.harmony.xnet.provider.jsse` and the HTTPS client `libcore.net.http`) and `libjavacore.so`, which holds
   all of libcore's native code (TLS, but also ICU, zip, file and network I/O): a broken one stops the device from
   booting, not only TLS. It is built in the same tree as the OpenSSL of that version; its exports and `NEEDED` entries
@@ -130,7 +132,7 @@ Each release has these zips and a `SHA256SUMS` file:
 - **Dex check:** replacing `core.jar` makes every other pre-optimised `.odex` stale, and Dalvik regenerates them from
   the `classes.dex` inside each jar or apk. The java zip refuses when any jar or apk in `/system/framework`,
   `/system/app` or `/system/priv-app` has an `.odex` but no `classes.dex`: such a device would not boot. The Jelly
-  Bean SDK system images are such systems: the 4.3 and 4.2 java zips are refused there.
+  Bean SDK system images are such systems: the Jelly Bean java zips are refused there.
 - **What install does:** mounts `/system` and `/data`, runs all checks and lists every failure, checks that `/system`
   and `/data` have room for the new files and the backup (else it refuses before writing anything), backs up the files
   it will replace to `/data/kktls-backup/<n>-<time>/` and copies the backup to `/sdcard/kktls-backup/` (a factory reset
@@ -168,6 +170,8 @@ tools/install-adb.sh [-s SERIAL] kktls-openssl-4.3-armeabi-v7a-v3.zip kktls-cace
     kktls-java-4.3-armeabi-v7a-v3.zip                                                        # Android 4.3.x, from v3
 tools/install-adb.sh [-s SERIAL] kktls-openssl-4.2-armeabi-v7a-v3.zip kktls-cacerts-v3.zip \
     kktls-java-4.2-armeabi-v7a-v3.zip                                                        # Android 4.2.x, from v3
+tools/install-adb.sh [-s SERIAL] kktls-openssl-4.1-armeabi-v7a-v3.zip kktls-cacerts-v3.zip \
+    kktls-java-4.1-armeabi-v7a-v3.zip                                                        # Android 4.1.2, from v3
 tools/install-adb.sh [-s SERIAL] --restore kktls-restore-v2.zip
 ```
 
@@ -192,13 +196,14 @@ tools/install-adb.sh [-s SERIAL] --restore kktls-restore-v2.zip
 | Jelly Bean OpenSSL builds, ARM and x86 | stock libraries of the same AOSP tree and of the SDK images | no public export removed; every system binary and library that imports `libssl`/`libcrypto` resolves; public struct offsets unchanged (except members the older version lacks) |
 | AOSP `android-4.3_r3` `full-eng` ARM build without dexpreopt (the 4.3 SDK image has stripped jars, see the dex check), openssl-4.3 + CA store + java-4.3 zips | emulator, `install-adb.sh`, cold boot | install, boot and restore (the four files and the CA store directory back byte for byte); no crash reports in logcat; every client factory `TLSv1, TLSv1.1, TLSv1.2` with the 13 suites; matrix of 25 TLS test servers as wanted (stock: 20 not as wanted), except that `wrong.host` fails the name check without a retry (4.3 checks the name after the fallback, okhttp before it); ClientHello with SNI and the 13 suites from `HttpsURLConnection`, Apache HTTP, the default factory and `SSLCertificateSocketFactory`; a server that refuses the first ClientHello gets a TLSv1 retry with `TLS_FALLBACK_SCSV` (stock: SSLv3 without SNI); local TLS-1.2-only and SNI-only servers with a root, intermediate, leaf chain succeed on all four client paths; libcore tests (`URLConnectionTest`, `SSL*Test`, `DefaultHostnameVerifierTest`) pass except the four Harmony `SSLEngine` failures known from 4.4 and three that need a test environment the image lacks |
 | AOSP `android-4.2.2_r1` `full-eng` ARM build without dexpreopt, openssl-4.2 + CA store + java-4.2 zips | emulator, `install-adb.sh`, cold boot | the same as 4.3: install, boot and restore (the four files and the CA store directory back byte for byte); no crash reports in logcat; every client factory `TLSv1, TLSv1.1, TLSv1.2` with the 13 suites; matrix of 25 TLS test servers as wanted (stock: 20 not as wanted) except `wrong.host` as on 4.3; ClientHello with SNI and the 13 suites on the four client paths, the `HttpsURLConnection` retry over TLSv1 with `TLS_FALLBACK_SCSV` (stock 4.2: SSLv3 without SNI); local TLS-1.2-only and SNI-only servers succeed on all four paths; libcore tests pass except the four Harmony `SSLEngine` failures, the stock 4.2 version of `SSLSocketTest.test_SSLSocket_setSoWriteTimeout` (fixed in a later libcore) and two that need a test environment the image lacks |
-| Jelly Bean 4.3 and 4.2 java builds, ARM and x86 | the stock `libjavacore.so` of the same tree and of the SDK images | no export removed, the same `NEEDED`; Java `native` declarations match the JNI table |
+| AOSP `android-4.1.2_r2` `full-eng` ARM build without dexpreopt, openssl-4.1 + CA store + java-4.1 zips | emulator, `install-adb.sh`, cold boot | the same as 4.3 and 4.2: install, boot and restore (the four files and the CA store directory back byte for byte); no crash reports in logcat; every client factory `TLSv1, TLSv1.1, TLSv1.2` with the 13 suites; matrix of 25 TLS test servers as wanted (stock: 20 not as wanted) except `wrong.host` as on 4.3; ClientHello with SNI and the 13 suites on the four client paths, the `HttpsURLConnection` retry over TLSv1 with `TLS_FALLBACK_SCSV` (stock 4.1: SSLv3 without SNI); local TLS-1.2-only and SNI-only servers succeed on all four paths; libcore tests pass except the four Harmony `SSLEngine` failures, the stock 4.1 test that expects a zlib-compressed session (this OpenSSL has no zlib), and two that need a test environment the image lacks or race in the stock test |
+| Jelly Bean 4.3, 4.2 and 4.1 java builds, ARM and x86 | the stock `libjavacore.so` of the same tree and of the SDK images | no export removed, the same `NEEDED`; Java `native` declarations match the JNI table |
 | The recovery path (`update-binary`), 4.4.4 x86 java zip | host tests against fake `/system` trees, plus a real SDK 4.4.2 `/system` | pass |
 
 **Not tested yet:** a real TWRP or CWM recovery (only host tests run `update-binary`); 4.4.4 on x86 in an emulator;
 ART (all runs used Dalvik); real hardware other than the device below; Android 4.4.0, 4.4.1 and 4.4.3; Jelly Bean
-on x86 emulators and on real hardware (only host tests run the x86 zips against the stock x86 libraries); the 4.3 and
-4.2 java zips on a system with `.odex` files whose jars keep `classes.dex` (host tests only). Reports welcome.
+on x86 emulators and on real hardware (only host tests run the x86 zips against the stock x86 libraries); the Jelly
+Bean java zips on a system with `.odex` files whose jars keep `classes.dex` (host tests only). Reports welcome.
 
 ## Build from source
 
@@ -253,7 +258,7 @@ helper, and the release file checker. The AOSP-built jars are rewritten with sor
 (`tools/zipnorm.py`; members and compressed data unchanged), so two builds of the same commit give byte-identical
 release files. `tools/mkzips.sh` packs its output into the release zips; the same inputs give byte-identical zips.
 
-### Jelly Bean (4.1 to 4.3) OpenSSL and 4.3/4.2 Java
+### Jelly Bean (4.1 to 4.3) OpenSSL and Java
 
 `patches/jb/<ver>/external_openssl/` holds one series per Android version, made the same way as the 4.4 one (0001 the
 recipe, 0002 the `import_openssl.sh` output of that version's own script on its `external/openssl`): the 4.4 recipe
@@ -269,17 +274,19 @@ It checks the exports against the stock libraries of the same tree (`openssl-abi
 allow lists). The zips take the static helpers from the 4.4 build. `tools/openssl-cve-test.sh --jb-base <ver>` runs the
 CVE reproducers on a Jelly Bean recipe.
 
-`patches/jb/4.3/libcore/` is the 4.4 libcore series in the Jelly Bean layout (`tools/kktls-jb-remap.py` maps the
-paths: Conscrypt-in-libcore is `org.apache.harmony.xnet.provider.jsse` in `luni`, its JNI file is part of
-`libjavacore.so`), hand-ported where it did not apply and without the layer D hook, plus two patches for the 4.3 HTTPS
-client `libcore.net.http` (the okhttp fixes of 4.4). `patches/jb/4.2/libcore/` is that series ported to
-`android-4.2.2_r1` (4.2's `NativeCrypto` passes `int` handles instead of `long`, and its stock
-`SSL_MODE_HANDSHAKE_CUTTHROUGH` value is `0x40`). A base with `java` lines in `targets.txt` syncs the libcore-side
-projects, applies the series and builds `core` and `libjavacore` in the same tree as its OpenSSL; `mkzips.sh --jb`
-packs `kktls-java-<ver>-armeabi-v7a` (the x86 one only with `--out-unreleased DIR`, outside the release set). The
-`check` step adds `check_tls_lists.py --base <ver>` (protocol and suite lists, the `libcore.net.http` fallback, in the
-sources), `check_jni_signatures.py` (the Java `native` declarations against the JNI registration table: a mismatch
-makes Dalvik abort at boot) and the export and `NEEDED` comparison of `libjavacore.so` with the stock library.
+`patches/jb/4.3/libcore/` is the 4.4 libcore series in the Jelly Bean layout (`tools/kktls-jb-remap.py` maps the paths:
+Conscrypt-in-libcore is `org.apache.harmony.xnet.provider.jsse` in `luni`, its JNI file is part of `libjavacore.so`),
+hand-ported where it did not apply and without the layer D hook, plus two patches for the 4.3 HTTPS client
+`libcore.net.http` (the okhttp fixes of 4.4). `patches/jb/4.2/libcore/` is that series ported to `android-4.2.2_r1`
+(4.2's `NativeCrypto` passes `int` handles instead of `long`, and its stock `SSL_MODE_HANDSHAKE_CUTTHROUGH` value is
+`0x40`). `patches/jb/4.1/libcore/` is the 4.2 series ported to `android-4.1.2_r2` (the older 4.1 `TrustManagerImpl`
+chain loop and `ScopedLocalRef`; the ZLIB compression request of 4.1's `HttpConnection` stays and offers nothing, as the
+OpenSSL build has no zlib). A base with `java` lines in `targets.txt` syncs the libcore-side projects, applies the
+series and builds `core` and `libjavacore` in the same tree as its OpenSSL; `mkzips.sh --jb` packs
+`kktls-java-<ver>-armeabi-v7a` (the x86 one only with `--out-unreleased DIR`, outside the release set). The `check` step
+adds `check_tls_lists.py --base <ver>` (protocol and suite lists, the `libcore.net.http` fallback, in the sources),
+`check_jni_signatures.py` (the Java `native` declarations against the JNI registration table: a mismatch makes Dalvik
+abort at boot) and the export and `NEEDED` comparison of `libjavacore.so` with the stock library.
 
 CI: `.github/workflows/` runs the CVE harness (`cve-harness.yml`), the host tests and this build with the zips
 (`build.yml`, in the image of `docker/Dockerfile.build`) on GitHub-hosted runners; a tag `vN` builds the zips again

@@ -1,0 +1,221 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: android-kitkat-tls12 <android-kitkat-tls12@users.noreply.github.com>
+Date: Fri, 9 Oct 2026 12:00:00 +0000
+Subject: [PATCH 22/32] Cycle guard for the learned-intermediate loop of
+ 02e4d22 (TrustManagerImpl)
+
+cm-11 02e4d22 (= conscrypt 04e7d1d, libcore/0015) caches the
+intermediates of every validated chain in intermediateIndex and, in
+step 2 of cleanupCertChainAndFindTrustAnchors, appends the cached
+issuer of the last certificate until there is none. The loop has no
+"already used" check. When two cached intermediates issue each other
+(a cross-signed pair) and the index returns them first for their
+subjects, the walk never ends: the chain array doubles until the VM
+runs out of memory. cm-11 and AOSP 6.0.1 ship the loop in this form;
+Android 7.0 replaced it with a path builder that keeps a set of used
+certificates.
+
+This keeps the 4.4 loop and adds such a set: it starts with the
+certificates of the presented chain that step 1 ordered, and the walk
+stops at the first certificate it has already used. Steps 3 and 5 then
+run as before on the chain built so far. The walk takes the first
+cached issuer only and does not backtrack, so a leaf whose first cached
+issuer leads into the cycle is rejected (trust anchor not found) where
+7.0 would try another issuer; before this change the same check never
+returned.
+
+Test: TrustManagerImplTest.testLearnedIntermediateCrossSignedPairTerminates.
+CAs I and J cross-sign each other (I_J, J_I) and I also has a
+certificate from the trusted root (I_R). The valid chain L, I_J, J_I,
+I_R teaches the trust manager I_J, J_I and I_R in that order, so the
+bare leaf L is completed as L, I_J, J_I, I_J, ... The check runs in a
+worker thread with a 60 s limit; before this change it does not
+terminate, now it fails with a CertificateException, and the chains
+through I_R still validate.
+
+Android 4.1 port (android-4.1.2_r2) of patch 0022 of the 4.4 series,
+made from its Android 4.2 port. Paths and names: libcore/crypto of 4.4
+(org.conscrypt, org_conscrypt_NativeCrypto.cpp in libjavacrypto) is
+libcore/luni on 4.1 (org.apache.harmony.xnet.provider.jsse,
+org_apache_harmony_xnet_provider_jsse_NativeCrypto.cpp in libjavacore).
+The same guard on the 4.1 form of step 2 (patch 0015: the
+learned-intermediate walk that runs only when the presented chain has no
+trust anchor): the set of used certificates starts with the ordered
+presented chain, and the walk stops at the first certificate it has
+already used, before that certificate's anchor check; the comment names
+step 4, the 4.1 number of the final anchor lookup. The test imports go
+into the 4.1 import list. Otherwise the same change.
+---
+ .../xnet/provider/jsse/TrustManagerImpl.java  |  11 ++
+ .../provider/jsse/TrustManagerImplTest.java   | 111 ++++++++++++++++++
+ 2 files changed, 122 insertions(+)
+
+diff --git a/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/TrustManagerImpl.java b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/TrustManagerImpl.java
+index e9731959b67..ef629d2639e 100644
+--- a/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/TrustManagerImpl.java
++++ b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/TrustManagerImpl.java
+@@ -281,6 +281,13 @@ public final class TrustManagerImpl implements X509TrustManager {
+         //    at the first one that is a TrustAnchor (kktls: the 4.1 loop of step 1 looks for
+         //    anchors while it orders the chain, so the added intermediates are checked here)
+         if (trustAnchors.isEmpty()) {
++            // kktls: never add a certificate twice. Cached intermediates that issue each other (a
++            // cross-signed pair) would otherwise grow the chain until the VM runs out of memory.
++            // Android 7.0 keeps a set of used certificates for the same reason.
++            Set<X509Certificate> used = new HashSet<X509Certificate>();
++            for (int i = 0; i <= currIndex; i++) {
++                used.add(chain[i]);
++            }
+             while (true) {
+                 TrustAnchor nextIntermediate =
+                         intermediateIndex.findByIssuerAndSignature(chain[currIndex]);
+@@ -288,6 +295,10 @@ public final class TrustManagerImpl implements X509TrustManager {
+                     break;
+                 }
+                 X509Certificate cert = nextIntermediate.getTrustedCert();
++                if (!used.add(cert)) {
++                    // kktls: a cycle; stop here and let step 4 look for an anchor.
++                    break;
++                }
+                 TrustAnchor trustAnchor = findTrustAnchorBySubjectAndPublicKey(cert);
+                 if (trustAnchor != null) {
+                     trustAnchors.add(trustAnchor);
+diff --git a/luni/src/test/java/org/apache/harmony/xnet/provider/jsse/TrustManagerImplTest.java b/luni/src/test/java/org/apache/harmony/xnet/provider/jsse/TrustManagerImplTest.java
+index 31d92bbad94..3c69b723d20 100644
+--- a/luni/src/test/java/org/apache/harmony/xnet/provider/jsse/TrustManagerImplTest.java
++++ b/luni/src/test/java/org/apache/harmony/xnet/provider/jsse/TrustManagerImplTest.java
+@@ -16,17 +16,27 @@
+ 
+ package org.apache.harmony.xnet.provider.jsse;
+ 
++import com.android.org.bouncycastle.asn1.x509.BasicConstraints;
++import com.android.org.bouncycastle.asn1.x509.X509Extensions;
++import com.android.org.bouncycastle.x509.X509V3CertificateGenerator;
+ import java.lang.reflect.Method;
++import java.math.BigInteger;
++import java.security.KeyPair;
++import java.security.KeyPairGenerator;
+ import java.security.KeyStore;
++import java.security.PrivateKey;
++import java.security.PublicKey;
+ import java.security.cert.CertificateException;
+ import java.security.cert.TrustAnchor;
+ import java.security.cert.X509Certificate;
+ import java.util.Arrays;
++import java.util.Date;
+ import java.util.HashSet;
+ import java.util.Set;
+ import javax.net.ssl.TrustManager;
+ import javax.net.ssl.TrustManagerFactory;
+ import javax.net.ssl.X509TrustManager;
++import javax.security.auth.x500.X500Principal;
+ import junit.framework.TestCase;
+ import libcore.java.security.TestKeyStore;
+ 
+@@ -156,6 +166,107 @@ public class TrustManagerImplTest extends TestCase {
+         assertEquals(root, trustAnchors.iterator().next().getTrustedCert());
+     }
+ 
++    /**
++     * kktls test for the cycle guard (libcore/0022) of the learned-intermediate loop of cm-11
++     * 02e4d22. CAs I and J cross-sign each other (I_J: subject I, issued by J; J_I: subject J,
++     * issued by I), and I also has a certificate from the trusted root (I_R). The valid chain
++     * L, I_J, J_I, I_R teaches the trust manager I_J, J_I and I_R in that order. The index
++     * returns the first cached I whose key verifies, which is I_J, so completing the bare leaf
++     * walks L, I_J, J_I, I_J, J_I, ... Without a guard the chain array doubles until the VM
++     * runs out of memory; with it the walk stops at the first repeated certificate and the
++     * check fails cleanly (the anchor is not reached through the cycle).
++     */
++    public void testLearnedIntermediateCrossSignedPairTerminates() throws Exception {
++        TestKeyStore rootCa = TestKeyStore.getRootCa();
++        KeyStore.PrivateKeyEntry rootEntry = rootCa.getPrivateKey("RSA", "RSA");
++        X509Certificate root = (X509Certificate) rootEntry.getCertificate();
++        KeyPair keyI = rsaKeyPair();
++        KeyPair keyJ = rsaKeyPair();
++        X500Principal nameI = new X500Principal("CN=TLS Test Cross-Signed CA I");
++        X500Principal nameJ = new X500Principal("CN=TLS Test Cross-Signed CA J");
++        X509Certificate iByRoot = certificate(101, nameI, keyI.getPublic(),
++                root.getSubjectX500Principal(), rootEntry.getPrivateKey(), true);
++        X509Certificate iByJ = certificate(102, nameI, keyI.getPublic(), nameJ,
++                keyJ.getPrivate(), true);
++        X509Certificate jByI = certificate(103, nameJ, keyJ.getPublic(), nameI,
++                keyI.getPrivate(), true);
++        X509Certificate leaf = certificate(104, new X500Principal("CN=leaf.tls.test"),
++                rsaKeyPair().getPublic(), nameI, keyI.getPrivate(), false);
++
++        TrustManagerImpl tm = trustManagerImpl(root);
++        // A fresh trust manager cannot complete the bare leaf.
++        assertInvalidWithin(new X509Certificate[] { leaf }, tm);
++        // The full chain is valid and caches I_J, J_I and I_R.
++        assertValid(new X509Certificate[] { leaf, iByJ, jByI, iByRoot }, tm);
++        // The bare leaf is completed through the cycle: this must end, with a failure.
++        assertInvalidWithin(new X509Certificate[] { leaf }, tm);
++        // A presented chain that ends in the cycle stops there too.
++        assertInvalidWithin(new X509Certificate[] { leaf, iByJ, jByI }, tm);
++        // The chain through the root-signed certificate still validates.
++        assertValid(new X509Certificate[] { leaf, iByRoot }, tm);
++        assertValid(new X509Certificate[] { leaf, iByJ, jByI, iByRoot }, tm);
++    }
++
++    /**
++     * assertInvalid in a worker thread, so that a chain walk that never ends fails this test
++     * after a timeout instead of hanging the whole run.
++     */
++    private void assertInvalidWithin(final X509Certificate[] chain, final X509TrustManager tm)
++            throws Exception {
++        final Throwable[] failure = new Throwable[1];
++        final boolean[] done = new boolean[1];
++        Thread worker = new Thread(new Runnable() {
++            public void run() {
++                try {
++                    assertInvalid(chain, tm);
++                } catch (Throwable t) {
++                    failure[0] = t;
++                }
++                synchronized (done) {
++                    done[0] = true;
++                }
++            }
++        });
++        worker.setDaemon(true);
++        worker.start();
++        worker.join(60 * 1000);
++        synchronized (done) {
++            assertTrue("chain check did not terminate within 60 s", done[0]);
++        }
++        if (failure[0] instanceof Error) {
++            throw (Error) failure[0];
++        }
++        if (failure[0] != null) {
++            throw new AssertionError(failure[0]);
++        }
++    }
++
++    private static KeyPair rsaKeyPair() throws Exception {
++        KeyPairGenerator kpg = KeyPairGenerator.getInstance("RSA");
++        kpg.initialize(1024);
++        return kpg.generateKeyPair();
++    }
++
++    private static X509Certificate certificate(long serial, X500Principal subject,
++            PublicKey subjectKey, X500Principal issuer, PrivateKey issuerKey, boolean ca)
++            throws Exception {
++        long now = System.currentTimeMillis();
++        long day = 24 * 60 * 60 * 1000L;
++        X509V3CertificateGenerator generator = new X509V3CertificateGenerator();
++        generator.setSerialNumber(BigInteger.valueOf(serial));
++        generator.setSubjectDN(subject);
++        generator.setIssuerDN(issuer);
++        generator.setNotBefore(new Date(now - day));
++        generator.setNotAfter(new Date(now + day));
++        generator.setPublicKey(subjectKey);
++        generator.setSignatureAlgorithm("SHA256withRSA");
++        if (ca) {
++            generator.addExtension(X509Extensions.BasicConstraints, true,
++                    new BasicConstraints(true));
++        }
++        return generator.generateX509Certificate(issuerKey);
++    }
++
+     private static TrustManagerImpl trustManagerImpl(X509Certificate ca) throws Exception {
+         KeyStore keyStore = TestKeyStore.createKeyStore();
+         keyStore.setCertificateEntry("alias", ca);

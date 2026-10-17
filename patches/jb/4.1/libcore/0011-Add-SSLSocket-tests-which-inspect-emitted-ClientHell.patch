@@ -1,0 +1,741 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Alex Klyubin <klyubin@google.com>
+Date: Tue, 2 Dec 2014 11:15:42 -0800
+Subject: [PATCH 11/32] Add SSLSocket tests which inspect emitted ClientHello
+ fields.
+
+This CL adds basic tests which capture the ClientHello emitted by
+SSLSocket and assert that the various fields are as expected. In
+particular, this CL adds tests for:
+* client protocol version,
+* cipher suite list,
+* compression methods,
+* server_name extension (SNI).
+
+Change-Id: I387c44363ad26f064885f9bfa28572da37871078
+(cherry picked from commit b1fe85cc976c676eb50ff886596c93e04fd71d82)
+
+Android 4.1 port (android-4.1.2_r2) of patch 0011 of the 4.4 series,
+made from its Android 4.2 port. The same change, plus the
+java.lang.reflect.Method import that the 4.1 SSLSocketTest lacks (4.2
+imports it for its setSoWriteTimeout test); otherwise only line offsets
+differ.
+---
+ .../libcore/javax/net/ssl/SSLSocketTest.java  | 199 ++++++++++++++----
+ .../tlswire/handshake/CipherSuite.java        | 105 +++++----
+ .../handshake/ServerNameHelloExtension.java   |   2 +-
+ .../util/DelegatingSSLSocketFactory.java      | 101 +++++++++
+ .../test/java/tests/util/ForEachRunner.java   |  54 +++++
+ support/src/test/java/tests/util/Pair.java    | 107 ++++++++++
+ 6 files changed, 471 insertions(+), 97 deletions(-)
+ create mode 100644 support/src/test/java/tests/util/DelegatingSSLSocketFactory.java
+ create mode 100644 support/src/test/java/tests/util/ForEachRunner.java
+ create mode 100644 support/src/test/java/tests/util/Pair.java
+
+diff --git a/luni/src/test/java/libcore/javax/net/ssl/SSLSocketTest.java b/luni/src/test/java/libcore/javax/net/ssl/SSLSocketTest.java
+index a7f1932afca..d4c57e68d2b 100644
+--- a/luni/src/test/java/libcore/javax/net/ssl/SSLSocketTest.java
++++ b/luni/src/test/java/libcore/javax/net/ssl/SSLSocketTest.java
+@@ -22,17 +22,22 @@ import java.io.EOFException;
+ import java.io.IOException;
+ import java.io.InputStream;
+ import java.io.OutputStream;
++import java.lang.reflect.Method;
+ import java.net.ServerSocket;
+ import java.net.Socket;
+ import java.net.SocketException;
+ import java.net.SocketTimeoutException;
++import java.security.KeyManagementException;
++import java.security.NoSuchAlgorithmException;
+ import java.security.Principal;
+ import java.security.PrivateKey;
+ import java.security.cert.Certificate;
+ import java.security.cert.CertificateException;
+ import java.security.cert.X509Certificate;
++import java.util.ArrayList;
+ import java.util.Arrays;
+ import java.util.HashSet;
++import java.util.List;
+ import java.util.Set;
+ import java.util.concurrent.Callable;
+ import java.util.concurrent.ExecutorService;
+@@ -60,9 +65,18 @@ import libcore.io.IoUtils;
+ import libcore.io.Streams;
+ import libcore.java.security.StandardNames;
+ import libcore.java.security.TestKeyStore;
++import libcore.tlswire.handshake.CipherSuite;
++import libcore.tlswire.handshake.ClientHello;
++import libcore.tlswire.handshake.CompressionMethod;
+ import libcore.tlswire.handshake.HandshakeMessage;
++import libcore.tlswire.handshake.HelloExtension;
++import libcore.tlswire.handshake.ServerNameHelloExtension;
+ import libcore.tlswire.record.TlsProtocols;
+ import libcore.tlswire.record.TlsRecord;
++import libcore.tlswire.util.TlsProtocolVersion;
++import tests.util.ForEachRunner;
++import tests.util.DelegatingSSLSocketFactory;
++import tests.util.Pair;
+ 
+ public class SSLSocketTest extends TestCase {
+ 
+@@ -1271,11 +1285,147 @@ public class SSLSocketTest extends TestCase {
+         context.close();
+     }
+ 
+-    public void test_SSLSocket_ClientHello_size() throws Exception {
++    public void test_SSLSocket_ClientHello_record_size() throws Exception {
+         // This test checks the size of ClientHello of the default SSLSocket. TLS/SSL handshakes
+         // with older/unpatched F5/BIG-IP appliances are known to stall and time out when
+         // the fragment containing ClientHello is between 256 and 511 (inclusive) bytes long.
+-        //
++        SSLContext sslContext = SSLContext.getInstance("TLS");
++        sslContext.init(null, null, null);
++        SSLSocketFactory sslSocketFactory = sslContext.getSocketFactory();
++        sslSocketFactory = new DelegatingSSLSocketFactory(sslSocketFactory) {
++            @Override
++            protected void configureSocket(SSLSocket socket) {
++                // Enable SNI extension on the socket (this is typically enabled by default)
++                // to increase the size of ClientHello.
++                try {
++                    Method setHostname =
++                            socket.getClass().getMethod("setHostname", String.class);
++                    setHostname.invoke(socket, "sslsockettest.androidcts.google.com");
++                } catch (NoSuchMethodException ignored) {
++                } catch (Exception e) {
++                    throw new RuntimeException("Failed to enable SNI", e);
++                }
++
++                // Enable Session Tickets extension on the socket (this is typically enabled
++                // by default) to increase the size of ClientHello.
++                try {
++                    Method setUseSessionTickets =
++                            socket.getClass().getMethod(
++                                    "setUseSessionTickets", boolean.class);
++                    setUseSessionTickets.invoke(socket, true);
++                } catch (NoSuchMethodException ignored) {
++                } catch (Exception e) {
++                    throw new RuntimeException("Failed to enable Session Tickets", e);
++                }
++            }
++        };
++
++        TlsRecord firstReceivedTlsRecord = captureTlsHandshakeFirstTlsRecord(sslSocketFactory);
++        assertEquals("TLS record type", TlsProtocols.HANDSHAKE, firstReceivedTlsRecord.type);
++        HandshakeMessage handshakeMessage = HandshakeMessage.read(
++                new DataInputStream(new ByteArrayInputStream(firstReceivedTlsRecord.fragment)));
++        assertEquals("HandshakeMessage type",
++                HandshakeMessage.TYPE_CLIENT_HELLO, handshakeMessage.type);
++        int fragmentLength = firstReceivedTlsRecord.fragment.length;
++        if ((fragmentLength >= 256) && (fragmentLength <= 511)) {
++            fail("Fragment containing ClientHello is of dangerous length: "
++                    + fragmentLength + " bytes");
++        }
++    }
++
++    public void test_SSLSocket_ClientHello_cipherSuites() throws Exception {
++        ForEachRunner.runNamed(new ForEachRunner.Callback<SSLSocketFactory>() {
++            @Override
++            public void run(SSLSocketFactory sslSocketFactory) throws Exception {
++                ClientHello clientHello = captureTlsHandshakeClientHello(sslSocketFactory);
++                String[] cipherSuites = new String[clientHello.cipherSuites.size()];
++                for (int i = 0; i < clientHello.cipherSuites.size(); i++) {
++                    CipherSuite cipherSuite = clientHello.cipherSuites.get(i);
++                    cipherSuites[i] = cipherSuite.getAndroidName();
++                }
++                StandardNames.assertDefaultCipherSuites(cipherSuites);
++            }
++        }, getSSLSocketFactoriesToTest());
++    }
++
++    public void test_SSLSocket_ClientHello_clientProtocolVersion() throws Exception {
++        ForEachRunner.runNamed(new ForEachRunner.Callback<SSLSocketFactory>() {
++            @Override
++            public void run(SSLSocketFactory sslSocketFactory) throws Exception {
++                ClientHello clientHello = captureTlsHandshakeClientHello(sslSocketFactory);
++                assertEquals(TlsProtocolVersion.TLSv1_2, clientHello.clientVersion);
++            }
++        }, getSSLSocketFactoriesToTest());
++    }
++
++    public void test_SSLSocket_ClientHello_compressionMethods() throws Exception {
++        ForEachRunner.runNamed(new ForEachRunner.Callback<SSLSocketFactory>() {
++            @Override
++            public void run(SSLSocketFactory sslSocketFactory) throws Exception {
++                ClientHello clientHello = captureTlsHandshakeClientHello(sslSocketFactory);
++                assertEquals(Arrays.asList(CompressionMethod.NULL), clientHello.compressionMethods);
++            }
++        }, getSSLSocketFactoriesToTest());
++    }
++
++    public void test_SSLSocket_ClientHello_SNI() throws Exception {
++        ForEachRunner.runNamed(new ForEachRunner.Callback<SSLSocketFactory>() {
++            @Override
++            public void run(SSLSocketFactory sslSocketFactory) throws Exception {
++                ClientHello clientHello = captureTlsHandshakeClientHello(sslSocketFactory);
++                ServerNameHelloExtension sniExtension = (ServerNameHelloExtension)
++                        clientHello.findExtensionByType(HelloExtension.TYPE_SERVER_NAME);
++                assertNotNull(sniExtension);
++                assertEquals(Arrays.asList("localhost.localdomain"), sniExtension.hostnames);
++            }
++        }, getSSLSocketFactoriesToTest());
++    }
++
++    private List<Pair<String, SSLSocketFactory>> getSSLSocketFactoriesToTest()
++            throws NoSuchAlgorithmException, KeyManagementException {
++        List<Pair<String, SSLSocketFactory>> result =
++                new ArrayList<Pair<String, SSLSocketFactory>>();
++        result.add(Pair.of("default", (SSLSocketFactory) SSLSocketFactory.getDefault()));
++        for (String sslContextProtocol : StandardNames.SSL_CONTEXT_PROTOCOLS) {
++            SSLContext sslContext = SSLContext.getInstance(sslContextProtocol);
++            if (StandardNames.SSL_CONTEXT_PROTOCOLS_DEFAULT.equals(sslContextProtocol)) {
++                continue;
++            }
++            sslContext.init(null, null, null);
++            result.add(Pair.of(
++                    "SSLContext(\"" + sslContext.getProtocol() + "\")",
++                    sslContext.getSocketFactory()));
++        }
++        return result;
++    }
++
++    private ClientHello captureTlsHandshakeClientHello(SSLSocketFactory sslSocketFactory)
++            throws Exception {
++        TlsRecord record = captureTlsHandshakeFirstTlsRecord(sslSocketFactory);
++        assertEquals("TLS record type", TlsProtocols.HANDSHAKE, record.type);
++        ByteArrayInputStream fragmentIn = new ByteArrayInputStream(record.fragment);
++        HandshakeMessage handshakeMessage = HandshakeMessage.read(new DataInputStream(fragmentIn));
++        assertEquals("HandshakeMessage type",
++                HandshakeMessage.TYPE_CLIENT_HELLO, handshakeMessage.type);
++        // Assert that the fragment does not contain any more messages
++        assertEquals(0, fragmentIn.available());
++
++        return (ClientHello) handshakeMessage;
++    }
++
++    private TlsRecord captureTlsHandshakeFirstTlsRecord(SSLSocketFactory sslSocketFactory)
++            throws Exception {
++        byte[] firstReceivedChunk = captureTlsHandshakeFirstTransmittedChunkBytes(sslSocketFactory);
++        ByteArrayInputStream firstReceivedChunkIn = new ByteArrayInputStream(firstReceivedChunk);
++        TlsRecord record = TlsRecord.read(new DataInputStream(firstReceivedChunkIn));
++        // Assert that the chunk does not contain any more data
++        assertEquals(0, firstReceivedChunkIn.available());
++
++        return record;
++    }
++
++    private byte[] captureTlsHandshakeFirstTransmittedChunkBytes(
++            final SSLSocketFactory sslSocketFactory) throws Exception {
+         // Since there's no straightforward way to obtain a ClientHello from SSLSocket, this test
+         // does the following:
+         // 1. Creates a listening server socket (a plain one rather than a TLS/SSL one).
+@@ -1319,33 +1469,19 @@ public class SSLSocketTest extends TestCase {
+             executorService.submit(new Callable<Void>() {
+                 @Override
+                 public Void call() throws Exception {
+-                    SSLContext sslContext = SSLContext.getInstance("TLS");
+-                    sslContext.init(null, null, null);
+-                    SSLSocket client = (SSLSocket) sslContext.getSocketFactory().createSocket();
++                    Socket client = new Socket();
+                     sockets[0] = client;
+                     try {
+-                        // Enable SNI extension on the socket (this is typically enabled by default)
+-                        // to increase the size of ClientHello.
+-                        try {
+-                            Method setHostname =
+-                                    client.getClass().getMethod("setHostname", String.class);
+-                            setHostname.invoke(client, "sslsockettest.androidcts.google.com");
+-                        } catch (NoSuchMethodException ignored) {}
+-
+-                        // Enable Session Tickets extension on the socket (this is typically enabled
+-                        // by default) to increase the size of ClientHello.
+-                        try {
+-                            Method setUseSessionTickets =
+-                                    client.getClass().getMethod(
+-                                            "setUseSessionTickets", boolean.class);
+-                            setUseSessionTickets.invoke(client, true);
+-                        } catch (NoSuchMethodException ignored) {}
+-
+                         client.connect(finalListeningSocket.getLocalSocketAddress());
+                         // Initiate the TLS/SSL handshake which is expected to fail as soon as the
+                         // server socket receives a ClientHello.
+                         try {
+-                            client.startHandshake();
++                            SSLSocket sslSocket = (SSLSocket) sslSocketFactory.createSocket(
++                                    client,
++                                    "localhost.localdomain",
++                                    finalListeningSocket.getLocalPort(),
++                                    true);
++                            sslSocket.startHandshake();
+                             fail();
+                             return null;
+                         } catch (IOException expected) {}
+@@ -1364,22 +1500,7 @@ public class SSLSocketTest extends TestCase {
+             });
+ 
+             // Wait for the ClientHello to arrive
+-            byte[] firstReceivedChunk = readFirstReceivedChunkFuture.get(10, TimeUnit.SECONDS);
+-
+-            // Check for ClientHello length that may cause handshake to fail/time out with older
+-            // F5/BIG-IP appliances.
+-            TlsRecord firstReceivedTlsRecord = TlsRecord.read(
+-                    new DataInputStream(new ByteArrayInputStream(firstReceivedChunk)));
+-            assertEquals("TLS record type", TlsProtocols.HANDSHAKE, firstReceivedTlsRecord.type);
+-            HandshakeMessage handshakeMessage = HandshakeMessage.read(
+-                    new DataInputStream(new ByteArrayInputStream(firstReceivedTlsRecord.fragment)));
+-            assertEquals("HandshakeMessage type",
+-                    HandshakeMessage.TYPE_CLIENT_HELLO, handshakeMessage.type);
+-            int fragmentLength = firstReceivedTlsRecord.fragment.length;
+-            if ((fragmentLength >= 256) && (fragmentLength <= 511)) {
+-                fail("Fragment containing ClientHello is of dangerous length: "
+-                        + fragmentLength + " bytes");
+-            }
++            return readFirstReceivedChunkFuture.get(10, TimeUnit.SECONDS);
+         } finally {
+             executorService.shutdownNow();
+             if (listeningSocket != null) {
+diff --git a/support/src/test/java/libcore/tlswire/handshake/CipherSuite.java b/support/src/test/java/libcore/tlswire/handshake/CipherSuite.java
+index 959379de7f6..88ce2f2d7b7 100644
+--- a/support/src/test/java/libcore/tlswire/handshake/CipherSuite.java
++++ b/support/src/test/java/libcore/tlswire/handshake/CipherSuite.java
+@@ -27,33 +27,41 @@ public class CipherSuite {
+     // https://www.iana.org/assignments/tls-parameters/tls-parameters.xhtml
+     private static final CipherSuite[] CIPHER_SUITES = new CipherSuite[] {
+         new CipherSuite(0x0000, "TLS_NULL_WITH_NULL_NULL"),
+-        new CipherSuite(0x0001, "TLS_RSA_WITH_NULL_MD5"),
+-        new CipherSuite(0x0002, "TLS_RSA_WITH_NULL_SHA"),
+-        new CipherSuite(0x0003, "TLS_RSA_EXPORT_WITH_RC4_40_MD5"),
+-        new CipherSuite(0x0004, "TLS_RSA_WITH_RC4_128_MD5"),
+-        new CipherSuite(0x0005, "TLS_RSA_WITH_RC4_128_SHA"),
++        new CipherSuite(0x0001, "TLS_RSA_WITH_NULL_MD5", "SSL_RSA_WITH_NULL_MD5"),
++        new CipherSuite(0x0002, "TLS_RSA_WITH_NULL_SHA", "SSL_RSA_WITH_NULL_SHA"),
++        new CipherSuite(0x0003, "TLS_RSA_EXPORT_WITH_RC4_40_MD5", "SSL_RSA_EXPORT_WITH_RC4_40_MD5"),
++        new CipherSuite(0x0004, "TLS_RSA_WITH_RC4_128_MD5", "SSL_RSA_WITH_RC4_128_MD5"),
++        new CipherSuite(0x0005, "TLS_RSA_WITH_RC4_128_SHA", "SSL_RSA_WITH_RC4_128_SHA"),
+         new CipherSuite(0x0006, "TLS_RSA_EXPORT_WITH_RC2_CBC_40_MD5"),
+         new CipherSuite(0x0007, "TLS_RSA_WITH_IDEA_CBC_SHA"),
+-        new CipherSuite(0x0008, "TLS_RSA_EXPORT_WITH_DES40_CBC_SHA"),
+-        new CipherSuite(0x0009, "TLS_RSA_WITH_DES_CBC_SHA"),
+-        new CipherSuite(0x000a, "TLS_RSA_WITH_3DES_EDE_CBC_SHA"),
++        new CipherSuite(0x0008, "TLS_RSA_EXPORT_WITH_DES40_CBC_SHA",
++                "SSL_RSA_EXPORT_WITH_DES40_CBC_SHA"),
++        new CipherSuite(0x0009, "TLS_RSA_WITH_DES_CBC_SHA", "SSL_RSA_WITH_DES_CBC_SHA"),
++        new CipherSuite(0x000a, "TLS_RSA_WITH_3DES_EDE_CBC_SHA", "SSL_RSA_WITH_3DES_EDE_CBC_SHA"),
+         new CipherSuite(0x000b, "TLS_DH_DSS_EXPORT_WITH_DES40_CBC_SHA"),
+         new CipherSuite(0x000c, "TLS_DH_DSS_WITH_DES_CBC_SHA"),
+         new CipherSuite(0x000d, "TLS_DH_DSS_WITH_3DES_EDE_CBC_SHA"),
+         new CipherSuite(0x000e, "TLS_DH_RSA_EXPORT_WITH_DES40_CBC_SHA"),
+         new CipherSuite(0x000f, "TLS_DH_RSA_WITH_DES_CBC_SHA"),
+         new CipherSuite(0x0010, "TLS_DH_RSA_WITH_3DES_EDE_CBC_SHA"),
+-        new CipherSuite(0x0011, "TLS_DHE_DSS_EXPORT_WITH_DES40_CBC_SHA"),
+-        new CipherSuite(0x0012, "TLS_DHE_DSS_WITH_DES_CBC_SHA"),
+-        new CipherSuite(0x0013, "TLS_DHE_DSS_WITH_3DES_EDE_CBC_SHA"),
+-        new CipherSuite(0x0014, "TLS_DHE_RSA_EXPORT_WITH_DES40_CBC_SHA"),
+-        new CipherSuite(0x0015, "TLS_DHE_RSA_WITH_DES_CBC_SHA"),
+-        new CipherSuite(0x0016, "TLS_DHE_RSA_WITH_3DES_EDE_CBC_SHA"),
+-        new CipherSuite(0x0017, "TLS_DH_anon_EXPORT_WITH_RC4_40_MD5"),
+-        new CipherSuite(0x0018, "TLS_DH_anon_WITH_RC4_128_MD5"),
+-        new CipherSuite(0x0019, "TLS_DH_anon_EXPORT_WITH_DES40_CBC_SHA"),
+-        new CipherSuite(0x001a, "TLS_DH_anon_WITH_DES_CBC_SHA"),
+-        new CipherSuite(0x001b, "TLS_DH_anon_WITH_3DES_EDE_CBC_SHA"),
++        new CipherSuite(0x0011, "TLS_DHE_DSS_EXPORT_WITH_DES40_CBC_SHA",
++                "SSL_DHE_DSS_EXPORT_WITH_DES40_CBC_SHA"),
++        new CipherSuite(0x0012, "TLS_DHE_DSS_WITH_DES_CBC_SHA", "SSL_DHE_DSS_WITH_DES_CBC_SHA"),
++        new CipherSuite(0x0013, "TLS_DHE_DSS_WITH_3DES_EDE_CBC_SHA",
++                "SSL_DHE_DSS_WITH_3DES_EDE_CBC_SHA"),
++        new CipherSuite(0x0014, "TLS_DHE_RSA_EXPORT_WITH_DES40_CBC_SHA",
++                "SSL_DHE_RSA_EXPORT_WITH_DES40_CBC_SHA"),
++        new CipherSuite(0x0015, "TLS_DHE_RSA_WITH_DES_CBC_SHA", "SSL_DHE_RSA_WITH_DES_CBC_SHA"),
++        new CipherSuite(0x0016, "TLS_DHE_RSA_WITH_3DES_EDE_CBC_SHA",
++                "SSL_DHE_RSA_WITH_3DES_EDE_CBC_SHA"),
++        new CipherSuite(0x0017, "TLS_DH_anon_EXPORT_WITH_RC4_40_MD5",
++                "SSL_DH_anon_EXPORT_WITH_RC4_40_MD5"),
++        new CipherSuite(0x0018, "TLS_DH_anon_WITH_RC4_128_MD5", "SSL_DH_anon_WITH_RC4_128_MD5"),
++        new CipherSuite(0x0019, "TLS_DH_anon_EXPORT_WITH_DES40_CBC_SHA",
++                "SSL_DH_anon_EXPORT_WITH_DES40_CBC_SHA"),
++        new CipherSuite(0x001a, "TLS_DH_anon_WITH_DES_CBC_SHA", "SSL_DH_anon_WITH_DES_CBC_SHA"),
++        new CipherSuite(0x001b, "TLS_DH_anon_WITH_3DES_EDE_CBC_SHA",
++                "SSL_DH_anon_WITH_3DES_EDE_CBC_SHA"),
+         new CipherSuite(0x001e, "TLS_KRB5_WITH_DES_CBC_SHA"),
+         new CipherSuite(0x001f, "TLS_KRB5_WITH_3DES_EDE_CBC_SHA"),
+         new CipherSuite(0x0020, "TLS_KRB5_WITH_RC4_128_SHA"),
+@@ -369,59 +377,38 @@ public class CipherSuite {
+                 throw new RuntimeException(
+                         "Cipher suite multiply defined: " + Integer.toHexString(cipherSuite.code));
+             }
+-            if (byName.put(cipherSuite.name, cipherSuite) != null) {
++            String name = cipherSuite.name;
++            if (byName.put(name, cipherSuite) != null) {
+                 throw new RuntimeException(
+                         "Cipher suite multiply defined: " + cipherSuite.name);
+             }
++            String androidName = cipherSuite.getAndroidName();
++            if (!name.equals(androidName)) {
++                if (byName.put(androidName, cipherSuite) != null) {
++                    throw new RuntimeException(
++                            "Cipher suite multiply defined: " + cipherSuite.androidName);
++                }
++            }
+         }
+ 
+-        // Add alternative names used in Android's platform-default TLS/SSL stack.
+-        addAltName(byName,
+-                "TLS_DHE_DSS_EXPORT_WITH_DES40_CBC_SHA", "SSL_DHE_DSS_EXPORT_WITH_DES40_CBC_SHA");
+-        addAltName(byName,
+-                "TLS_DHE_DSS_WITH_3DES_EDE_CBC_SHA", "SSL_DHE_DSS_WITH_3DES_EDE_CBC_SHA");
+-        addAltName(byName, "TLS_DHE_DSS_WITH_DES_CBC_SHA", "SSL_DHE_DSS_WITH_DES_CBC_SHA");
+-        addAltName(byName,
+-                "TLS_DHE_RSA_EXPORT_WITH_DES40_CBC_SHA", "SSL_DHE_RSA_EXPORT_WITH_DES40_CBC_SHA");
+-        addAltName(byName,
+-                "TLS_DHE_RSA_WITH_3DES_EDE_CBC_SHA", "SSL_DHE_RSA_WITH_3DES_EDE_CBC_SHA");
+-        addAltName(byName, "TLS_DHE_RSA_WITH_DES_CBC_SHA", "SSL_DHE_RSA_WITH_DES_CBC_SHA");
+-        addAltName(byName,
+-                "TLS_DH_anon_EXPORT_WITH_DES40_CBC_SHA", "SSL_DH_anon_EXPORT_WITH_DES40_CBC_SHA");
+-        addAltName(byName,
+-                "TLS_DH_anon_EXPORT_WITH_RC4_40_MD5", "SSL_DH_anon_EXPORT_WITH_RC4_40_MD5");
+-        addAltName(byName,
+-                "TLS_DH_anon_WITH_3DES_EDE_CBC_SHA", "SSL_DH_anon_WITH_3DES_EDE_CBC_SHA");
+-        addAltName(byName, "TLS_DH_anon_WITH_DES_CBC_SHA", "SSL_DH_anon_WITH_DES_CBC_SHA");
+-        addAltName(byName, "TLS_DH_anon_WITH_RC4_128_MD5", "SSL_DH_anon_WITH_RC4_128_MD5");
+-        addAltName(byName,
+-                "TLS_RSA_EXPORT_WITH_DES40_CBC_SHA", "SSL_RSA_EXPORT_WITH_DES40_CBC_SHA");
+-        addAltName(byName, "TLS_RSA_EXPORT_WITH_RC4_40_MD5", "SSL_RSA_EXPORT_WITH_RC4_40_MD5");
+-        addAltName(byName, "TLS_RSA_WITH_3DES_EDE_CBC_SHA", "SSL_RSA_WITH_3DES_EDE_CBC_SHA");
+-        addAltName(byName, "TLS_RSA_WITH_DES_CBC_SHA", "SSL_RSA_WITH_DES_CBC_SHA");
+-        addAltName(byName, "TLS_RSA_WITH_NULL_MD5", "SSL_RSA_WITH_NULL_MD5");
+-        addAltName(byName, "TLS_RSA_WITH_NULL_SHA", "SSL_RSA_WITH_NULL_SHA");
+-        addAltName(byName, "TLS_RSA_WITH_RC4_128_MD5", "SSL_RSA_WITH_RC4_128_MD5");
+-        addAltName(byName, "TLS_RSA_WITH_RC4_128_SHA", "SSL_RSA_WITH_RC4_128_SHA");
+-
+         CODE_TO_CIPHER_SUITE = byCode;
+         NAME_TO_CIPHER_SUITE = byName;
+     }
+ 
+-    private static void addAltName(Map<String, CipherSuite> byName, String name, String altName) {
+-        CipherSuite cipherSuite = byName.get(name);
+-        if (cipherSuite == null) {
+-            throw new IllegalArgumentException("Cipher suite not found: " + name);
+-        }
+-        byName.put(altName, cipherSuite);
+-    }
+-
+     public final int code;
+     public final String name;
++    private final String androidName;
+ 
+     private CipherSuite(int code, String name) {
+         this.code = code;
+         this.name = name;
++        this.androidName = null;
++    }
++
++    private CipherSuite(int code, String name, String androidName) {
++        this.code = code;
++        this.name = name;
++        this.androidName = androidName;
+     }
+ 
+     public static CipherSuite valueOf(String name) {
+@@ -440,6 +427,10 @@ public class CipherSuite {
+         return new CipherSuite(code, Integer.toHexString(code));
+     }
+ 
++    public String getAndroidName() {
++        return (androidName != null) ? androidName : name;
++    }
++
+     @Override
+     public String toString() {
+         return name;
+diff --git a/support/src/test/java/libcore/tlswire/handshake/ServerNameHelloExtension.java b/support/src/test/java/libcore/tlswire/handshake/ServerNameHelloExtension.java
+index afc9cfe1775..5b062460c02 100644
+--- a/support/src/test/java/libcore/tlswire/handshake/ServerNameHelloExtension.java
++++ b/support/src/test/java/libcore/tlswire/handshake/ServerNameHelloExtension.java
+@@ -29,7 +29,7 @@ import java.util.List;
+ public class ServerNameHelloExtension extends HelloExtension {
+     private static final int TYPE_HOST_NAME = 0;
+ 
+-    private List<String> hostnames;
++    public List<String> hostnames;
+ 
+     @Override
+     protected void parseData() throws IOException {
+diff --git a/support/src/test/java/tests/util/DelegatingSSLSocketFactory.java b/support/src/test/java/tests/util/DelegatingSSLSocketFactory.java
+new file mode 100644
+index 00000000000..5513210c33a
+--- /dev/null
++++ b/support/src/test/java/tests/util/DelegatingSSLSocketFactory.java
+@@ -0,0 +1,101 @@
++/*
++ * Copyright (C) 2014 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package tests.util;
++
++import java.io.IOException;
++import java.net.InetAddress;
++import java.net.Socket;
++import java.net.UnknownHostException;
++
++import javax.net.ssl.SSLSocket;
++import javax.net.ssl.SSLSocketFactory;
++
++/**
++ * {@link SSLSocketFactory} which delegates all invocations to the provided delegate
++ * {@code SSLSocketFactory}.
++ */
++public class DelegatingSSLSocketFactory extends SSLSocketFactory {
++
++  private final SSLSocketFactory mDelegate;
++
++  public DelegatingSSLSocketFactory(SSLSocketFactory delegate) {
++    this.mDelegate = delegate;
++  }
++
++  /**
++   * Invoked after obtaining a socket from the delegate and before returning it to the caller.
++   *
++   * <p>The default implementation does nothing.
++   */
++  protected void configureSocket(@SuppressWarnings("unused") SSLSocket socket) {}
++
++  @Override
++  public String[] getDefaultCipherSuites() {
++    return mDelegate.getDefaultCipherSuites();
++  }
++
++  @Override
++  public String[] getSupportedCipherSuites() {
++    return mDelegate.getSupportedCipherSuites();
++  }
++
++  @Override
++  public Socket createSocket() throws IOException {
++    SSLSocket socket = (SSLSocket) mDelegate.createSocket();
++    configureSocket(socket);
++    return socket;
++  }
++
++  @Override
++  public Socket createSocket(Socket s, String host, int port, boolean autoClose)
++      throws IOException {
++    SSLSocket socket = (SSLSocket) mDelegate.createSocket(s, host, port, autoClose);
++    configureSocket(socket);
++    return socket;
++  }
++
++  @Override
++  public Socket createSocket(String host, int port) throws IOException, UnknownHostException {
++      SSLSocket socket = (SSLSocket) mDelegate.createSocket(host, port);
++      configureSocket(socket);
++      return socket;
++  }
++
++  @Override
++  public Socket createSocket(String host, int port, InetAddress localHost, int localPort)
++      throws IOException, UnknownHostException {
++    SSLSocket socket = (SSLSocket) mDelegate.createSocket(host, port, localHost, localPort);
++    configureSocket(socket);
++    return socket;
++  }
++
++  @Override
++  public Socket createSocket(InetAddress host, int port) throws IOException {
++    SSLSocket socket = (SSLSocket) mDelegate.createSocket(host, port);
++    configureSocket(socket);
++    return socket;
++  }
++
++  @Override
++  public Socket createSocket(InetAddress address, int port, InetAddress localAddress,
++    int localPort) throws IOException {
++    SSLSocket socket =
++        (SSLSocket) mDelegate.createSocket(address, port, localAddress, localPort);
++    configureSocket(socket);
++    return socket;
++  }
++}
+diff --git a/support/src/test/java/tests/util/ForEachRunner.java b/support/src/test/java/tests/util/ForEachRunner.java
+new file mode 100644
+index 00000000000..2c222b2a06d
+--- /dev/null
++++ b/support/src/test/java/tests/util/ForEachRunner.java
+@@ -0,0 +1,54 @@
++/*
++ * Copyright (C) 2015 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package tests.util;
++
++/**
++ * Runner which executes the provided code under test (via a callback) for each provided input
++ * value.
++ */
++public final class ForEachRunner {
++
++  /**
++   * Callback parameterized with a value.
++   */
++  public interface Callback<T> {
++    /**
++     * Invokes the callback for the provided value.
++     */
++    void run(T value) throws Exception;
++  }
++
++  private ForEachRunner() {}
++
++  /**
++   * Invokes the provided callback for each of the provided named values.
++   *
++   * @param namesAndValues named values represented as name-value pairs.
++   *
++   * @param <T> type of value.
++   */
++  public static <T> void runNamed(Callback<T> callback, Iterable<Pair<String, T>> namesAndValues)
++      throws Exception {
++    for (Pair<String, T> nameAndValue : namesAndValues) {
++      try {
++        callback.run(nameAndValue.getSecond());
++      } catch (Throwable e) {
++        throw new Exception("Failed for " + nameAndValue.getFirst() + ": " + e.getMessage(), e);
++      }
++    }
++  }
++}
+diff --git a/support/src/test/java/tests/util/Pair.java b/support/src/test/java/tests/util/Pair.java
+new file mode 100644
+index 00000000000..9b0906d3d86
+--- /dev/null
++++ b/support/src/test/java/tests/util/Pair.java
+@@ -0,0 +1,107 @@
++/*
++ * Copyright (C) 2010 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package tests.util;
++
++/**
++ * Pair of typed values.
++ *
++ * <p>Pairs are obtained using {@link #of(Object, Object) of}.
++ *
++ * @param <F> type of the first value.
++ * @param <S> type of the second value.
++ */
++public class Pair<F, S> {
++  private final F mFirst;
++  private final S mSecond;
++
++  private Pair(F first, S second) {
++    mFirst = first;
++    mSecond = second;
++  }
++
++  /**
++   * Gets the pair consisting of the two provided values.
++   *
++   * @param first first value or {@code null}.
++   * @param second second value or {@code null}.
++   */
++  public static <F, S> Pair<F, S> of(F first, S second) {
++    return new Pair<F, S>(first, second);
++  }
++
++  /**
++   * Gets the first value from this pair.
++   *
++   * @return value or {@code null}.
++   */
++  public F getFirst() {
++    return mFirst;
++  }
++
++  /**
++   * Gets the second value from this pair.
++   *
++   * @return value or {@code null}.
++   */
++  public S getSecond() {
++    return mSecond;
++  }
++
++  @Override
++  public String toString() {
++    return "Pair[" + mFirst + ", " + mSecond + "]";
++  }
++
++  @Override
++  public int hashCode() {
++    final int prime = 31;
++    int result = 1;
++    result = prime * result + ((mFirst == null) ? 0 : mFirst.hashCode());
++    result = prime * result + ((mSecond == null) ? 0 : mSecond.hashCode());
++    return result;
++  }
++
++  @Override
++  public boolean equals(Object obj) {
++    if (this == obj) {
++      return true;
++    }
++    if (obj == null) {
++      return false;
++    }
++    if (getClass() != obj.getClass()) {
++      return false;
++    }
++    @SuppressWarnings("rawtypes")
++    Pair other = (Pair) obj;
++    if (mFirst == null) {
++      if (other.mFirst != null) {
++        return false;
++      }
++    } else if (!mFirst.equals(other.mFirst)) {
++      return false;
++    }
++    if (mSecond == null) {
++      if (other.mSecond != null) {
++        return false;
++      }
++    } else if (!mSecond.equals(other.mSecond)) {
++      return false;
++    }
++    return true;
++  }
++}
