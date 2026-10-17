@@ -1,8 +1,8 @@
 # Changelog
 
-## v3 (unreleased)
+## v3
 
-Android 4.3, 4.2 and 4.1.2: the Java TLS layer (layer A) on ARM.
+Android 4.3, 4.2 and 4.1.2 (Jelly Bean, API 16-18): the Java TLS layer (layer A), ARM only. TLS 1.3 stays 4.4 only.
 
 ### New
 
@@ -12,8 +12,9 @@ Android 4.3, 4.2 and 4.1.2: the Java TLS layer (layer A) on ARM.
   (`libcore.net.http` on 4.3, no okhttp) retries a failed handshake over TLSv1 with `TLS_FALLBACK_SCSV` instead of
   SSLv3. Installs on 4.3.x (AOSP: 4.3, 4.3.1) after the 4.3 openssl zip; the restore zip undoes it.
 - `kktls-java-4.2-armeabi-v7a-<rel>.zip`: the same for `android-4.2.2_r1` (`patches/jb/4.2/libcore/`, the 4.3 series
-  ported to 4.2: `int` handles in `NativeCrypto`, the 4.2 cut-through bit). Installs on 4.2.x (AOSP: 4.2, 4.2.1, 4.2.2)
-  after the 4.2 openssl zip.
+  ported to 4.2: `int` handles in `NativeCrypto`, `SSL_MODE_HANDSHAKE_CUTTHROUGH` moved from the stock `0x40` to the
+  1.0.1u value `0x200`, and the session reuse of 4.3's `OpenSSLSocketImpl`, which 4.2 lacks and OpenSSL 1.0.1u session
+  tickets need). Installs on 4.2.x (AOSP: 4.2, 4.2.1, 4.2.2) after the 4.2 openssl zip.
 - `kktls-java-4.1-armeabi-v7a-<rel>.zip`: the same for `android-4.1.2_r2` (`patches/jb/4.1/libcore/`, the 4.2 series
   ported to 4.1: the older `TrustManagerImpl` chain loop and `ScopedLocalRef`). Installs on 4.1.2 only (AOSP:
   4.1.2; 4.1.1 has another libcore JNI) after the 4.1 openssl zip.
@@ -27,8 +28,10 @@ Android 4.3, 4.2 and 4.1.2: the Java TLS layer (layer A) on ARM.
 
 ### Unchanged
 
-- The 4.4 zips, the CA store and the restore zip: same payload and installer. The 4.3, 4.2 and 4.1 openssl zips have
-  the same libraries; their `kktls/BUILD-INFO.txt` also lists the java build.
+- The 4.4 zips, the CA store and the restore zip: same payload and installer. Packed with the v2 name, the CA store
+  and restore zips of this tree equal the v2 assets byte for byte, and the 4.4 zips differ only in the source commit in
+  `kktls/BUILD-INFO.txt`. The 4.3, 4.2 and 4.1 openssl zips have the same libraries; their `kktls/BUILD-INFO.txt` also
+  lists the java build.
 - 4.1.1: no Java layer.
 
 ## v2

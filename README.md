@@ -34,7 +34,7 @@ OpenSSL 1.0.1u is past its end of life. Read [SECURITY.md](SECURITY.md) before y
 | Part | What it changes | Files on the device |
 |---|---|---|
 | **Layer A: OpenSSL** | OpenSSL 1.0.1u with post-EOL security backports, replacing 1.0.1e | `/system/lib/libssl.so`, `libcrypto.so` |
-| **Layer A: Java TLS** | libcore, Conscrypt-in-libcore and okhttp backports: TLS 1.1/1.2 enabled by default, 13 default suites (ECDHE first, AES-GCM, no RC4/3DES/DES/EXPORT/MD5/DHE/static ECDH), SNI on every client path, `TLS_FALLBACK_SCSV` fallback over TLSv1 instead of SSLv3, stricter wildcard matching, intermediate CA cache fixes. On 4.3 the same changes in libcore alone (its TLS provider and its HTTPS client `libcore.net.http`; 4.3 has no okhttp) | 4.4: `/system/framework/{core,core-libart,conscrypt,okhttp}.jar`, `/system/lib/libjavacrypto.so`; 4.3: `/system/framework/core.jar`, `/system/lib/libjavacore.so` |
+| **Layer A: Java TLS** | libcore, Conscrypt-in-libcore and okhttp backports: TLS 1.1/1.2 enabled by default, 13 default suites (ECDHE first, AES-GCM, no RC4/3DES/DES/EXPORT/MD5/DHE/static ECDH), SNI on every client path, `TLS_FALLBACK_SCSV` fallback over TLSv1 instead of SSLv3, stricter wildcard matching, intermediate CA cache fixes. On 4.3, 4.2 and 4.1.2 the same changes in libcore alone (its TLS provider and its HTTPS client `libcore.net.http`; Jelly Bean has no okhttp) | 4.4: `/system/framework/{core,core-libart,conscrypt,okhttp}.jar`, `/system/lib/libjavacrypto.so`; 4.1.2 to 4.3: `/system/framework/core.jar`, `/system/lib/libjavacore.so` |
 | **Layer D: TLS 1.3** | Standalone Conscrypt 2.6-alpha2 (BoringSSL inside) behind the default `SSLSocketFactory`: TLS 1.0–1.3, ChaCha20-Poly1305, X25519, no SSLv3 | `/system/framework/kktls-conscrypt.jar`, `kktls-sslfilter.jar`, `/system/lib/libkktls_conscrypt_jni.so` |
 | **CA store** | The Mozilla root store (121 roots as of 2026-09) in the Android 4.x format, replacing the 2013 directory wholesale | `/system/etc/security/cacerts/` |
 
@@ -71,14 +71,32 @@ working.
 - TLS server sockets no longer accept SSLv3 clients. A server key that is an EC key on an RSA-signed certificate has no
   default suite any more (stock served it only with the dropped static ECDH suites).
 - `SSLEngine` (the Harmony engine) is unchanged: TLSv1 at most, no GCM, no SNI.
+- Only `HttpsURLConnection` retries a failed handshake (over TLSv1 with `TLS_FALLBACK_SCSV`): okhttp on 4.4,
+  `libcore.net.http` on 4.1.2 to 4.3. Apache HTTP and plain `SSLSocket` make one handshake, as on stock.
 - The 4.4 WebView (Chromium 30) has its own TLS stack and is not changed by this project.
+
+### Limits on Jelly Bean (4.1 to 4.3)
+
+- The java zips are **ARM only**. Their x86 builds pass the host checks but have not booted on an x86 system of their
+  version, and `libjavacore.so` is needed to boot, so they are not released.
+- **4.1.1 gets no Java layer:** its libcore has other JNI code (`NativeCrypto.SSL_use_OpenSSL_PrivateKey`), and its
+  Dalvik and linker differ too; the 4.1 java zip refuses it. Java apps there keep `SSLv3, TLSv1`, RC4 and the SSLv3
+  retry without SNI; the openssl and CA store zips still install.
+- **Odexed systems:** a system whose jars have `.odex` files but no `classes.dex` (the Jelly Bean SDK emulator images
+  are such systems) is refused by the dex check. The java zips were run on AOSP `full-eng` builds without dexpreopt; an
+  odexed system whose jars keep `classes.dex` is covered by host tests only.
+- **Host name check:** `libcore.net.http` checks the host name after the handshake and its retry, so a certificate for
+  another host fails once with `IOException: Hostname '…' was not verified`, without a TLSv1 retry (okhttp on 4.4
+  retries first and then fails). The connection is refused either way.
+- 4.1's `HttpConnection` still asks for zlib TLS compression; the OpenSSL build has no zlib, so nothing is offered.
+- No TLS 1.3 (layer D is 4.4 only). Tested on emulators only: no real Jelly Bean device, no TWRP or CWM.
 
 ## Requirements
 
 - **AOSP-based Android 4.4.x** (4.3.x, 4.2.x and 4.1.2: the openssl, CA store and ARM java zips; 4.1.1: the openssl
-  and CA store zips only), 32-bit, ABI `armeabi-v7a` or
-  `x86`. Builds of other ROMs are refused by the installer: CyanogenMod and its derivatives, and vendor ROMs that carry vendor properties (MIUI, EMUI, Samsung, HTC,
-  Sony, LG, MediaTek and others; the list is in `installer/checks.sh`). Vendors often change the Java and OpenSSL
+  and CA store zips only), 32-bit, ABI `armeabi-v7a` or `x86`. Builds of other ROMs are refused by the installer:
+  CyanogenMod and its derivatives, and vendor ROMs that carry vendor properties (MIUI, EMUI, Samsung, HTC, Sony, LG,
+  MediaTek and others; the list is in `installer/checks.sh`). Vendors often change the Java and OpenSSL
   sources; the jars built from AOSP would not match, and a matching symbol list does not prove that structs and
   `#define` values match what a vendor's own native code was compiled against.
 - ARMv6 devices (`armeabi`) are refused. MIPS is source only: no binaries.
