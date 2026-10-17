@@ -23,7 +23,8 @@
 #                  openssl/conscrypt zips (default: the first tag in sort order; those files are the same for every tag)
 #   --mtime EPOCH  timestamp of every zip entry (default 1230768000 = 2009-01-01 UTC)
 #   --out-unreleased DIR  also pack the Jelly Bean java zips of the ABIs outside JB_JAVA_ABIS into DIR (+ SHA256SUMS);
-#                  without it they are not packed. Never part of the --out set (the release)
+#                  without it they are not packed. Never part of the --out set (the release). When there is none, DIR
+#                  gets no SHA256SUMS (and is removed again if this run created it)
 #
 # Zips (Android version from the tag name android-<ver>_rN; the openssl zips name the Android version they install on):
 #   kktls-openssl-4.4-<abi>-<rel>.zip       system/lib/{libssl,libcrypto}.so (any 4.4.x)
@@ -141,7 +142,9 @@ done
 
 mkdir -p "$OUT"
 OUT=$(cd "$OUT" && pwd)
+UNREL_NEW=0
 if [ -n "$UNREL" ]; then
+  [ -d "$UNREL" ] || UNREL_NEW=1
   mkdir -p "$UNREL"; UNREL=$(cd "$UNREL" && pwd)
   [ "$UNREL" != "$OUT" ] || die "--out-unreleased must not be the --out directory" 2
   rm -f "$UNREL"/kktls-*.zip "$UNREL/SHA256SUMS"
@@ -288,7 +291,11 @@ pack "$n"
 (cd "$OUT" && sha256sum kktls-*.zip > SHA256SUMS)
 echo "mkzips: $(wc -l < "$OUT/SHA256SUMS") zips in $OUT (SHA256SUMS)"
 if [ -n "$UNREL" ]; then
-  : > "$UNREL/SHA256SUMS"
-  ! ls "$UNREL"/kktls-*.zip > /dev/null 2>&1 || (cd "$UNREL" && sha256sum kktls-*.zip > SHA256SUMS)
-  echo "mkzips: $(wc -l < "$UNREL/SHA256SUMS") unreleased zips in $UNREL (SHA256SUMS)"
+  if ls "$UNREL"/kktls-*.zip > /dev/null 2>&1; then
+    (cd "$UNREL" && sha256sum kktls-*.zip > SHA256SUMS)
+    echo "mkzips: $(wc -l < "$UNREL/SHA256SUMS") unreleased zips in $UNREL (SHA256SUMS)"
+  else # an empty SHA256SUMS would fail `sha256sum -c`
+    [ "$UNREL_NEW" = 0 ] || rmdir "$UNREL"
+    echo "mkzips: no unreleased zips (nothing written to $UNREL)"
+  fi
 fi

@@ -168,10 +168,11 @@ MKA=(--in "$IN" --release v9 --cacerts "$T/cacerts" --conscrypt-notice "$T/cnoti
 "$MK" "${MKA[@]}" --out "$T/z1" --jb "$T/jb" --out-unreleased "$T/u1" > "$T/mk1.log"
 "$MK" "${MKA[@]}" --out "$T/z2" --jb "$T/jb" --out-unreleased "$T/u2" > "$T/mk2.log"
 "$MK" "${MKA[@]}" --out "$T/zn" --jb "$T/jb" > "$T/mkn.log"
-"$MK" "${MKA[@]}" --out "$T/z44" > "$T/mk44.log"
+"$MK" "${MKA[@]}" --out "$T/z44" --out-unreleased "$T/u44" > "$T/mk44.log"
 Z=$T/z1 U=$T/u1
 check "mkzips writes 17 zips (10 + 3 JB bases x 2 ABIs + the ARM java zip of 4.3)" [ "$(wc -l < "$Z/SHA256SUMS")" = 17 ]
 check "mkzips without --jb writes the 10 4.4 zips" [ "$(wc -l < "$T/z44/SHA256SUMS")" = 10 ]
+check "nothing unreleased: no --out-unreleased dir, no empty SHA256SUMS" sh -c "[ ! -e '$T/u44' ] && grep -q '^mkzips: no unreleased zips' '$T/mk44.log'"
 check "the 4.4 zips do not depend on --jb" sh -c "grep -v -- '-4\.[123]-' '$Z/SHA256SUMS' | cmp -s - '$T/z44/SHA256SUMS'"
 check "zips are byte-identical across two runs" cmp -s "$T/z1/SHA256SUMS" "$T/z2/SHA256SUMS"
 check "unreleased zips are byte-identical across two runs" cmp -s "$T/u1/SHA256SUMS" "$T/u2/SHA256SUMS"
