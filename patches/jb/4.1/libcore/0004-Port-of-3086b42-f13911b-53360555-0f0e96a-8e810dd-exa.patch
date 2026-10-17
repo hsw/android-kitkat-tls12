@@ -1,0 +1,450 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: android-kitkat-tls12 <android-kitkat-tls12@users.noreply.github.com>
+Date: Fri, 9 Oct 2026 12:00:00 +0000
+Subject: [PATCH 04/32] Port of 3086b42, f13911b, 53360555, 0f0e96a, 8e810dd:
+ exact asserts for the new TLS defaults
+
+Tests only. The default-list expectations of libcore 5.0/5.1 moved
+onto the 4.4 test layout and set to the defaults of this series (the
+default cipher suites and default protocols commits that follow):
+
+- 3086b42 "Exact assert for cipher suite list used by default by
+  SSLSocket": SSLSocketTest getEnabledCipherSuites/getSSLParameters and
+  SSLContextTest getDefaultSSLParameters use assertDefaultCipherSuites;
+- f13911b "Exact asserts for TLS/SSL protocols used by default":
+  SSL_SOCKET_PROTOCOLS_CLIENT_DEFAULT/_SERVER_DEFAULT and the
+  assertDefaultProtocolsClient/Server/assertSSLEngineDefaultProtocols
+  helpers (4.4 signature: the expected set is the first argument of
+  assertValid*/assertSupported*). SSLContextTest no longer passes the
+  protocols to assertValidCipherSuites (4.4 test bug);
+- 53360555 + 8e810dd: the client and server defaults are TLSv1,
+  TLSv1.1, TLSv1.2 (the RI keeps SSLv3);
+- 0f0e96a "Enable AES-GCM cipher suites by default in SSLSocket" and
+  this series' list: CIPHER_SUITES_DEFAULT (OpenSSL) = ECDHE AES-GCM, ECDHE
+  AES-CBC, RSA AES-GCM, RSA AES-CBC, renegotiation SCSV. No RC4, 3DES,
+  DES, EXPORT, MD5, DHE, DSS, static ECDH (Android 9 without ChaCha20);
+- the 5.0 isPermittedDefaultCipherSuite() backup assertion, with the
+  permitted sets of this series (key exchange RSA/ECDHE_RSA/ECDHE_ECDSA, AES-CBC/GCM,
+  MAC SHA/SHA256/SHA384);
+- befd74b "Test the default config of SSLServerSocket(Factory)" with
+  the f13911b hunk: new SSLServerSocketTest and SSLServerSocketFactoryTest,
+  so the server defaults have a test (4.4 has none).
+
+Deviation: the Harmony SSLEngine keeps its 4.4 defaults (SSLv3,
+TLSv1 from ProtocolVersion.supportedProtocols); the new TLS defaults
+change only the OpenSSL sockets. So SSL_SOCKET_PROTOCOLS_DEFAULT_SSLENGINE
+is spelled out instead of being derived from the client defaults as
+f13911b did. The SSLSocket javadoc tables of 53360555/0f0e96a are not
+taken (the 4.4 SSLSocket.java has none).
+
+These tests fail until the default cipher suites and default
+protocols commits that follow.
+
+Android 4.1 port (android-4.1.2_r2) of patch 0004 of the 4.4 series,
+made from its Android 4.2 port. The same change; only line offsets
+differ.
+---
+ .../libcore/javax/net/ssl/SSLContextTest.java |   4 +-
+ .../libcore/javax/net/ssl/SSLEngineTest.java  |   4 +-
+ .../net/ssl/SSLServerSocketFactoryTest.java   |  32 ++++
+ .../javax/net/ssl/SSLServerSocketTest.java    |  39 ++++
+ .../libcore/javax/net/ssl/SSLSocketTest.java  |   8 +-
+ .../libcore/java/security/StandardNames.java  | 170 ++++++++++++++----
+ 6 files changed, 218 insertions(+), 39 deletions(-)
+ create mode 100644 luni/src/test/java/libcore/javax/net/ssl/SSLServerSocketFactoryTest.java
+ create mode 100644 luni/src/test/java/libcore/javax/net/ssl/SSLServerSocketTest.java
+
+diff --git a/luni/src/test/java/libcore/javax/net/ssl/SSLContextTest.java b/luni/src/test/java/libcore/javax/net/ssl/SSLContextTest.java
+index 900d9507362..9692aac4507 100644
+--- a/luni/src/test/java/libcore/javax/net/ssl/SSLContextTest.java
++++ b/luni/src/test/java/libcore/javax/net/ssl/SSLContextTest.java
+@@ -256,11 +256,11 @@ public class SSLContextTest extends TestCase {
+ 
+             String[] cipherSuites = p.getCipherSuites();
+             assertNotNull(cipherSuites);
+-            StandardNames.assertValidCipherSuites(StandardNames.CIPHER_SUITES, cipherSuites);
++            StandardNames.assertDefaultCipherSuites(cipherSuites);
+ 
+             String[] protocols = p.getProtocols();
+             assertNotNull(protocols);
+-            StandardNames.assertValidCipherSuites(StandardNames.SSL_SOCKET_PROTOCOLS, protocols);
++            StandardNames.assertDefaultProtocolsClient(protocols);
+ 
+             assertFalse(p.getWantClientAuth());
+             assertFalse(p.getNeedClientAuth());
+diff --git a/luni/src/test/java/libcore/javax/net/ssl/SSLEngineTest.java b/luni/src/test/java/libcore/javax/net/ssl/SSLEngineTest.java
+index 642f247539c..a42c672ecfb 100644
+--- a/luni/src/test/java/libcore/javax/net/ssl/SSLEngineTest.java
++++ b/luni/src/test/java/libcore/javax/net/ssl/SSLEngineTest.java
+@@ -177,7 +177,7 @@ public class SSLEngineTest extends TestCase {
+         TestSSLContext c = TestSSLContext.create();
+         SSLEngine e = c.clientContext.createSSLEngine();
+         String[] protocols = e.getEnabledProtocols();
+-        StandardNames.assertValidProtocols(StandardNames.SSL_SOCKET_PROTOCOLS, protocols);
++        StandardNames.assertSSLEngineDefaultProtocols(protocols);
+         assertNotSame(protocols, e.getEnabledProtocols());
+         c.close();
+     }
+@@ -391,7 +391,7 @@ public class SSLEngineTest extends TestCase {
+         assertEquals(Arrays.asList(cipherSuites), Arrays.asList(e.getEnabledCipherSuites()));
+ 
+         String[] protocols = p.getProtocols();
+-        StandardNames.assertValidProtocols(StandardNames.SSL_SOCKET_PROTOCOLS, protocols);
++        StandardNames.assertSSLEngineDefaultProtocols(protocols);
+         assertNotSame(protocols, e.getEnabledProtocols());
+         assertEquals(Arrays.asList(protocols), Arrays.asList(e.getEnabledProtocols()));
+ 
+diff --git a/luni/src/test/java/libcore/javax/net/ssl/SSLServerSocketFactoryTest.java b/luni/src/test/java/libcore/javax/net/ssl/SSLServerSocketFactoryTest.java
+new file mode 100644
+index 00000000000..65f247864d9
+--- /dev/null
++++ b/luni/src/test/java/libcore/javax/net/ssl/SSLServerSocketFactoryTest.java
+@@ -0,0 +1,32 @@
++/*
++ * Copyright (C) 2013 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package libcore.javax.net.ssl;
++
++import javax.net.ssl.SSLServerSocketFactory;
++import junit.framework.TestCase;
++import libcore.java.security.StandardNames;
++
++public class SSLServerSocketFactoryTest extends TestCase {
++
++  public void testDefaultConfiguration() {
++    SSLServerSocketFactory socketFactory =
++        (SSLServerSocketFactory) SSLServerSocketFactory.getDefault();
++    StandardNames.assertDefaultCipherSuites(socketFactory.getDefaultCipherSuites());
++    StandardNames.assertSupportedCipherSuites(StandardNames.CIPHER_SUITES,
++                                              socketFactory.getSupportedCipherSuites());
++  }
++}
+diff --git a/luni/src/test/java/libcore/javax/net/ssl/SSLServerSocketTest.java b/luni/src/test/java/libcore/javax/net/ssl/SSLServerSocketTest.java
+new file mode 100644
+index 00000000000..fc1c4211403
+--- /dev/null
++++ b/luni/src/test/java/libcore/javax/net/ssl/SSLServerSocketTest.java
+@@ -0,0 +1,39 @@
++/*
++ * Copyright (C) 2013 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package libcore.javax.net.ssl;
++
++import javax.net.ssl.SSLServerSocket;
++import javax.net.ssl.SSLServerSocketFactory;
++import junit.framework.TestCase;
++import libcore.java.security.StandardNames;
++
++public class SSLServerSocketTest extends TestCase {
++
++  public void testDefaultConfiguration() throws Exception {
++    SSLServerSocket serverSocket =
++        (SSLServerSocket) SSLServerSocketFactory.getDefault().createServerSocket();
++    StandardNames.assertDefaultCipherSuites(serverSocket.getEnabledCipherSuites());
++    StandardNames.assertSupportedCipherSuites(StandardNames.CIPHER_SUITES,
++                                              serverSocket.getSupportedCipherSuites());
++    StandardNames.assertDefaultProtocolsServer(serverSocket.getEnabledProtocols());
++    StandardNames.assertSupportedProtocols(StandardNames.SSL_SOCKET_PROTOCOLS,
++                                           serverSocket.getSupportedProtocols());
++    assertTrue(serverSocket.getEnableSessionCreation());
++    assertFalse(serverSocket.getNeedClientAuth());
++    assertFalse(serverSocket.getWantClientAuth());
++  }
++}
+diff --git a/luni/src/test/java/libcore/javax/net/ssl/SSLSocketTest.java b/luni/src/test/java/libcore/javax/net/ssl/SSLSocketTest.java
+index 4b4cafce464..23073205e55 100644
+--- a/luni/src/test/java/libcore/javax/net/ssl/SSLSocketTest.java
++++ b/luni/src/test/java/libcore/javax/net/ssl/SSLSocketTest.java
+@@ -212,7 +212,7 @@ public class SSLSocketTest extends TestCase {
+         SSLSocketFactory sf = (SSLSocketFactory) SSLSocketFactory.getDefault();
+         SSLSocket ssl = (SSLSocket) sf.createSocket();
+         String[] cipherSuites = ssl.getEnabledCipherSuites();
+-        StandardNames.assertValidCipherSuites(StandardNames.CIPHER_SUITES, cipherSuites);
++        StandardNames.assertDefaultCipherSuites(cipherSuites);
+         assertNotSame(cipherSuites, ssl.getEnabledCipherSuites());
+     }
+ 
+@@ -253,7 +253,7 @@ public class SSLSocketTest extends TestCase {
+         SSLSocketFactory sf = (SSLSocketFactory) SSLSocketFactory.getDefault();
+         SSLSocket ssl = (SSLSocket) sf.createSocket();
+         String[] protocols = ssl.getEnabledProtocols();
+-        StandardNames.assertValidProtocols(StandardNames.SSL_SOCKET_PROTOCOLS, protocols);
++        StandardNames.assertDefaultProtocolsClient(protocols);
+         assertNotSame(protocols, ssl.getEnabledProtocols());
+     }
+ 
+@@ -855,12 +855,12 @@ public class SSLSocketTest extends TestCase {
+         assertNotNull(p);
+ 
+         String[] cipherSuites = p.getCipherSuites();
+-        StandardNames.assertValidCipherSuites(StandardNames.CIPHER_SUITES, cipherSuites);
++        StandardNames.assertDefaultCipherSuites(cipherSuites);
+         assertNotSame(cipherSuites, ssl.getEnabledCipherSuites());
+         assertEquals(Arrays.asList(cipherSuites), Arrays.asList(ssl.getEnabledCipherSuites()));
+ 
+         String[] protocols = p.getProtocols();
+-        StandardNames.assertValidProtocols(StandardNames.SSL_SOCKET_PROTOCOLS, protocols);
++        StandardNames.assertDefaultProtocolsClient(protocols);
+         assertNotSame(protocols, ssl.getEnabledProtocols());
+         assertEquals(Arrays.asList(protocols), Arrays.asList(ssl.getEnabledProtocols()));
+ 
+diff --git a/support/src/test/java/libcore/java/security/StandardNames.java b/support/src/test/java/libcore/java/security/StandardNames.java
+index 71573c8cd5d..12cc1911f71 100644
+--- a/support/src/test/java/libcore/java/security/StandardNames.java
++++ b/support/src/test/java/libcore/java/security/StandardNames.java
+@@ -24,6 +24,7 @@ import java.security.spec.ECPublicKeySpec;
+ import java.security.spec.KeySpec;
+ import java.security.spec.RSAPrivateCrtKeySpec;
+ import java.security.spec.RSAPublicKeySpec;
++import java.util.ArrayList;
+ import java.util.Arrays;
+ import java.util.Collections;
+ import java.util.HashMap;
+@@ -479,6 +480,16 @@ public final class StandardNames extends Assert {
+         "TLSv1",
+         "TLSv1.1",
+         "TLSv1.2"));
++    public static final Set<String> SSL_SOCKET_PROTOCOLS_CLIENT_DEFAULT =
++            new HashSet<String>(Arrays.asList(
++                "TLSv1",
++                "TLSv1.1",
++                "TLSv1.2"));
++    public static final Set<String> SSL_SOCKET_PROTOCOLS_SERVER_DEFAULT =
++            new HashSet<String>(Arrays.asList(
++                "TLSv1",
++                "TLSv1.1",
++                "TLSv1.2"));
+     static {
+         if (IS_RI) {
+             /* Even though we use OpenSSL's SSLv23_method which
+@@ -488,15 +499,32 @@ public final class StandardNames extends Assert {
+              * do to disable general use of SSLv2.
+              */
+             SSL_SOCKET_PROTOCOLS.add("SSLv2Hello");
++
++            /* The RI still has SSLv3 as a default protocol. */
++            SSL_SOCKET_PROTOCOLS_CLIENT_DEFAULT.add("SSLv3");
++            SSL_SOCKET_PROTOCOLS_SERVER_DEFAULT.add("SSLv3");
+         }
+     }
+ 
+     public static final Set<String> SSL_SOCKET_PROTOCOLS_SSLENGINE = new HashSet<String>(SSL_SOCKET_PROTOCOLS);
++    /**
++     * kktls: protocols enabled by default on the SSLEngine based provider (the Harmony
++     * SSLEngineImpl, ProtocolVersion.supportedProtocols). The kktls TLS defaults change only
++     * the OpenSSL sockets, so unlike upstream (f13911b) this set is not derived from
++     * SSL_SOCKET_PROTOCOLS_CLIENT_DEFAULT.
++     */
++    public static final Set<String> SSL_SOCKET_PROTOCOLS_DEFAULT_SSLENGINE =
++            new HashSet<String>(Arrays.asList(
++                "SSLv3",
++                "TLSv1"));
+     static {
+         // No TLSv1.1 or TLSv1.2 support on SSLEngine based provider
+         if (!IS_RI) {
+             SSL_SOCKET_PROTOCOLS_SSLENGINE.remove("TLSv1.1");
+             SSL_SOCKET_PROTOCOLS_SSLENGINE.remove("TLSv1.2");
++        } else {
++            SSL_SOCKET_PROTOCOLS_DEFAULT_SSLENGINE.clear();
++            SSL_SOCKET_PROTOCOLS_DEFAULT_SSLENGINE.addAll(SSL_SOCKET_PROTOCOLS_CLIENT_DEFAULT);
+         }
+     }
+ 
+@@ -689,6 +717,11 @@ public final class StandardNames extends Assert {
+         CIPHER_SUITES = (IS_RI) ? CIPHER_SUITES_RI : CIPHER_SUITES_OPENSSL;
+     }
+ 
++    /**
++     * kktls: the OpenSSL list is the kktls default (Android 9 order without ChaCha20 and DHE):
++     * ECDHE with AES-GCM, ECDHE with AES-CBC, then RSA with AES-GCM and AES-CBC. Keep in sync
++     * with NativeCrypto.getDefaultCipherSuites() and upstream-tls/tools/check_tls_lists.py.
++     */
+     public static final List<String> CIPHER_SUITES_DEFAULT = (IS_RI)
+             ? Arrays.asList("TLS_DHE_RSA_WITH_AES_128_CBC_SHA",
+                             "TLS_ECDH_ECDSA_WITH_AES_128_CBC_SHA",
+@@ -711,42 +744,38 @@ public final class StandardNames extends Assert {
+                             "TLS_DHE_DSS_WITH_AES_128_CBC_SHA",
+                             "SSL_DHE_DSS_WITH_3DES_EDE_CBC_SHA",
+                             "SSL_RSA_WITH_3DES_EDE_CBC_SHA")
+-            : Arrays.asList("SSL_RSA_WITH_RC4_128_MD5",
+-                            "SSL_RSA_WITH_RC4_128_SHA",
+-                            "TLS_RSA_WITH_AES_128_CBC_SHA",
+-                            "TLS_RSA_WITH_AES_256_CBC_SHA",
+-                            "TLS_ECDH_ECDSA_WITH_RC4_128_SHA",
+-                            "TLS_ECDH_ECDSA_WITH_AES_128_CBC_SHA",
+-                            "TLS_ECDH_ECDSA_WITH_AES_256_CBC_SHA",
+-                            "TLS_ECDH_RSA_WITH_RC4_128_SHA",
+-                            "TLS_ECDH_RSA_WITH_AES_128_CBC_SHA",
+-                            "TLS_ECDH_RSA_WITH_AES_256_CBC_SHA",
+-                            "TLS_ECDHE_ECDSA_WITH_RC4_128_SHA",
++            : Arrays.asList("TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
++                            "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384",
++                            "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
++                            "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
+                             "TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA",
+                             "TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA",
+-                            "TLS_ECDHE_RSA_WITH_RC4_128_SHA",
+                             "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA",
+                             "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA",
+-                            "TLS_DHE_RSA_WITH_AES_128_CBC_SHA",
+-                            "TLS_DHE_RSA_WITH_AES_256_CBC_SHA",
+-                            "TLS_DHE_DSS_WITH_AES_128_CBC_SHA",
+-                            "TLS_DHE_DSS_WITH_AES_256_CBC_SHA",
+-                            "SSL_RSA_WITH_3DES_EDE_CBC_SHA",
+-                            "TLS_ECDH_ECDSA_WITH_3DES_EDE_CBC_SHA",
+-                            "TLS_ECDH_RSA_WITH_3DES_EDE_CBC_SHA",
+-                            "TLS_ECDHE_ECDSA_WITH_3DES_EDE_CBC_SHA",
+-                            "TLS_ECDHE_RSA_WITH_3DES_EDE_CBC_SHA",
+-                            "SSL_DHE_RSA_WITH_3DES_EDE_CBC_SHA",
+-                            "SSL_DHE_DSS_WITH_3DES_EDE_CBC_SHA",
+-                            "SSL_RSA_WITH_DES_CBC_SHA",
+-                            "SSL_DHE_RSA_WITH_DES_CBC_SHA",
+-                            "SSL_DHE_DSS_WITH_DES_CBC_SHA",
+-                            "SSL_RSA_EXPORT_WITH_RC4_40_MD5",
+-                            "SSL_RSA_EXPORT_WITH_DES40_CBC_SHA",
+-                            "SSL_DHE_RSA_EXPORT_WITH_DES40_CBC_SHA",
+-                            "SSL_DHE_DSS_EXPORT_WITH_DES40_CBC_SHA",
++                            "TLS_RSA_WITH_AES_128_GCM_SHA256",
++                            "TLS_RSA_WITH_AES_256_GCM_SHA384",
++                            "TLS_RSA_WITH_AES_128_CBC_SHA",
++                            "TLS_RSA_WITH_AES_256_CBC_SHA",
+                             CIPHER_SUITE_SECURE_RENEGOTIATION);
+ 
++    // kktls: the families permitted in the default list (no RC4, 3DES, DES, EXPORT, MD5, DHE, DSS,
++    // static ECDH, NULL or anon), as in Android 9 without ChaCha20.
++    private static final Set<String> PERMITTED_DEFAULT_KEY_EXCHANGE_ALGS =
++            new HashSet<String>(Arrays.asList("RSA",
++                                              "ECDHE_RSA",
++                                              "ECDHE_ECDSA"));
++
++    private static final Set<String> PERMITTED_DEFAULT_BULK_ENCRYPTION_CIPHERS =
++            new HashSet<String>(Arrays.asList("AES_128_CBC",
++                                              "AES_256_CBC",
++                                              "AES_128_GCM",
++                                              "AES_256_GCM"));
++
++    private static final Set<String> PERMITTED_DEFAULT_MACS =
++            new HashSet<String>(Arrays.asList("SHA",
++                                              "SHA256",
++                                              "SHA384"));
++
+     public static final Set<String> CIPHER_SUITES_SSLENGINE = new HashSet<String>(CIPHER_SUITES);
+     static {
+         // No Elliptic Curve or TLSv1.2 cipher suite support on SSLEngine based provider
+@@ -866,10 +895,89 @@ public final class StandardNames extends Assert {
+     }
+ 
+     /**
+-     * Assert cipher suites match the default list in content and priority order.
++     * Asserts that the protocols array contains all the protocols enabled by default for client use
++     * and no other ones.
++     */
++    public static void assertDefaultProtocolsClient(String[] protocols) {
++        assertValidProtocols(SSL_SOCKET_PROTOCOLS, protocols);
++        assertSupportedProtocols(SSL_SOCKET_PROTOCOLS_CLIENT_DEFAULT, protocols);
++    }
++
++    /**
++     * Asserts that the protocols array contains all the protocols enabled by default for server use
++     * and no other ones.
++     */
++    public static void assertDefaultProtocolsServer(String[] protocols) {
++        assertValidProtocols(SSL_SOCKET_PROTOCOLS, protocols);
++        assertSupportedProtocols(SSL_SOCKET_PROTOCOLS_SERVER_DEFAULT, protocols);
++    }
++
++    /**
++     * Asserts that the protocols array contains all the protocols enabled by default for
++     * {@link javax.net.ssl.SSLEngine} and no other ones.
++     */
++    public static void assertSSLEngineDefaultProtocols(String[] protocols) {
++        assertValidProtocols(SSL_SOCKET_PROTOCOLS_SSLENGINE, protocols);
++        assertSupportedProtocols(SSL_SOCKET_PROTOCOLS_DEFAULT_SSLENGINE, protocols);
++    }
++
++    /**
++     * Assert cipher suites match the default list in content and priority order and contain
++     * only cipher suites permitted by default.
+      */
+     public static void assertDefaultCipherSuites(String[] cipherSuites) {
+         assertValidCipherSuites(CIPHER_SUITES, cipherSuites);
+         assertEquals(CIPHER_SUITES_DEFAULT, Arrays.asList(cipherSuites));
++
++        // Assert that all the cipher suites are permitted to be in the default list.
++        // This assertion is a backup for the stricter assertion above.
++        //
++        // There is no point in asserting this for the RI as it's outside of our control.
++        if (!IS_RI) {
++            List<String> disallowedDefaultCipherSuites = new ArrayList<String>();
++            for (String cipherSuite : cipherSuites) {
++                if (!isPermittedDefaultCipherSuite(cipherSuite)) {
++                    disallowedDefaultCipherSuites.add(cipherSuite);
++                }
++            }
++            assertEquals(Collections.EMPTY_LIST, disallowedDefaultCipherSuites);
++        }
++    }
++
++    private static boolean isPermittedDefaultCipherSuite(String cipherSuite) {
++        assertNotNull(cipherSuite);
++        if (CIPHER_SUITE_SECURE_RENEGOTIATION.equals(cipherSuite)) {
++            return true;
++        }
++        assertTrue(cipherSuite, cipherSuite.startsWith("TLS_") || cipherSuite.startsWith("SSL_"));
++
++        // Example: RSA_WITH_AES_128_CBC_SHA
++        String remainder = cipherSuite.substring("TLS_".length());
++        int macDelimiterIndex = remainder.lastIndexOf('_');
++        assertTrue(cipherSuite, macDelimiterIndex != -1);
++        // Example: SHA
++        String mac = remainder.substring(macDelimiterIndex + 1);
++
++        // Example: RSA_WITH_AES_128_CBC
++        remainder = remainder.substring(0, macDelimiterIndex);
++        int withDelimiterIndex = remainder.indexOf("_WITH_");
++        assertTrue(cipherSuite, withDelimiterIndex != -1);
++
++        // Example: RSA
++        String keyExchange = remainder.substring(0, withDelimiterIndex);
++        // Example: AES_128_CBC
++        String bulkEncryptionCipher = remainder.substring(withDelimiterIndex + "_WITH_".length());
++
++        if (!PERMITTED_DEFAULT_MACS.contains(mac)) {
++            return false;
++        }
++        if (!PERMITTED_DEFAULT_KEY_EXCHANGE_ALGS.contains(keyExchange)) {
++            return false;
++        }
++        if (!PERMITTED_DEFAULT_BULK_ENCRYPTION_CIPHERS.contains(bulkEncryptionCipher)) {
++            return false;
++        }
++
++        return true;
+     }
+ }

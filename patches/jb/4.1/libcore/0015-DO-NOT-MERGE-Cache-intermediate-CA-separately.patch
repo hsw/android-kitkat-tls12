@@ -1,0 +1,155 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Chad Brubaker <cbrubaker@google.com>
+Date: Wed, 16 Dec 2015 14:55:53 -0800
+Subject: [PATCH 15/32] DO NOT MERGE Cache intermediate CA separately
+
+Intermediate CAs are cached in order to support servers that fail to
+sent a complete chain to a root. These certificates should be cached to
+support these servers but these certificates must not be trusted as
+trust anchors. Store them separately to prevent confusion between
+trusted roots and cached intermediates.
+
+(cherry-picked from commit 198aca1fb638a2a98e89fb9f284108ad576d0c3b)
+Bug: 26232830
+Change-Id: I520f50729b55fc7412c7d133335bc9e3c190bbf6
+(cherry picked from commit 1cca3cd728e05c18ae3376cf39a8503b736d87b1)
+(cherry picked from commit 02e4d2251489d2393b0394e7a38ec093e9bc8243)
+
+Android 4.1 port (android-4.1.2_r2) of patch 0015 of the 4.4 series,
+made from its Android 4.2 port. Paths and names: libcore/crypto of 4.4
+(org.conscrypt, org_conscrypt_NativeCrypto.cpp in libjavacrypto) is
+libcore/luni on 4.1 (org.apache.harmony.xnet.provider.jsse,
+org_apache_harmony_xnet_provider_jsse_NativeCrypto.cpp in libjavacore).
+The 4.1 cleanupCertChainAndFindTrustAnchors() is older than the 4.2-4.4
+one: step 1 orders the chain and looks for a TrustAnchor (by subject and
+public key) in the same loop and stops at the first certificate whose
+issuer is not in the chain; there is no separate anchor loop (so libcore
+608ba9e, which the 4.2 port takes, does not apply). The
+intermediateIndex field and the indexing of validated intermediates are
+as in 4.4. The new step 2 (add missing intermediates) runs only when
+step 1 found no TrustAnchor: it appends the cached issuer of the last
+certificate, cloning and growing the array as in 4.4, and stops at the
+first cached intermediate that is itself a TrustAnchor (added to the
+anchors, not to the chain), which is what the 4.4 anchor loop does with
+the appended certificates. The old steps 2 and 3 become 3 and 4,
+unchanged. The test TrustManagerImplTest.testDuplicateInChain of 608ba9e
+is kept as in the 4.2 port (4.1 already handles that chain; it guards
+the new step 2).
+---
+ .../xnet/provider/jsse/TrustManagerImpl.java  | 46 +++++++++++++++++--
+ .../provider/jsse/TrustManagerImplTest.java   | 16 +++++++
+ 2 files changed, 57 insertions(+), 5 deletions(-)
+
+diff --git a/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/TrustManagerImpl.java b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/TrustManagerImpl.java
+index 3f362c5eb7c..e9731959b67 100644
+--- a/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/TrustManagerImpl.java
++++ b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/TrustManagerImpl.java
+@@ -61,11 +61,16 @@ public final class TrustManagerImpl implements X509TrustManager {
+     private final CertPathValidator validator;
+ 
+     /**
+-     * An index of TrustAnchor instances that we've seen. Unlike the
+-     * TrustedCertificateStore, this may contain intermediate CAs.
++     * An index of TrustAnchor instances that we've seen.
+      */
+     private final TrustedCertificateIndex trustedCertificateIndex;
+ 
++    /**
++     * An index of intermediate certificates that we've seen. These certificates are NOT implicitly
++     * trusted and must still form a valid chain to an anchor.
++     */
++    private final TrustedCertificateIndex intermediateIndex;
++
+     /**
+      * This is lazily initialized in the AndroidCAStore case since it
+      * forces us to bring all the CAs into memory. In the
+@@ -116,6 +121,7 @@ public final class TrustManagerImpl implements X509TrustManager {
+         this.validator = validatorLocal;
+         this.factory = factoryLocal;
+         this.trustedCertificateIndex = trustedCertificateIndexLocal;
++        this.intermediateIndex = new TrustedCertificateIndex();
+         this.acceptedIssuers = acceptedIssuersLocal;
+         this.err = errLocal;
+     }
+@@ -204,7 +210,7 @@ public final class TrustManagerImpl implements X509TrustManager {
+             // will have been removed in
+             // cleanupCertChainAndFindTrustAnchors.  http://b/3404902
+             for (int i = 1; i < newChain.length; i++) {
+-                trustedCertificateIndex.index(newChain[i]);
++                intermediateIndex.index(newChain[i]);
+             }
+         } catch (InvalidAlgorithmParameterException e) {
+             throw new CertificateException(e);
+@@ -271,13 +277,43 @@ public final class TrustManagerImpl implements X509TrustManager {
+             }
+         }
+ 
+-        // 2. If the chain is now shorter, copy to an appropriately sized array.
++        // 2. If step 1 found no TrustAnchor, add any missing intermediates to the chain, and stop
++        //    at the first one that is a TrustAnchor (kktls: the 4.1 loop of step 1 looks for
++        //    anchors while it orders the chain, so the added intermediates are checked here)
++        if (trustAnchors.isEmpty()) {
++            while (true) {
++                TrustAnchor nextIntermediate =
++                        intermediateIndex.findByIssuerAndSignature(chain[currIndex]);
++                if (nextIntermediate == null) {
++                    break;
++                }
++                X509Certificate cert = nextIntermediate.getTrustedCert();
++                TrustAnchor trustAnchor = findTrustAnchorBySubjectAndPublicKey(cert);
++                if (trustAnchor != null) {
++                    trustAnchors.add(trustAnchor);
++                    break;
++                }
++                // Append intermediate
++                // don't mutate original chain, which may be directly from an SSLSession
++                if (chain == original) {
++                    chain = original.clone();
++                }
++                // Grow the chain if needed
++                if (currIndex == chain.length - 1) {
++                    chain = Arrays.copyOf(chain, chain.length * 2);
++                }
++                chain[currIndex + 1] = cert;
++                currIndex++;
++            }
++        }
++
++        // 3. If the chain is now shorter, copy to an appropriately sized array.
+         int chainLength = currIndex + 1;
+         X509Certificate[] newChain = ((chainLength == chain.length)
+                                       ? chain
+                                       : Arrays.copyOf(chain, chainLength));
+ 
+-        // 3. If no TrustAnchor was found in cleanup, look for one now
++        // 4. If no TrustAnchor was found in cleanup, look for one now
+         if (trustAnchors.isEmpty()) {
+             TrustAnchor trustAnchor = findTrustAnchorByIssuerAndSignature(newChain[chainLength-1]);
+             if (trustAnchor != null) {
+diff --git a/luni/src/test/java/org/apache/harmony/xnet/provider/jsse/TrustManagerImplTest.java b/luni/src/test/java/org/apache/harmony/xnet/provider/jsse/TrustManagerImplTest.java
+index 26ebc85786c..1a80fa59290 100644
+--- a/luni/src/test/java/org/apache/harmony/xnet/provider/jsse/TrustManagerImplTest.java
++++ b/luni/src/test/java/org/apache/harmony/xnet/provider/jsse/TrustManagerImplTest.java
+@@ -63,6 +63,22 @@ public class TrustManagerImplTest extends TestCase {
+         assertValid(chain1, tm);
+     }
+ 
++    // We should ignore duplicate cruft in the certificate chain
++    // See https://code.google.com/p/android/issues/detail?id=52295 http://b/8313312
++    public void testDuplicateInChain() throws Exception {
++        // chain3 should be server/intermediate/root
++        KeyStore.PrivateKeyEntry pke = TestKeyStore.getServer().getPrivateKey("RSA", "RSA");
++        X509Certificate[] chain3 = (X509Certificate[])pke.getCertificateChain();
++        X509Certificate root = chain3[2];
++        X509Certificate intermediate = chain3[1];
++        X509Certificate server = chain3[0];
++
++        X509Certificate[] chain4 = new X509Certificate[] { server, intermediate,
++                                                           server, intermediate
++        };
++        assertValid(chain4, trustManager(root));
++    }
++
+     private X509TrustManager trustManager(X509Certificate ca) throws Exception {
+         KeyStore keyStore = TestKeyStore.createKeyStore();
+         keyStore.setCertificateEntry("alias", ca);

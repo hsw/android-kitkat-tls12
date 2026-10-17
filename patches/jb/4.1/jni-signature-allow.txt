@@ -1,0 +1,10 @@
+# tools/check_jni_signatures.py --allow list of base 4.1: the problems the check finds in the stock android-4.1.2_r2
+# NativeCrypto (Java natives vs the JNI table and the C functions of
+# org_apache_harmony_xnet_provider_jsse_NativeCrypto.cpp). Stock defects that the series does not touch, kept as they
+# are: four i2d_* natives are declared but never registered (and never called). 4.1 passes native pointers as Java
+# int; the check accepts a C pointer or jint parameter for an I argument.
+# The check fails on any problem not listed here, and on an entry that no longer occurs.
+Java native i2d_DSAPrivateKey (I)[B is not registered in the JNI table
+Java native i2d_DSAPublicKey (I)[B is not registered in the JNI table
+Java native i2d_RSAPrivateKey (I)[B is not registered in the JNI table
+Java native i2d_RSAPublicKey (I)[B is not registered in the JNI table

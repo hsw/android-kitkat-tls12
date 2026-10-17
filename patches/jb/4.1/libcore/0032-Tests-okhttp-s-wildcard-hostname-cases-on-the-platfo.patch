@@ -1,0 +1,217 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: android-kitkat-tls12 <android-kitkat-tls12@users.noreply.github.com>
+Date: Fri, 9 Oct 2026 12:00:00 +0000
+Subject: [PATCH 32/32] Tests: okhttp's wildcard hostname cases on the platform
+ verifier
+
+Jelly Bean counterpart of external_okhttp/0003 of the 4.4 series
+("Fix a bug in OkHostnameVerifier wildcard handling", okhttp e82a796):
+a pattern *.remainder matched every host name that starts with the
+remainder ("*.foo.com" matched "foo.com.au").
+
+Android 4.1-4.3 have no okhttp: HttpsURLConnection's default verifier
+is javax.net.ssl.DefaultHostnameVerifier, which OkHostnameVerifier was
+copied from and which had the same bug. Its fix is the libcore change
+of the same bug (0014 of this series), so there is no code change here.
+This adds the wildcard cases of okhttp's HostnameVerifierTest
+(android-4.4.2_r2) to DefaultHostnameVerifierTest, with the
+"foo.com.au" assertion of e82a796, run through
+verify(String, SSLSession) as HttpsURLConnection calls it:
+verifyWilcardCn, verifyWilcardCnOnTld, wildcardsCannotMatchIpAddresses,
+wildcardsDoesNotNeedTwoDots and subjectAltNameWithWildcard. The
+non-ASCII subjectAltName case is @Ignore'd in okhttp as well and is not
+ported. The session is a FakeSSLSession that returns the parsed
+certificate (the Jelly Bean FakeSSLSession has no certificate
+constructor).
+
+Android 4.1 port (android-4.1.2_r2) of patch 0032 of the Android 4.3
+series (no 4.4 libcore counterpart: 4.4 has this fix in external_okhttp
+0003), made from its Android 4.2 port. 4.1's
+DefaultHostnameVerifierTest, like 4.2's, still holds the
+DistinguishedNameParser cases that 4.3 moved to their own test: its
+DistinguishedNameParser import stays next to the new SSLSession import.
+Otherwise only line offsets differ.
+---
+ .../net/ssl/DefaultHostnameVerifierTest.java  | 155 ++++++++++++++++++
+ 1 file changed, 155 insertions(+)
+
+diff --git a/luni/src/test/java/libcore/javax/net/ssl/DefaultHostnameVerifierTest.java b/luni/src/test/java/libcore/javax/net/ssl/DefaultHostnameVerifierTest.java
+index 15efd5bf7b2..c82e00fe263 100644
+--- a/luni/src/test/java/libcore/javax/net/ssl/DefaultHostnameVerifierTest.java
++++ b/luni/src/test/java/libcore/javax/net/ssl/DefaultHostnameVerifierTest.java
+@@ -22,6 +22,7 @@ import java.math.BigInteger;
+ import java.nio.charset.Charsets;
+ import java.security.Principal;
+ import java.security.PublicKey;
++import java.security.cert.Certificate;
+ import java.security.cert.CertificateFactory;
+ import java.security.cert.X509Certificate;
+ import java.util.ArrayList;
+@@ -32,6 +33,7 @@ import java.util.List;
+ import java.util.Set;
+ import javax.net.ssl.DefaultHostnameVerifier;
+ import javax.net.ssl.DistinguishedNameParser;
++import javax.net.ssl.SSLSession;
+ import javax.security.auth.x500.X500Principal;
+ import junit.framework.TestCase;
+ 
+@@ -337,6 +339,159 @@ public final class DefaultHostnameVerifierTest extends TestCase {
+         assertFalse(verifier.verify("192.168.10.2", cert));
+     }
+ 
++    // kktls: the wildcard cases of okhttp's HostnameVerifierTest (android-4.4.2_r2, plus the
++    // "foo.com.au" case of okhttp e82a796), run against the HttpsURLConnection default verifier of
++    // Jelly Bean through verify(String, SSLSession). The non-ASCII subjectAltName case is @Ignore'd
++    // in okhttp too and is not ported.
++    public void testOkHttpWildcardCn() throws Exception {
++        // CN=*.foo.com
++        SSLSession session = session(""
++                + "-----BEGIN CERTIFICATE-----\n"
++                + "MIIESDCCAzCgAwIBAgIJAIz+EYMBU6aUMA0GCSqGSIb3DQEBBQUAMIGiMQswCQYD\n"
++                + "VQQGEwJDQTELMAkGA1UECBMCQkMxEjAQBgNVBAcTCVZhbmNvdXZlcjEWMBQGA1UE\n"
++                + "ChMNd3d3LmN1Y2JjLmNvbTEUMBIGA1UECxQLY29tbW9uc19zc2wxHTAbBgNVBAMU\n"
++                + "FGRlbW9faW50ZXJtZWRpYXRlX2NhMSUwIwYJKoZIhvcNAQkBFhZqdWxpdXNkYXZp\n"
++                + "ZXNAZ21haWwuY29tMB4XDTA2MTIxMTE2MTU1NVoXDTI4MTEwNTE2MTU1NVowgaYx\n"
++                + "CzAJBgNVBAYTAlVTMREwDwYDVQQIEwhNYXJ5bGFuZDEUMBIGA1UEBxMLRm9yZXN0\n"
++                + "IEhpbGwxFzAVBgNVBAoTDmh0dHBjb21wb25lbnRzMRowGAYDVQQLExF0ZXN0IGNl\n"
++                + "cnRpZmljYXRlczESMBAGA1UEAxQJKi5mb28uY29tMSUwIwYJKoZIhvcNAQkBFhZq\n"
++                + "dWxpdXNkYXZpZXNAZ21haWwuY29tMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIB\n"
++                + "CgKCAQEAyGOvloI+jKnRHWKuhYB+cTIEwZhagKJ0f3rIY8WNgujB7PlpgpjUg4pN\n"
++                + "jYGViGjg7zhfbjhCtlNGXyRBti3GcaHiBIIP5nyCNn+Ay8tSWGo5v5Zc8BQcwHf0\n"
++                + "ZHLN6sD9m2uVSp/6UqjS5ZyhzF5FzvvUo3xw8fecdnStXQfHhkBnLpTjHE5t7iu1\n"
++                + "JVjTuE0pcBvah2dWqDNxiIOQtXyKW8Sag1YxaunxQGqRNykSFiEJindxOSAnAxK6\n"
++                + "q/wGqcZ3zvFBTcVVkji1u2QH4rOMP3PPxAIMkB8ONkdHTco1DmbE6BfDHArDqUYx\n"
++                + "qJUlPGlMqrKb3fCFiT3eXehwR7nlzQIDAQABo3sweTAJBgNVHRMEAjAAMCwGCWCG\n"
++                + "SAGG+EIBDQQfFh1PcGVuU1NMIEdlbmVyYXRlZCBDZXJ0aWZpY2F0ZTAdBgNVHQ4E\n"
++                + "FgQUnxR3vz86tso4gkJIFiza0Mteh9gwHwYDVR0jBBgwFoAUe5raj5CZTlLSrNuz\n"
++                + "A1LKh6YNPg0wDQYJKoZIhvcNAQEFBQADggEBAH0ipG6J561UKUfgkeW7GvYwW98B\n"
++                + "N1ZooWX+JEEZK7+Pf/96d3Ij0rw9ACfN4bpfnCq0VUNZVSYB+GthQ2zYuz7tf/UY\n"
++                + "A6nxVgR/IjG69BmsBl92uFO7JTNtHztuiPqBn59pt+vNx4yPvno7zmxsfI7jv0ww\n"
++                + "yfs+0FNm7FwdsC1k47GBSOaGw38kuIVWqXSAbL4EX9GkryGGOKGNh0qvAENCdRSB\n"
++                + "G9Z6tyMbmfRY+dLSh3a9JwoEcBUso6EWYBakLbq4nG/nvYdYvG9ehrnLVwZFL82e\n"
++                + "l3Q/RK95bnA6cuRClGusLad0e6bjkBzx/VQ3VarDEpAkTLUGVAa0CLXtnyc=\n"
++                + "-----END CERTIFICATE-----\n");
++        assertTrue(verifier.verify("foo.com", session));
++        assertTrue(verifier.verify("www.foo.com", session));
++        assertTrue(verifier.verify("\u82b1\u5b50.foo.com", session));
++        assertFalse(verifier.verify("a.b.foo.com", session));
++        assertFalse(verifier.verify("foo.com.au", session));
++    }
++
++    public void testOkHttpWildcardCnOnTld() throws Exception {
++        // It's the CA's responsibility to not issue broad-matching certificates!
++        // CN=*.co.jp
++        SSLSession session = session(""
++                + "-----BEGIN CERTIFICATE-----\n"
++                + "MIIERjCCAy6gAwIBAgIJAIz+EYMBU6aVMA0GCSqGSIb3DQEBBQUAMIGiMQswCQYD\n"
++                + "VQQGEwJDQTELMAkGA1UECBMCQkMxEjAQBgNVBAcTCVZhbmNvdXZlcjEWMBQGA1UE\n"
++                + "ChMNd3d3LmN1Y2JjLmNvbTEUMBIGA1UECxQLY29tbW9uc19zc2wxHTAbBgNVBAMU\n"
++                + "FGRlbW9faW50ZXJtZWRpYXRlX2NhMSUwIwYJKoZIhvcNAQkBFhZqdWxpdXNkYXZp\n"
++                + "ZXNAZ21haWwuY29tMB4XDTA2MTIxMTE2MTYzMFoXDTI4MTEwNTE2MTYzMFowgaQx\n"
++                + "CzAJBgNVBAYTAlVTMREwDwYDVQQIEwhNYXJ5bGFuZDEUMBIGA1UEBxMLRm9yZXN0\n"
++                + "IEhpbGwxFzAVBgNVBAoTDmh0dHBjb21wb25lbnRzMRowGAYDVQQLExF0ZXN0IGNl\n"
++                + "cnRpZmljYXRlczEQMA4GA1UEAxQHKi5jby5qcDElMCMGCSqGSIb3DQEJARYWanVs\n"
++                + "aXVzZGF2aWVzQGdtYWlsLmNvbTCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoC\n"
++                + "ggEBAMhjr5aCPoyp0R1iroWAfnEyBMGYWoCidH96yGPFjYLowez5aYKY1IOKTY2B\n"
++                + "lYho4O84X244QrZTRl8kQbYtxnGh4gSCD+Z8gjZ/gMvLUlhqOb+WXPAUHMB39GRy\n"
++                + "zerA/ZtrlUqf+lKo0uWcocxeRc771KN8cPH3nHZ0rV0Hx4ZAZy6U4xxObe4rtSVY\n"
++                + "07hNKXAb2odnVqgzcYiDkLV8ilvEmoNWMWrp8UBqkTcpEhYhCYp3cTkgJwMSuqv8\n"
++                + "BqnGd87xQU3FVZI4tbtkB+KzjD9zz8QCDJAfDjZHR03KNQ5mxOgXwxwKw6lGMaiV\n"
++                + "JTxpTKqym93whYk93l3ocEe55c0CAwEAAaN7MHkwCQYDVR0TBAIwADAsBglghkgB\n"
++                + "hvhCAQ0EHxYdT3BlblNTTCBHZW5lcmF0ZWQgQ2VydGlmaWNhdGUwHQYDVR0OBBYE\n"
++                + "FJ8Ud78/OrbKOIJCSBYs2tDLXofYMB8GA1UdIwQYMBaAFHua2o+QmU5S0qzbswNS\n"
++                + "yoemDT4NMA0GCSqGSIb3DQEBBQUAA4IBAQA0sWglVlMx2zNGvUqFC73XtREwii53\n"
++                + "CfMM6mtf2+f3k/d8KXhLNySrg8RRlN11zgmpPaLtbdTLrmG4UdAHHYr8O4y2BBmE\n"
++                + "1cxNfGxxechgF8HX10QV4dkyzp6Z1cfwvCeMrT5G/V1pejago0ayXx+GPLbWlNeZ\n"
++                + "S+Kl0m3p+QplXujtwG5fYcIpaGpiYraBLx3Tadih39QN65CnAh/zRDhLCUzKyt9l\n"
++                + "UGPLEUDzRHMPHLnSqT1n5UU5UDRytbjJPXzF+l/+WZIsanefWLsxnkgAuZe/oMMF\n"
++                + "EJMryEzOjg4Tfuc5qM0EXoPcQ/JlheaxZ40p2IyHqbsWV4MRYuFH4bkM\n"
++                + "-----END CERTIFICATE-----\n");
++        assertTrue(verifier.verify("foo.co.jp", session));
++        assertTrue(verifier.verify("\u82b1\u5b50.co.jp", session));
++    }
++
++    public void testOkHttpWildcardsCannotMatchIpAddresses() throws Exception {
++        // openssl req -x509 -nodes -days 36500 -subj '/CN=*.0.0.1' -newkey rsa:512 -out cert.pem
++        SSLSession session = session(""
++                + "-----BEGIN CERTIFICATE-----\n"
++                + "MIIBkjCCATygAwIBAgIJAMdemqOwd/BEMA0GCSqGSIb3DQEBBQUAMBIxEDAOBgNV\n"
++                + "BAMUByouMC4wLjEwIBcNMTAxMjIwMTY0NDI1WhgPMjExMDExMjYxNjQ0MjVaMBIx\n"
++                + "EDAOBgNVBAMUByouMC4wLjEwXDANBgkqhkiG9w0BAQEFAANLADBIAkEAqY8c9Qrt\n"
++                + "YPWCvb7lclI+aDHM6fgbJcHsS9Zg8nUOh5dWrS7AgeA25wyaokFl4plBbbHQe2j+\n"
++                + "cCjsRiJIcQo9HwIDAQABo3MwcTAdBgNVHQ4EFgQUJ436TZPJvwCBKklZZqIvt1Yt\n"
++                + "JjEwQgYDVR0jBDswOYAUJ436TZPJvwCBKklZZqIvt1YtJjGhFqQUMBIxEDAOBgNV\n"
++                + "BAMUByouMC4wLjGCCQDHXpqjsHfwRDAMBgNVHRMEBTADAQH/MA0GCSqGSIb3DQEB\n"
++                + "BQUAA0EAk9i88xdjWoewqvE+iMC9tD2obMchgFDaHH0ogxxiRaIKeEly3g0uGxIt\n"
++                + "fl2WRY8hb4x+zRrwsFaLEpdEvqcjOQ==\n"
++                + "-----END CERTIFICATE-----");
++        assertFalse(verifier.verify("127.0.0.1", session));
++    }
++
++    /**
++     * Earlier implementations of Android's hostname verifier required that
++     * wildcard names wouldn't match "*.com" or similar. This was a nonstandard
++     * check that we've since dropped. It is the CA's responsibility to not hand
++     * out certificates that match so broadly.
++     */
++    public void testOkHttpWildcardsDoesNotNeedTwoDots() throws Exception {
++        // openssl req -x509 -nodes -days 36500 -subj '/CN=*.com' -newkey rsa:512 -out cert.pem
++        SSLSession session = session(""
++                + "-----BEGIN CERTIFICATE-----\n"
++                + "MIIBjDCCATagAwIBAgIJAOVulXCSu6HuMA0GCSqGSIb3DQEBBQUAMBAxDjAMBgNV\n"
++                + "BAMUBSouY29tMCAXDTEwMTIyMDE2NDkzOFoYDzIxMTAxMTI2MTY0OTM4WjAQMQ4w\n"
++                + "DAYDVQQDFAUqLmNvbTBcMA0GCSqGSIb3DQEBAQUAA0sAMEgCQQDJd8xqni+h7Iaz\n"
++                + "ypItivs9kPuiJUqVz+SuJ1C05SFc3PmlRCvwSIfhyD67fHcbMdl+A/LrIjhhKZJe\n"
++                + "1joO0+pFAgMBAAGjcTBvMB0GA1UdDgQWBBS4Iuzf5w8JdCp+EtBfdFNudf6+YzBA\n"
++                + "BgNVHSMEOTA3gBS4Iuzf5w8JdCp+EtBfdFNudf6+Y6EUpBIwEDEOMAwGA1UEAxQF\n"
++                + "Ki5jb22CCQDlbpVwkruh7jAMBgNVHRMEBTADAQH/MA0GCSqGSIb3DQEBBQUAA0EA\n"
++                + "U6LFxmZr31lFyis2/T68PpjAppc0DpNQuA2m/Y7oTHBDi55Fw6HVHCw3lucuWZ5d\n"
++                + "qUYo4ES548JdpQtcLrW2sA==\n"
++                + "-----END CERTIFICATE-----");
++        assertTrue(verifier.verify("google.com", session));
++    }
++
++    public void testOkHttpSubjectAltNameWithWildcard() throws Exception {
++        // $ cat ./cert.cnf
++        // [req]
++        // distinguished_name=distinguished_name
++        // req_extensions=req_extensions
++        // x509_extensions=x509_extensions
++        // [distinguished_name]
++        // [req_extensions]
++        // [x509_extensions]
++        // subjectAltName=DNS:bar.com,DNS:*.baz.com
++        //
++        // $ openssl req -x509 -nodes -days 36500 -subj '/CN=foo.com' -config ./cert.cnf \
++        //     -newkey rsa:512 -out cert.pem
++        SSLSession session = session(""
++                + "-----BEGIN CERTIFICATE-----\n"
++                + "MIIBPzCB6qADAgECAgkAnv/7Jv5r7pMwDQYJKoZIhvcNAQEFBQAwEjEQMA4GA1UE\n"
++                + "AxMHZm9vLmNvbTAgFw0xMDEyMjAxODQ2MDFaGA8yMTEwMTEyNjE4NDYwMVowEjEQ\n"
++                + "MA4GA1UEAxMHZm9vLmNvbTBcMA0GCSqGSIb3DQEBAQUAA0sAMEgCQQDAz2YXnyog\n"
++                + "YdYLSFr/OEgSumtwqtZKJTB4wqTW/eKbBCEzxnyUMxWZIqUGu353PzwfOuWp2re3\n"
++                + "nvVV+QDYQlh9AgMBAAGjITAfMB0GA1UdEQQWMBSCB2Jhci5jb22CCSouYmF6LmNv\n"
++                + "bTANBgkqhkiG9w0BAQUFAANBAB8yrSl8zqy07i0SNYx2B/FnvQY734pxioaqFWfO\n"
++                + "Bqo1ZZl/9aPHEWIwBrxYNVB0SGu/kkbt/vxqOjzzrkXukmI=\n"
++                + "-----END CERTIFICATE-----");
++        assertFalse(verifier.verify("foo.com", session));
++        assertTrue(verifier.verify("bar.com", session));
++        assertTrue(verifier.verify("a.baz.com", session));
++        assertTrue(verifier.verify("baz.com", session));
++        assertFalse(verifier.verify("a.foo.com", session));
++        assertFalse(verifier.verify("a.bar.com", session));
++        assertFalse(verifier.verify("quux.com", session));
++    }
++
++    private SSLSession session(String certificate) throws Exception {
++        final Certificate[] chain = { parseCertificate(certificate) };
++        return new FakeSSLSession("unused") {
++            @Override public Certificate[] getPeerCertificates() {
++                return chain;
++            }
++        };
++    }
++
+     X509Certificate parseCertificate(String encoded) throws Exception {
+         InputStream in = new ByteArrayInputStream(encoded.getBytes(Charsets.US_ASCII));
+         return (X509Certificate) CertificateFactory.getInstance("X509").generateCertificate(in);

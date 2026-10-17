@@ -1,0 +1,144 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: android-kitkat-tls12 <android-kitkat-tls12@users.noreply.github.com>
+Date: Fri, 9 Oct 2026 12:00:00 +0000
+Subject: [PATCH 26/32] jsse.enableSNIExtension other than true/false keeps SNI
+ on
+
+The SNI-by-default port (libcore/0013, conscrypt 966ae8a) threw a RuntimeException
+from every client handshake when jsse.enableSNIExtension held any value
+other than "true" or "false". KitKat never read the property, so an app
+that set it to some other value would lose every TLS connection after
+the upgrade, and the unchecked exception escapes callers that catch
+only IOException (okhttp, many app HTTP stacks).
+
+Now "true" and "false" (any case) work as before, and any other value
+keeps SNI on, the default, with one warning per process
+(System.logW).
+
+Tests (SSLSocketTest, on the ClientHello capture of 0012):
+- test_SSLSocket_SNI_propertyIgnoresCase: TRUE/True/true send SNI,
+  FALSE/False do not;
+- test_SSLSocket_SNI_invalidPropertyKeepsSniOn: "yes", "0", "",
+  " true" send SNI and the handshake starts (failed before: the client
+  thread threw the RuntimeException);
+- test_SSLSocket_SNI_setHostnameNotFqdn: setHostname("localhost") and
+  setHostname("") send no SNI (isValidSniHostname wants a dot).
+
+Android 4.1 port (android-4.1.2_r2) of patch 0027 of the 4.4 series
+(renumbered: the 4.4 patch 0025, the ssl.SocketFactory.provider hook of
+the TLS 1.3 layer, is not part of this series), made from its Android
+4.2 port. Paths and names: libcore/crypto of 4.4 (org.conscrypt,
+org_conscrypt_NativeCrypto.cpp in libjavacrypto) is libcore/luni on 4.1
+(org.apache.harmony.xnet.provider.jsse,
+org_apache_harmony_xnet_provider_jsse_NativeCrypto.cpp in libjavacore).
+getPeerHostName() stays private on 4.1; the new flag field goes before
+it. Otherwise the same change; only line offsets differ.
+---
+ .../xnet/provider/jsse/OpenSSLSocketImpl.java | 18 +++++--
+ .../libcore/javax/net/ssl/SSLSocketTest.java  | 54 +++++++++++++++++++
+ 2 files changed, 69 insertions(+), 3 deletions(-)
+
+diff --git a/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/OpenSSLSocketImpl.java b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/OpenSSLSocketImpl.java
+index d9b74aeeb3d..e8b510cacdd 100644
+--- a/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/OpenSSLSocketImpl.java
++++ b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/OpenSSLSocketImpl.java
+@@ -481,6 +481,12 @@ public class OpenSSLSocketImpl
+     /**
+      * Returns whether Server Name Indication (SNI) is enabled by default for
+      * sockets. For more information on SNI, see RFC 6066 section 3.
++     *
++     * <p>kktls: {@code jsse.enableSNIExtension} is {@code true} or {@code false}, in any case. Any
++     * other value keeps SNI on (the default) and logs one warning per process. Upstream (966ae8a)
++     * throws a RuntimeException from every client handshake instead; 4.4 never read the property,
++     * so an app that sets it to some other value would otherwise lose every TLS connection, and an
++     * unchecked exception escapes callers that catch only IOException (okhttp).
+      */
+     private static boolean isSniEnabledByDefault() {
+         String enableSNI = System.getProperty("jsse.enableSNIExtension", "true");
+@@ -488,12 +494,18 @@ public class OpenSSLSocketImpl
+             return true;
+         } else if ("false".equalsIgnoreCase(enableSNI)) {
+             return false;
+-        } else {
+-            throw new RuntimeException(
+-                    "Can only set \"jsse.enableSNIExtension\" to \"true\" or \"false\"");
+         }
++        if (!invalidSniPropertyLogged) {
++            invalidSniPropertyLogged = true;
++            System.logW("jsse.enableSNIExtension=\"" + enableSNI
++                    + "\" is neither \"true\" nor \"false\"; SNI stays enabled");
++        }
++        return true;
+     }
+ 
++    /** kktls: the warning of {@link #isSniEnabledByDefault} is logged once per process. */
++    private static volatile boolean invalidSniPropertyLogged;
++
+     private String getPeerHostName() {
+         if (wrappedHost != null) {
+             return wrappedHost;
+diff --git a/luni/src/test/java/libcore/javax/net/ssl/SSLSocketTest.java b/luni/src/test/java/libcore/javax/net/ssl/SSLSocketTest.java
+index eab7822177e..74b02c8780c 100644
+--- a/luni/src/test/java/libcore/javax/net/ssl/SSLSocketTest.java
++++ b/luni/src/test/java/libcore/javax/net/ssl/SSLSocketTest.java
+@@ -1600,6 +1600,60 @@ public class SSLSocketTest extends TestCase {
+                 wrappingClientSocketMaker(sf, "sni-wrapped.tls.test"), null)));
+     }
+ 
++    public void test_SSLSocket_SNI_propertyIgnoresCase() throws Exception {
++        final SSLSocketFactory sf = (SSLSocketFactory) SSLSocketFactory.getDefault();
++        String old = System.getProperty("jsse.enableSNIExtension");
++        try {
++            for (String on : new String[] { "TRUE", "True", "true" }) {
++                System.setProperty("jsse.enableSNIExtension", on);
++                assertEquals(on, Arrays.asList("sni-wrapped.tls.test"), captureSniHostnames(
++                        wrappingClientSocketMaker(sf, "sni-wrapped.tls.test")));
++            }
++            for (String off : new String[] { "FALSE", "False" }) {
++                System.setProperty("jsse.enableSNIExtension", off);
++                assertNull(off, captureSniHostnames(
++                        wrappingClientSocketMaker(sf, "sni-wrapped.tls.test")));
++            }
++        } finally {
++            restoreProperty("jsse.enableSNIExtension", old);
++        }
++    }
++
++    /**
++     * kktls: a jsse.enableSNIExtension value other than true/false keeps SNI on (and logs once);
++     * upstream 966ae8a throws a RuntimeException from every client handshake instead.
++     */
++    public void test_SSLSocket_SNI_invalidPropertyKeepsSniOn() throws Exception {
++        final SSLSocketFactory sf = (SSLSocketFactory) SSLSocketFactory.getDefault();
++        String old = System.getProperty("jsse.enableSNIExtension");
++        try {
++            for (String invalid : new String[] { "yes", "0", "", " true" }) {
++                System.setProperty("jsse.enableSNIExtension", invalid);
++                assertEquals("\"" + invalid + "\"", Arrays.asList("sni-wrapped.tls.test"),
++                        captureSniHostnames(wrappingClientSocketMaker(sf, "sni-wrapped.tls.test")));
++            }
++        } finally {
++            restoreProperty("jsse.enableSNIExtension", old);
++        }
++    }
++
++    /** kktls: an explicit setHostname() of a name that is not an FQDN sends no SNI (RFC 6066). */
++    public void test_SSLSocket_SNI_setHostnameNotFqdn() throws Exception {
++        final SSLSocketFactory sf = (SSLSocketFactory) SSLSocketFactory.getDefault();
++        for (String name : new String[] { "localhost", "" }) {
++            assertNull("setHostname(\"" + name + "\")", captureSniHostnames(withSetHostname(
++                    wrappingClientSocketMaker(sf, "sni-wrapped.tls.test"), name)));
++        }
++    }
++
++    private static void restoreProperty(String key, String old) {
++        if (old == null) {
++            System.clearProperty(key);
++        } else {
++            System.setProperty(key, old);
++        }
++    }
++
+     /** kktls: makes the client SSLSocket, connected to the capturing listening socket. */
+     private interface ClientSocketMaker {
+         /** A plain socket that must be closed on failure goes into sockets[0]. */

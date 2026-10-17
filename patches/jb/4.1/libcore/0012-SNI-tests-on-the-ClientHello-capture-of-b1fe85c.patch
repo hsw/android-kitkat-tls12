@@ -1,0 +1,340 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: android-kitkat-tls12 <android-kitkat-tls12@users.noreply.github.com>
+Date: Fri, 9 Oct 2026 12:00:00 +0000
+Subject: [PATCH 12/32] SNI tests on the ClientHello capture of b1fe85c
+
+Tests first for SNI by default (the behaviour of conscrypt d745755,
+b221fc9, 342097d, 966ae8a, f67d784). The capture helper of 0007cf6 /
+b1fe85c now takes a ClientSocketMaker, so a test can make the client
+socket in any way; upstream's wrapping client with
+"localhost.localdomain" stays the default.
+
+- createSocket(String host, ...) (both String constructors) sends SNI
+  with that host; the test name is put into libcore's InetAddress cache,
+  so no DNS is needed;
+- an InetAddress socket, a "127.0.0.1" socket, a socket wrapped with an
+  IPv4/IPv6 literal, and setHostname("127.0.0.1") send no SNI
+  (RFC 6066 section 3);
+- a wrapped socket with an IP-literal host leaves the peer InetAddress
+  unresolved (no reverse DNS on the SNI path);
+- jsse.enableSNIExtension=false sends no SNI, but an explicit
+  setHostname() still does;
+- setHostname() wins over the wrapped host; setHostname(null) turns SNI
+  off.
+
+Android 4.1 port (android-4.1.2_r2) of patch 0012 of the 4.4 series,
+made from its Android 4.2 port. The new imports go into the 4.1 import
+list: java.lang.reflect.Field, java.net.InetAddress and
+java.net.InetSocketAddress (java.lang.reflect.Method comes with patch
+0011 on 4.1). Otherwise the same change; only line offsets differ.
+---
+ .../libcore/javax/net/ssl/SSLSocketTest.java  | 220 ++++++++++++++++--
+ 1 file changed, 205 insertions(+), 15 deletions(-)
+
+diff --git a/luni/src/test/java/libcore/javax/net/ssl/SSLSocketTest.java b/luni/src/test/java/libcore/javax/net/ssl/SSLSocketTest.java
+index d4c57e68d2b..bc788a48f22 100644
+--- a/luni/src/test/java/libcore/javax/net/ssl/SSLSocketTest.java
++++ b/luni/src/test/java/libcore/javax/net/ssl/SSLSocketTest.java
+@@ -22,7 +22,10 @@ import java.io.EOFException;
+ import java.io.IOException;
+ import java.io.InputStream;
+ import java.io.OutputStream;
++import java.lang.reflect.Field;
+ import java.lang.reflect.Method;
++import java.net.InetAddress;
++import java.net.InetSocketAddress;
+ import java.net.ServerSocket;
+ import java.net.Socket;
+ import java.net.SocketException;
+@@ -40,6 +43,7 @@ import java.util.HashSet;
+ import java.util.List;
+ import java.util.Set;
+ import java.util.concurrent.Callable;
++import java.util.concurrent.ExecutionException;
+ import java.util.concurrent.ExecutorService;
+ import java.util.concurrent.Executors;
+ import java.util.concurrent.Future;
+@@ -1381,6 +1385,171 @@ public class SSLSocketTest extends TestCase {
+         }, getSSLSocketFactoriesToTest());
+     }
+ 
++    // SNI by default (the behaviour of conscrypt d745755, b221fc9, 342097d, 966ae8a and
++    // f67d784): the host name in the ClientHello for each way a client socket learns its peer's
++    // host. test_SSLSocket_ClientHello_SNI above covers a wrapped socket on every factory.
++
++    public void test_SSLSocket_SNI_createdWithHostname() throws Exception {
++        final SSLSocketFactory sf = (SSLSocketFactory) SSLSocketFactory.getDefault();
++        final String host = "sni-created.tls.test";
++        assertEquals(Arrays.asList(host), captureSniHostnames(new ClientSocketMaker() {
++            public SSLSocket make(ServerSocket listeningSocket, Socket[] sockets)
++                    throws Exception {
++                cacheLoopbackName(host);
++                return (SSLSocket) sf.createSocket(host, listeningSocket.getLocalPort());
++            }
++        }));
++        assertEquals(Arrays.asList(host), captureSniHostnames(new ClientSocketMaker() {
++            public SSLSocket make(ServerSocket listeningSocket, Socket[] sockets)
++                    throws Exception {
++                cacheLoopbackName(host);
++                return (SSLSocket) sf.createSocket(host, listeningSocket.getLocalPort(), null, 0);
++            }
++        }));
++    }
++
++    public void test_SSLSocket_SNI_ipLiteral() throws Exception {
++        final SSLSocketFactory sf = (SSLSocketFactory) SSLSocketFactory.getDefault();
++        // RFC 6066 section 3: no IP literals in SNI (342097d, f67d784)
++        assertNull("created with an InetAddress", captureSniHostnames(new ClientSocketMaker() {
++            public SSLSocket make(ServerSocket listeningSocket, Socket[] sockets)
++                    throws Exception {
++                return (SSLSocket) sf.createSocket(
++                        InetAddress.getByAddress(new byte[] { 127, 0, 0, 1 }),
++                        listeningSocket.getLocalPort());
++            }
++        }));
++        assertNull("created with \"127.0.0.1\"", captureSniHostnames(new ClientSocketMaker() {
++            public SSLSocket make(ServerSocket listeningSocket, Socket[] sockets)
++                    throws Exception {
++                return (SSLSocket) sf.createSocket("127.0.0.1", listeningSocket.getLocalPort());
++            }
++        }));
++        for (String ip : new String[] { "127.0.0.1", "::1", "::ffff:127.0.0.1", "2001:db8::1" }) {
++            assertNull("wrapped with " + ip,
++                    captureSniHostnames(wrappingClientSocketMaker(sf, ip)));
++        }
++        assertNull("setHostname(\"127.0.0.1\")", captureSniHostnames(withSetHostname(
++                wrappingClientSocketMaker(sf, "sni-wrapped.tls.test"), "127.0.0.1")));
++    }
++
++    public void test_SSLSocket_SNI_ipLiteral_noReverseDns() throws Exception {
++        // The SNI host comes from the host the socket was created or wrapped with, never from
++        // getInetAddress().getHostName(): a wrapped socket whose host is an IP literal must leave
++        // the peer InetAddress unresolved.
++        final SSLSocketFactory sf = (SSLSocketFactory) SSLSocketFactory.getDefault();
++        final InetAddress peer = InetAddress.getByAddress(new byte[] { 127, 0, 0, 1 });
++        assertNull(inetAddressHostName(peer));
++        assertNull(captureSniHostnames(new ClientSocketMaker() {
++            public SSLSocket make(ServerSocket listeningSocket, Socket[] sockets)
++                    throws Exception {
++                Socket client = new Socket();
++                sockets[0] = client;
++                client.connect(new InetSocketAddress(peer, listeningSocket.getLocalPort()));
++                return (SSLSocket) sf.createSocket(
++                        client, "127.0.0.1", listeningSocket.getLocalPort(), true);
++            }
++        }));
++        assertNull("reverse DNS of the peer address", inetAddressHostName(peer));
++    }
++
++    public void test_SSLSocket_SNI_disabledByProperty() throws Exception {
++        final SSLSocketFactory sf = (SSLSocketFactory) SSLSocketFactory.getDefault();
++        String old = System.getProperty("jsse.enableSNIExtension");
++        System.setProperty("jsse.enableSNIExtension", "false");
++        try {
++            assertNull(captureSniHostnames(
++                    wrappingClientSocketMaker(sf, "sni-wrapped.tls.test")));
++            // an explicit setHostname() (okhttp, SSLCertificateSocketFactory) still sends SNI
++            assertEquals(Arrays.asList("sni-explicit.tls.test"),
++                    captureSniHostnames(withSetHostname(
++                            wrappingClientSocketMaker(sf, "sni-wrapped.tls.test"),
++                            "sni-explicit.tls.test")));
++        } finally {
++            if (old == null) {
++                System.clearProperty("jsse.enableSNIExtension");
++            } else {
++                System.setProperty("jsse.enableSNIExtension", old);
++            }
++        }
++    }
++
++    public void test_SSLSocket_SNI_setHostname() throws Exception {
++        final SSLSocketFactory sf = (SSLSocketFactory) SSLSocketFactory.getDefault();
++        // an explicit setHostname() wins over the wrapped host ...
++        assertEquals(Arrays.asList("sni-explicit.tls.test"),
++                captureSniHostnames(withSetHostname(
++                        wrappingClientSocketMaker(sf, "sni-wrapped.tls.test"),
++                        "sni-explicit.tls.test")));
++        // ... and setHostname(null) turns SNI off
++        assertNull(captureSniHostnames(withSetHostname(
++                wrappingClientSocketMaker(sf, "sni-wrapped.tls.test"), null)));
++    }
++
++    /** kktls: makes the client SSLSocket, connected to the capturing listening socket. */
++    private interface ClientSocketMaker {
++        /** A plain socket that must be closed on failure goes into sockets[0]. */
++        SSLSocket make(ServerSocket listeningSocket, Socket[] sockets) throws Exception;
++    }
++
++    /** kktls: upstream's client: a plain socket wrapped by sslSocketFactory with {@code host}. */
++    private static ClientSocketMaker wrappingClientSocketMaker(
++            final SSLSocketFactory sslSocketFactory, final String host) {
++        return new ClientSocketMaker() {
++            public SSLSocket make(ServerSocket listeningSocket, Socket[] sockets)
++                    throws Exception {
++                Socket client = new Socket();
++                sockets[0] = client;
++                client.connect(listeningSocket.getLocalSocketAddress());
++                return (SSLSocket) sslSocketFactory.createSocket(
++                        client, host, listeningSocket.getLocalPort(), true);
++            }
++        };
++    }
++
++    /** kktls: calls the platform socket's setHostname(String) (as okhttp does) before the handshake. */
++    private static ClientSocketMaker withSetHostname(
++            final ClientSocketMaker clientSocketMaker, final String hostname) {
++        return new ClientSocketMaker() {
++            public SSLSocket make(ServerSocket listeningSocket, Socket[] sockets)
++                    throws Exception {
++                SSLSocket socket = clientSocketMaker.make(listeningSocket, sockets);
++                socket.getClass().getMethod("setHostname", String.class).invoke(socket, hostname);
++                return socket;
++            }
++        };
++    }
++
++    /** kktls: the host names of the ClientHello's server_name extension, or null without one. */
++    private List<String> captureSniHostnames(ClientSocketMaker clientSocketMaker)
++            throws Exception {
++        ClientHello clientHello = captureTlsHandshakeClientHello(clientSocketMaker);
++        ServerNameHelloExtension sniExtension = (ServerNameHelloExtension)
++                clientHello.findExtensionByType(HelloExtension.TYPE_SERVER_NAME);
++        return (sniExtension != null) ? sniExtension.hostnames : null;
++    }
++
++    /**
++     * kktls: maps {@code name} to 127.0.0.1 in libcore's InetAddress cache (2 s TTL), so that the
++     * String-host constructors resolve a test name without DNS (Android libcore only).
++     */
++    private static void cacheLoopbackName(String name) throws Exception {
++        Field cacheField = InetAddress.class.getDeclaredField("addressCache");
++        cacheField.setAccessible(true);
++        Object cache = cacheField.get(null);
++        Method put = cache.getClass().getDeclaredMethod("put", String.class, InetAddress[].class);
++        put.setAccessible(true);
++        put.invoke(cache, name, new InetAddress[] {
++                InetAddress.getByAddress(name, new byte[] { 127, 0, 0, 1 }) });
++    }
++
++    /** kktls: the host name an InetAddress holds (null until a lookup or a constructor sets it). */
++    private static String inetAddressHostName(InetAddress address) throws Exception {
++        Field hostName = InetAddress.class.getDeclaredField("hostName");
++        hostName.setAccessible(true);
++        return (String) hostName.get(address);
++    }
++
+     private List<Pair<String, SSLSocketFactory>> getSSLSocketFactoriesToTest()
+             throws NoSuchAlgorithmException, KeyManagementException {
+         List<Pair<String, SSLSocketFactory>> result =
+@@ -1401,7 +1570,13 @@ public class SSLSocketTest extends TestCase {
+ 
+     private ClientHello captureTlsHandshakeClientHello(SSLSocketFactory sslSocketFactory)
+             throws Exception {
+-        TlsRecord record = captureTlsHandshakeFirstTlsRecord(sslSocketFactory);
++        return captureTlsHandshakeClientHello(
++                wrappingClientSocketMaker(sslSocketFactory, "localhost.localdomain"));
++    }
++
++    private ClientHello captureTlsHandshakeClientHello(ClientSocketMaker clientSocketMaker)
++            throws Exception {
++        TlsRecord record = captureTlsHandshakeFirstTlsRecord(clientSocketMaker);
+         assertEquals("TLS record type", TlsProtocols.HANDSHAKE, record.type);
+         ByteArrayInputStream fragmentIn = new ByteArrayInputStream(record.fragment);
+         HandshakeMessage handshakeMessage = HandshakeMessage.read(new DataInputStream(fragmentIn));
+@@ -1415,7 +1590,13 @@ public class SSLSocketTest extends TestCase {
+ 
+     private TlsRecord captureTlsHandshakeFirstTlsRecord(SSLSocketFactory sslSocketFactory)
+             throws Exception {
+-        byte[] firstReceivedChunk = captureTlsHandshakeFirstTransmittedChunkBytes(sslSocketFactory);
++        return captureTlsHandshakeFirstTlsRecord(
++                wrappingClientSocketMaker(sslSocketFactory, "localhost.localdomain"));
++    }
++
++    private TlsRecord captureTlsHandshakeFirstTlsRecord(ClientSocketMaker clientSocketMaker)
++            throws Exception {
++        byte[] firstReceivedChunk = captureTlsHandshakeFirstTransmittedChunkBytes(clientSocketMaker);
+         ByteArrayInputStream firstReceivedChunkIn = new ByteArrayInputStream(firstReceivedChunk);
+         TlsRecord record = TlsRecord.read(new DataInputStream(firstReceivedChunkIn));
+         // Assert that the chunk does not contain any more data
+@@ -1425,7 +1606,7 @@ public class SSLSocketTest extends TestCase {
+     }
+ 
+     private byte[] captureTlsHandshakeFirstTransmittedChunkBytes(
+-            final SSLSocketFactory sslSocketFactory) throws Exception {
++            final ClientSocketMaker clientSocketMaker) throws Exception {
+         // Since there's no straightforward way to obtain a ClientHello from SSLSocket, this test
+         // does the following:
+         // 1. Creates a listening server socket (a plain one rather than a TLS/SSL one).
+@@ -1439,7 +1620,8 @@ public class SSLSocketTest extends TestCase {
+ 
+         // Some Socket operations are not interruptible via Thread.interrupt for some reason. To
+         // work around, we unblock these sockets using Socket.close.
+-        final Socket[] sockets = new Socket[2];
++        // kktls: [0] plain client socket (wrapping makers), [1] accepted socket, [2] client SSLSocket.
++        final Socket[] sockets = new Socket[3];
+         try {
+             // 1. Create the listening server socket.
+             listeningSocket = ServerSocketFactory.getDefault().createServerSocket(0);
+@@ -1466,28 +1648,24 @@ public class SSLSocketTest extends TestCase {
+ 
+             // 3. Create a client socket, connect it to the server socket, and start the TLS/SSL
+             //    handshake.
+-            executorService.submit(new Callable<Void>() {
++            // kktls: the client socket comes from clientSocketMaker (SNI tests).
++            final Future<Void> clientFuture = executorService.submit(new Callable<Void>() {
+                 @Override
+                 public Void call() throws Exception {
+-                    Socket client = new Socket();
+-                    sockets[0] = client;
+                     try {
+-                        client.connect(finalListeningSocket.getLocalSocketAddress());
++                        SSLSocket sslSocket = clientSocketMaker.make(finalListeningSocket, sockets);
++                        sockets[2] = sslSocket;
+                         // Initiate the TLS/SSL handshake which is expected to fail as soon as the
+                         // server socket receives a ClientHello.
+                         try {
+-                            SSLSocket sslSocket = (SSLSocket) sslSocketFactory.createSocket(
+-                                    client,
+-                                    "localhost.localdomain",
+-                                    finalListeningSocket.getLocalPort(),
+-                                    true);
+                             sslSocket.startHandshake();
+                             fail();
+                             return null;
+                         } catch (IOException expected) {}
+                         return null;
+                     } finally {
+-                        IoUtils.closeQuietly(client);
++                        IoUtils.closeQuietly(sockets[2]);
++                        IoUtils.closeQuietly(sockets[0]);
+ 
+                         // Cancel the reading task. If this task succeeded, then the reading task
+                         // is done and this will have no effect. If this task failed prematurely,
+@@ -1500,7 +1678,18 @@ public class SSLSocketTest extends TestCase {
+             });
+ 
+             // Wait for the ClientHello to arrive
+-            return readFirstReceivedChunkFuture.get(10, TimeUnit.SECONDS);
++            try {
++                return readFirstReceivedChunkFuture.get(10, TimeUnit.SECONDS);
++            } catch (Exception e) {
++                // kktls: if the client failed before it sent a ClientHello, report its exception.
++                try {
++                    clientFuture.get(5, TimeUnit.SECONDS);
++                } catch (ExecutionException clientFailure) {
++                    throw clientFailure;
++                } catch (Exception ignored) {
++                }
++                throw e;
++            }
+         } finally {
+             executorService.shutdownNow();
+             if (listeningSocket != null) {
+@@ -1511,6 +1700,7 @@ public class SSLSocketTest extends TestCase {
+             }
+             IoUtils.closeQuietly(sockets[0]);
+             IoUtils.closeQuietly(sockets[1]);
++            IoUtils.closeQuietly(sockets[2]);
+             if (!executorService.awaitTermination(5, TimeUnit.SECONDS)) {
+                 fail("Timed out while waiting for the test to shut down");
+             }
