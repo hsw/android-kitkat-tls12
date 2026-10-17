@@ -404,7 +404,7 @@ for kv in "4.3 4.3.1" "4.2 4.2.2" "4.1 4.1.2 libcrypto=dev-zlib.so" "4.1 4.1"; d
   check "openssl $b on $v: /system identical after restore" [ "$ORIG" = "$(snap "$R0" system)" ]
 done
 
-# Jelly Bean java zip (4.3): core.jar + libjavacore.so over the 4.3 openssl zip, on 4.3 and 4.3.1 only
+# Jelly Bean java zip (4.3): core.jar + libjavacore.so over the 4.3 openssl zip, on 4.3.x only
 JA=$Z/kktls-java-4.3-armeabi-v7a-v9.zip JX=$U/kktls-java-4.3-x86-v9.zip OA=$Z/kktls-openssl-4.3-armeabi-v7a-v9.zip
 jbroot() { # release [key=value...]: an ARM JB root with the kktls openssl marker
   local v=$1; shift

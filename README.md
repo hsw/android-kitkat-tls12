@@ -15,7 +15,7 @@ and Apache HTTP speak TLS 1.2 by default, as on 4.4. On 4.1 and 4.2, Java apps k
 | Android | OpenSSL 1.0.1u | CA store | Java TLS 1.2 (layer A) | TLS 1.3 (layer D) |
 |---|---|---|---|---|
 | 4.4.x | `kktls-openssl-4.4-<abi>` | `kktls-cacerts` | `kktls-java-4.4.2-<abi>` / `kktls-java-4.4.4-<abi>` (exact release) | `kktls-conscrypt-<abi>` |
-| 4.3.x | `kktls-openssl-4.3-<abi>` | `kktls-cacerts` | `kktls-java-4.3-armeabi-v7a` (4.3 and 4.3.1) | no |
+| 4.3.x | `kktls-openssl-4.3-<abi>` | `kktls-cacerts` | `kktls-java-4.3-armeabi-v7a` (4.3.x) | no |
 | 4.2.x | `kktls-openssl-4.2-<abi>` | `kktls-cacerts` | no | no |
 | 4.1.x | `kktls-openssl-4.1-<abi>` | `kktls-cacerts` | no | no |
 
@@ -84,9 +84,9 @@ working.
 - ARMv6 devices (`armeabi`) are refused. MIPS is source only: no binaries.
 - The java zip must match the device's `ro.build.version.release` exactly: `kktls-java-4.4.2-*` for 4.4.2,
   `kktls-java-4.4.4-*` for 4.4.4. Other 4.4.x releases have no java zip; build from source (below). The 4.3 java zip
-  `kktls-java-4.3-*` installs on 4.3 and 4.3.1: libcore of every AOSP 4.3 tag differs from `android-4.3_r3` in Java
-  code only (no native or removed API change), and the zip replaces all of `core.jar`. The OpenSSL zip
-  `kktls-openssl-4.N-*` installs on any 4.N.x that passes the checks.
+  `kktls-java-4.3-*` installs on any 4.3.x (AOSP: 4.3, 4.3.1): libcore of every AOSP 4.3 tag differs from
+  `android-4.3_r3` in Java code only (no native or removed API change), and the zip replaces all of `core.jar`. The
+  OpenSSL zip `kktls-openssl-4.N-*` installs on any 4.N.x that passes the checks.
 - The CA store zip (and the restore zip) install on **Android 4.1 to 4.4**: 4.1 to 4.3 (Jelly Bean, API 16-18) read
   the same `/system/etc/security/cacerts/<hash>.0` format. The java zips are 4.4 and 4.3 only, the conscrypt zip is
   4.4 only. On 4.1/4.2 the

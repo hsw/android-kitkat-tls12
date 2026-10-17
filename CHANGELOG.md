@@ -10,7 +10,7 @@ Android 4.3: the Java TLS layer (layer A) on ARM.
   series of 4.4 in the Jelly Bean layout (`patches/jb/4.3/libcore/`): TLS 1.1 and 1.2 on by default, the 13 default
   suites, SNI on every client path, stricter wildcard matching, the intermediate CA fixes. `HttpsURLConnection`
   (`libcore.net.http` on 4.3, no okhttp) retries a failed handshake over TLSv1 with `TLS_FALLBACK_SCSV` instead of
-  SSLv3. Installs on 4.3 and 4.3.1 after the 4.3 openssl zip; the restore zip undoes it.
+  SSLv3. Installs on 4.3.x (AOSP: 4.3, 4.3.1) after the 4.3 openssl zip; the restore zip undoes it.
 - The x86 build of that zip is packed only with `tools/mkzips.sh --out-unreleased DIR` (CI: artifact
   `zips-unreleased`), not released until it has booted on an x86 4.3 system.
 - `tools/kktls-jb-openssl-build.sh` builds `core` and `libjavacore` for a base with `java` lines in
