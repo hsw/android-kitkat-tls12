@@ -24,6 +24,9 @@ gate    4.3  4.3 4.3.1
 base    4.2  android-4.2.2_r1
 target  4.2  full-user      armeabi-v7a
 target  4.2  full_x86-user  x86
+java    4.2  core         framework/core.jar
+java    4.2  libjavacore  lib/libjavacore.so
+gate    4.2  4.2 4.2.1 4.2.2
 
 base    4.1  android-4.1.2_r2
 target  4.1  full-user      armeabi-v7a
@@ -61,6 +64,13 @@ project 4.2  bionic
 project 4.2  abi/cpp
 project 4.2  system/core
 project 4.2  external/openssl
+project 4.2  libcore
+project 4.2  libnativehelper
+project 4.2  dalvik
+project 4.2  external/fdlibm
+project 4.2  external/expat
+project 4.2  external/icu4c
+project 4.2  external/proguard
 project 4.2  external/zlib
 project 4.2  external/safe-iop
 project 4.2  external/stlport
@@ -130,6 +140,13 @@ rev  android-4.2.2_r1  bionic                                                  5
 rev  android-4.2.2_r1  abi/cpp                                                 eb789ea833d8d800662b67914d9c1785a58c2caa
 rev  android-4.2.2_r1  system/core                                             4f247d753a8865cd16292ff0b720b72c28049786
 rev  android-4.2.2_r1  external/openssl                                        ba352abc91bee1349bbdcbababd38e954e2020c7
+rev  android-4.2.2_r1  libcore                                                 cc55503ccef76a3b443b1dba3a2f05049b2b34f4
+rev  android-4.2.2_r1  libnativehelper                                         73d3c2e3ed100f1d0ccc08a9675844bf8a0848fa
+rev  android-4.2.2_r1  dalvik                                                  cbac7aed2621a0d51ecddf89af0b3c4a110a17df
+rev  android-4.2.2_r1  external/fdlibm                                         24856709256f5243a6c29446577052f15fb1ab3b
+rev  android-4.2.2_r1  external/expat                                          bb9f3f74212ef523ff693cba9d782575ebba7418
+rev  android-4.2.2_r1  external/icu4c                                          7c2b59472f5086b12884891153b07ab11726fb99
+rev  android-4.2.2_r1  external/proguard                                       10aa7224f49abe49d123bde5d34346202d49aaca
 rev  android-4.2.2_r1  external/zlib                                           2d5094f0ebcb01fb9f11952d776945b090d89cf0
 rev  android-4.2.2_r1  external/safe-iop                                       aa0725fb1da35e47676b6da30009322eb5ed59be
 rev  android-4.2.2_r1  external/stlport                                        30865cb901602ed078ff2ed534529d847b3b54b5

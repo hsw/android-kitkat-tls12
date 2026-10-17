@@ -1,0 +1,136 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: android-kitkat-tls12 <android-kitkat-tls12@users.noreply.github.com>
+Date: Fri, 9 Oct 2026 12:00:00 +0000
+Subject: [PATCH 25/32] Tests - SSLv3 and RC4 stay usable when an app enables
+ them explicitly
+
+Layer A changes only the defaults: SSLv3 and RC4 suites leave
+the default protocols and cipher suites but stay supported. No test so
+far completed a handshake with explicitly enabled SSLv3 (the SCSV test
+test_SSLSocket_sendsTlsFallbackScsv_InappropriateFallback_Failure
+enables SSLv3 but expects the handshake to fail), and RC4 was covered
+only as one suite among all in getSupportedCipherSuites_connect.
+
+New SSLSocketTest cases on the default AndroidOpenSSL test context:
+- test_SSLSocket_legacyOptIn_SSLv3: SSLv3 enabled on both ends
+  negotiates SSLv3; a client with the default protocols fails against
+  an SSLv3-only server.
+- test_SSLSocket_legacyOptIn_RC4: SSL_RSA_WITH_RC4_128_SHA enabled on
+  both ends negotiates that suite over TLSv1.2; a client with the
+  default suites fails against an RC4-only server.
+
+Tests only; no product change.
+
+Android 4.2 port (android-4.2.2_r1) of patch 0026 of the 4.4 series
+(renumbered: the 4.4 patch 0025, the ssl.SocketFactory.provider hook of
+the TLS 1.3 layer, is not part of this series), made from its Android
+4.3 port. The same change; only line offsets differ.
+---
+ .../libcore/javax/net/ssl/SSLSocketTest.java  | 94 +++++++++++++++++++
+ 1 file changed, 94 insertions(+)
+
+diff --git a/luni/src/test/java/libcore/javax/net/ssl/SSLSocketTest.java b/luni/src/test/java/libcore/javax/net/ssl/SSLSocketTest.java
+index ade87bcb210..1554962b0a4 100644
+--- a/luni/src/test/java/libcore/javax/net/ssl/SSLSocketTest.java
++++ b/luni/src/test/java/libcore/javax/net/ssl/SSLSocketTest.java
+@@ -1882,6 +1882,100 @@ public class SSLSocketTest extends TestCase {
+         }
+     }
+ 
++    /**
++     * kktls (layer A changes only the defaults): SSLv3 is off by default, but an app that enables it
++     * explicitly on both ends still completes an SSLv3 handshake, and a default client still
++     * refuses an SSLv3-only server.
++     */
++    public void test_SSLSocket_legacyOptIn_SSLv3() throws Exception {
++        String[] sslv3 = new String[] { "SSLv3" };
++        SSLSession session = legacyOptInHandshake(sslv3, null, sslv3, null);
++        assertEquals("SSLv3", session.getProtocol());
++        try {
++            legacyOptInHandshake(null, null, sslv3, null);
++            fail("a client with the default protocols negotiated with an SSLv3-only server");
++        } catch (SSLException expected) {
++        }
++    }
++
++    /**
++     * kktls (layer A changes only the defaults): RC4 is not a default suite, but an app that enables
++     * an RC4 suite explicitly on both ends still completes the handshake with it (TLSv1.2 with the
++     * default protocols), and a default client still refuses an RC4-only server.
++     */
++    public void test_SSLSocket_legacyOptIn_RC4() throws Exception {
++        String[] rc4 = new String[] { "SSL_RSA_WITH_RC4_128_SHA" };
++        SSLSession session = legacyOptInHandshake(null, rc4, null, rc4);
++        assertEquals("SSL_RSA_WITH_RC4_128_SHA", session.getCipherSuite());
++        assertEquals("TLSv1.2", session.getProtocol());
++        try {
++            legacyOptInHandshake(null, null, null, rc4);
++            fail("a client with the default cipher suites negotiated with an RC4-only server");
++        } catch (SSLException expected) {
++        }
++    }
++
++    /**
++     * Connects a client socket of the default (AndroidOpenSSL) test context to its server socket.
++     * A null array keeps that socket's defaults. Returns the client's session after a completed
++     * handshake on both ends; if the client's handshake fails, throws the client's exception.
++     */
++    private static SSLSession legacyOptInHandshake(final String[] clientProtocols,
++                                                   final String[] clientCipherSuites,
++                                                   final String[] serverProtocols,
++                                                   final String[] serverCipherSuites)
++            throws Exception {
++        TestSSLContext context = TestSSLContext.create();
++        final SSLSocket client = (SSLSocket)
++            context.clientContext.getSocketFactory().createSocket(context.host, context.port);
++        final SSLSocket server = (SSLSocket) context.serverSocket.accept();
++        ExecutorService executor = Executors.newFixedThreadPool(2);
++        try {
++            Future<Void> s = executor.submit(new Callable<Void>() {
++                    public Void call() throws Exception {
++                        if (serverProtocols != null) {
++                            server.setEnabledProtocols(serverProtocols);
++                        }
++                        if (serverCipherSuites != null) {
++                            server.setEnabledCipherSuites(serverCipherSuites);
++                        }
++                        server.startHandshake();
++                        return null;
++                    }
++                });
++            Future<SSLSession> c = executor.submit(new Callable<SSLSession>() {
++                    public SSLSession call() throws Exception {
++                        if (clientProtocols != null) {
++                            client.setEnabledProtocols(clientProtocols);
++                        }
++                        if (clientCipherSuites != null) {
++                            client.setEnabledCipherSuites(clientCipherSuites);
++                        }
++                        client.startHandshake();
++                        return client.getSession();
++                    }
++                });
++            executor.shutdown();
++            SSLSession session;
++            try {
++                session = c.get(30, TimeUnit.SECONDS);
++            } catch (ExecutionException e) {
++                // the server's handshake fails too; closing the client below ends it
++                if (e.getCause() instanceof Exception) {
++                    throw (Exception) e.getCause();
++                }
++                throw e;
++            }
++            s.get(30, TimeUnit.SECONDS);
++            return session;
++        } finally {
++            client.close();
++            server.close();
++            context.close();
++            executor.shutdownNow();
++        }
++    }
++
+     public static void main (String[] args) {
+         new SSLSocketTest().stress_test_TestSSLSocketPair_create();
+     }

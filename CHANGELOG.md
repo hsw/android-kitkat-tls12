@@ -2,7 +2,7 @@
 
 ## v3 (unreleased)
 
-Android 4.3: the Java TLS layer (layer A) on ARM.
+Android 4.3 and 4.2: the Java TLS layer (layer A) on ARM.
 
 ### New
 
@@ -11,8 +11,11 @@ Android 4.3: the Java TLS layer (layer A) on ARM.
   suites, SNI on every client path, stricter wildcard matching, the intermediate CA fixes. `HttpsURLConnection`
   (`libcore.net.http` on 4.3, no okhttp) retries a failed handshake over TLSv1 with `TLS_FALLBACK_SCSV` instead of
   SSLv3. Installs on 4.3.x (AOSP: 4.3, 4.3.1) after the 4.3 openssl zip; the restore zip undoes it.
-- The x86 build of that zip is packed only with `tools/mkzips.sh --out-unreleased DIR` (CI: artifact
-  `zips-unreleased`), not released until it has booted on an x86 4.3 system.
+- `kktls-java-4.2-armeabi-v7a-<rel>.zip`: the same for `android-4.2.2_r1` (`patches/jb/4.2/libcore/`, the 4.3 series
+  ported to 4.2: `int` handles in `NativeCrypto`, the 4.2 cut-through bit). Installs on 4.2.x (AOSP: 4.2, 4.2.1, 4.2.2)
+  after the 4.2 openssl zip.
+- The x86 builds of these zips are packed only with `tools/mkzips.sh --out-unreleased DIR` (CI: artifact
+  `zips-unreleased`), not released until they have booted on an x86 system of their version.
 - `tools/kktls-jb-openssl-build.sh` builds `core` and `libjavacore` for a base with `java` lines in
   `patches/jb/targets.txt` and checks them (`classes.dex` present, `libjavacore.so` exports and `NEEDED` against stock);
   `tools/kktls-jb-remap.py` maps the 4.4 libcore series to the Jelly Bean paths; `tools/check_jni_signatures.py`
@@ -21,9 +24,9 @@ Android 4.3: the Java TLS layer (layer A) on ARM.
 
 ### Unchanged
 
-- The 4.4 zips, the 4.1 and 4.2 openssl zips, the CA store and the restore zip: same payload and installer. The 4.3
-  openssl zip has the same libraries; its `kktls/BUILD-INFO.txt` also lists the java build.
-- 4.1 and 4.2: no Java layer yet.
+- The 4.4 zips, the 4.1 openssl zips, the CA store and the restore zip: same payload and installer. The 4.3 and 4.2
+  openssl zips have the same libraries; their `kktls/BUILD-INFO.txt` also lists the java build.
+- 4.1: no Java layer yet.
 
 ## v2
 

@@ -1,0 +1,630 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: android-kitkat-tls12 <android-kitkat-tls12@users.noreply.github.com>
+Date: Fri, 9 Oct 2026 12:00:00 +0000
+Subject: [PATCH 02/32] Port of 2d089e18: stop depending on CipherSuite in
+ OpenSSL-backed sockets
+
+Port of external/conscrypt 2d089e18deae231149737cad6ce00f1e137a7199
+("Stop depending on CipherSuite in OpenSSL-backed sockets", 5.0) onto the
+KitKat libcore/crypto tree, with the matching libcore test change
+bccd4e67d528d52d368e4bbd319621ba2cc15e5f ("No need to sanity-check client
+certs in SSLSocket.accept") and the OpenSSLSocketImpl hunk of conscrypt
+16c041fa20ef70221f487631f07eaf53d39ae51c ("Make some methods public for
+CTS": getClientKeyType() is public, because conscrypt-tests and conscrypt
+live in different class loaders on the device and in host Dalvik, and a
+package-private call from NativeCryptoTest throws IllegalAccessError).
+
+Why: the server side of OpenSSLSocketImpl and OpenSSLServerSocketImpl
+looked up every enabled suite with CipherSuite.getByName(), which knows
+only the Harmony SSLEngine suites. Once the TLS 1.2 rows (336e8eb) are
+supported, a server socket with any *_SHA256/*_SHA384 suite enabled threw
+a NullPointerException. The server key types now come from the SSL_CIPHER
+list of the SSL itself (SSL_get_ciphers, algorithm_mkey/algorithm_auth).
+
+KitKat differences:
+- the 4.4 checkEnabledCipherSuites() used checkForPrivateKey(keyType,
+  Class) and already skipped TLS_FALLBACK_SCSV (6c9609af5f); removed as
+  upstream did;
+- the JNI functions return early when to_SSL/to_SSL_CIPHER threw (NULL);
+- NativeCrypto mode/option constants are unchanged; the new SSL_k*/SSL_a*
+  values equal ssl/ssl_locl.h and TLS_CT_* equal ssl/tls1.h of our
+  OpenSSL 1.0.1e (checked by check_tls_lists.py ssl-cipher-constants).
+
+Android 4.2 port (android-4.2.2_r1) of patch 0002 of the 4.4 series,
+made from its Android 4.3 port. Paths and names: libcore/crypto of 4.4
+(org.conscrypt, org_conscrypt_NativeCrypto.cpp in libjavacrypto) is
+libcore/luni on 4.2 (org.apache.harmony.xnet.provider.jsse,
+org_apache_harmony_xnet_provider_jsse_NativeCrypto.cpp in libjavacore).
+Android 4.2 NativeCrypto passes native pointers as Java int (4.3 and
+4.4: long): the new natives are int[] SSL_get_ciphers(int) and int
+get_SSL_CIPHER_algorithm_mkey/auth(int), registered as (I)[I and (I)I;
+the C functions take a jint and return a jintArray (NewIntArray,
+ScopedIntArrayRW, pointers stored as
+static_cast<jint>(reinterpret_cast<uintptr_t>(...)) like the rest of the
+4.2 file), to_SSL_CIPHER() takes an int, and OpenSSLSocketImpl iterates
+int handles (getServerKeyType(int)). OpenSSLServerSocketImpl and
+OpenSSLSocketImpl: the removals follow the 4.2 text and the key type
+helpers go to the 4.2 end of the class. The SSL_k*/SSL_a*/TLS_CT_*
+values are checked against the OpenSSL 1.0.1u headers of the 4.2 tree
+(patches/jb/4.2/external_openssl).
+---
+ .../xnet/provider/jsse/NativeCrypto.java      |  76 ++++++++++
+ .../jsse/OpenSSLServerSocketImpl.java         |  68 ---------
+ .../xnet/provider/jsse/OpenSSLSocketImpl.java | 139 ++++++++++++++----
+ ...armony_xnet_provider_jsse_NativeCrypto.cpp |  55 +++++++
+ .../libcore/javax/net/ssl/SSLSocketTest.java  |  43 +++---
+ .../xnet/provider/jsse/NativeCryptoTest.java  |   6 +-
+ .../provider/jsse/OpenSSLSocketImplTest.java  |  57 +++++++
+ 7 files changed, 321 insertions(+), 123 deletions(-)
+ create mode 100644 luni/src/test/java/org/apache/harmony/xnet/provider/jsse/OpenSSLSocketImplTest.java
+
+diff --git a/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/NativeCrypto.java b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/NativeCrypto.java
+index 60152636832..6f29fb7e94c 100644
+--- a/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/NativeCrypto.java
++++ b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/NativeCrypto.java
+@@ -385,6 +385,20 @@ public final class NativeCrypto {
+     public static final long SSL_OP_NO_TLSv1_1                             = 0x10000000L;
+     public static final long SSL_OP_NO_TLSv1_2                             = 0x08000000L;
+ 
++    /*
++     * Client certificate types as defined in
++     * TLS 1.0 spec., 7.4.4. Certificate request.
++     * EC constants from RFC 4492.
++     * OpenSSL constants from ssl/tls1.h.
++     */
++    public static final byte TLS_CT_RSA_SIGN = 1;
++    public static final byte TLS_CT_DSS_SIGN = 2;
++    public static final byte TLS_CT_RSA_FIXED_DH = 3;
++    public static final byte TLS_CT_DSS_FIXED_DH = 4;
++    public static final byte TLS_CT_ECDSA_SIGN = 64;
++    public static final byte TLS_CT_RSA_FIXED_ECDH = 65;
++    public static final byte TLS_CT_ECDSA_FIXED_ECDH = 66;
++
+     public static native int SSL_CTX_new();
+ 
+     public static String[] getDefaultCipherSuites() {
+@@ -544,6 +558,68 @@ public final class NativeCrypto {
+ 
+     public static native void SSL_set_cipher_lists(int ssl, String[] ciphers);
+ 
++    /**
++     * Gets the list of cipher suites enabled for the provided {@code SSL} instance.
++     *
++     * @return array of {@code SSL_CIPHER} references.
++     */
++    public static native int[] SSL_get_ciphers(int ssl);
++
++    /*
++     * Constants for SSL_CIPHER algorithm_mkey (key exchange algorithm).
++     * OpenSSL constants from ssl/ssl_locl.h.
++     */
++    /** RSA key exchange */
++    public static final int SSL_kRSA =   0x00000001;
++    /** DH cert, RSA CA cert -- no such ciphersuite supported! */
++    public static final int SSL_kDHr =   0x00000002;
++    /** DH cert, DSA CA cert -- no such ciphersuite supported! */
++    public static final int SSL_kDHd =   0x00000004;
++    /** tmp DH key no DH cert */
++    public static final int SSL_kEDH =   0x00000008;
++    /** Kerberos5 key exchange */
++    public static final int SSL_kKRB5 =  0x00000010;
++    /** ECDH cert, RSA CA cert */
++    public static final int SSL_kECDHr = 0x00000020;
++    /** ECDH cert, ECDSA CA cert */
++    public static final int SSL_kECDHe = 0x00000040;
++    /** ephemeral ECDH */
++    public static final int SSL_kEECDH = 0x00000080;
++    /** PSK */
++    public static final int SSL_kPSK =   0x00000100;
++    /** GOST key exchange */
++    public static final int SSL_kGOST =  0x00000200;
++    /** SRP */
++    public static final int SSL_kSRP =   0x00000400;
++
++    /*
++     * Constants for SSL_CIPHER algorithm_auth (server authentication).
++     * OpenSSL constants from ssl/ssl_locl.h.
++     */
++    /** RSA auth */
++    public static final int SSL_aRSA =    0x00000001;
++    /** DSS auth */
++    public static final int SSL_aDSS =    0x00000002;
++    /** no auth (i.e. use ADH or AECDH) */
++    public static final int SSL_aNULL =   0x00000004;
++    /** Fixed DH auth (kDHd or kDHr) -- no such ciphersuites supported! */
++    public static final int SSL_aDH =     0x00000008;
++    /** Fixed ECDH auth (kECDHe or kECDHr) */
++    public static final int SSL_aECDH =   0x00000010;
++    /** KRB5 auth */
++    public static final int SSL_aKRB5 =   0x00000020;
++    /** ECDSA auth*/
++    public static final int SSL_aECDSA =  0x00000040;
++    /** PSK auth */
++    public static final int SSL_aPSK =    0x00000080;
++    /** GOST R 34.10-94 signature auth */
++    public static final int SSL_aGOST94 = 0x00000100;
++    /** GOST R 34.10-2001 signature auth */
++    public static final int SSL_aGOST01 = 0x00000200;
++
++    public static native int get_SSL_CIPHER_algorithm_mkey(int sslCipher);
++    public static native int get_SSL_CIPHER_algorithm_auth(int sslCipher);
++
+     public static void setEnabledCipherSuites(int ssl, String[] cipherSuites) {
+         checkEnabledCipherSuites(cipherSuites);
+         List<String> opensslSuites = new ArrayList<String>();
+diff --git a/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/OpenSSLServerSocketImpl.java b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/OpenSSLServerSocketImpl.java
+index 16747801a60..b19f01711cb 100644
+--- a/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/OpenSSLServerSocketImpl.java
++++ b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/OpenSSLServerSocketImpl.java
+@@ -19,11 +19,6 @@ package org.apache.harmony.xnet.provider.jsse;
+ import java.io.IOException;
+ import java.net.InetAddress;
+ import java.net.Socket;
+-import java.security.PrivateKey;
+-import java.security.interfaces.ECPrivateKey;
+-import java.security.interfaces.DSAPrivateKey;
+-import java.security.interfaces.RSAPrivateKey;
+-import javax.net.ssl.SSLException;
+ 
+ /**
+  * OpenSSL-based implementation of server sockets.
+@@ -157,73 +152,10 @@ public class OpenSSLServerSocketImpl extends javax.net.ssl.SSLServerSocket {
+ 
+     @Override
+     public Socket accept() throws IOException {
+-
+-        if (!sslParameters.getUseClientMode()) {
+-            checkEnabledCipherSuites();
+-        }
+-
+         OpenSSLSocketImpl socket = new OpenSSLSocketImpl(sslParameters,
+                                                          enabledProtocols.clone(),
+                                                          enabledCipherSuites.clone());
+         implAccept(socket);
+         return socket;
+     }
+-
+-    /**
+-     * Check if any of the enabled cipher suites has a chance to work.
+-     * Not 100% accurate, just a useful diagnostic that the RI does.
+-     */
+-    private void checkEnabledCipherSuites() throws SSLException {
+-        /* Loop over all enabled cipher suites. If we find a problem,
+-         * we just continue to the next one. If we find one that could
+-         * work, we return. This basically makes sure the caller has
+-         * configured some appropriate certificate/key unless
+-         * an anonymous cipher is picked.
+-         */
+-        for (String enabledCipherSuite : enabledCipherSuites) {
+-            if (enabledCipherSuite.equals(NativeCrypto.TLS_EMPTY_RENEGOTIATION_INFO_SCSV)
+-                || enabledCipherSuite.equals(NativeCrypto.TLS_FALLBACK_SCSV)) {
+-                continue;
+-            }
+-            String keyType = CipherSuite.getByName(enabledCipherSuite).getServerKeyType();
+-            if (keyType == null) {
+-                // anonymous always work
+-                return;
+-            }
+-            if (keyType.equals(CipherSuite.KEY_TYPE_RSA)
+-                    || keyType.equals(CipherSuite.KEY_TYPE_DH_RSA)) {
+-                if (checkForPrivateKey(keyType, RSAPrivateKey.class)) {
+-                    return;
+-                }
+-                continue;
+-            }
+-            if (keyType.equals(CipherSuite.KEY_TYPE_DSA)
+-                    || keyType.equals(CipherSuite.KEY_TYPE_DH_DSA)) {
+-                if (checkForPrivateKey(keyType, DSAPrivateKey.class)) {
+-                    return;
+-                }
+-                continue;
+-            }
+-            if (keyType.equals(CipherSuite.KEY_TYPE_EC)
+-                    || keyType.equals(CipherSuite.KEY_TYPE_EC_RSA)
+-                    || keyType.equals(CipherSuite.KEY_TYPE_EC_EC)) {
+-                if (checkForPrivateKey(keyType, ECPrivateKey.class)) {
+-                    return;
+-                }
+-                continue;
+-            }
+-            throw new IllegalStateException("Unknown key type " + keyType);
+-        }
+-        throw new SSLException("Could not find any key store entries "
+-                               + "to support the enabled cipher suites.");
+-    }
+-
+-    private boolean checkForPrivateKey(String keyType, Class keyClass) {
+-        String alias = sslParameters.getKeyManager().chooseServerAlias(keyType, null, null);
+-        if (alias == null) {
+-            return false;
+-        }
+-        PrivateKey key = sslParameters.getKeyManager().getPrivateKey(alias);
+-        return (key != null && keyClass.isAssignableFrom(key.getClass()));
+-    }
+ }
+diff --git a/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/OpenSSLSocketImpl.java b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/OpenSSLSocketImpl.java
+index cd2000978f7..0702f88612d 100644
+--- a/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/OpenSSLSocketImpl.java
++++ b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/OpenSSLSocketImpl.java
+@@ -275,31 +275,6 @@ public class OpenSSLSocketImpl
+                 NativeCrypto.SSL_CTX_enable_npn(sslCtxNativePointer);
+             }
+ 
+-            // setup server certificates and private keys.
+-            // clients will receive a call back to request certificates.
+-            if (!client) {
+-                Set<String> keyTypes = new HashSet<String>();
+-                for (String enabledCipherSuite : enabledCipherSuites) {
+-                    if (enabledCipherSuite.equals(NativeCrypto.TLS_EMPTY_RENEGOTIATION_INFO_SCSV)
+-                        || enabledCipherSuite.equals(NativeCrypto.TLS_FALLBACK_SCSV)) {
+-                        continue;
+-                    }
+-                    String keyType = CipherSuite.getByName(enabledCipherSuite).getServerKeyType();
+-                    if (keyType != null) {
+-                        keyTypes.add(keyType);
+-                    }
+-                }
+-                for (String keyType : keyTypes) {
+-                    try {
+-                        setCertificate(sslParameters.getKeyManager().chooseServerAlias(keyType,
+-                                                                                       null,
+-                                                                                       this));
+-                    } catch (CertificateEncodingException e) {
+-                        throw new IOException(e);
+-                    }
+-                }
+-            }
+-
+             NativeCrypto.setEnabledProtocols(sslNativePointer, enabledProtocols);
+             NativeCrypto.setEnabledCipherSuites(sslNativePointer, enabledCipherSuites);
+             if (useSessionTickets) {
+@@ -329,6 +304,27 @@ public class OpenSSLSocketImpl
+                 sessionContext = sslParameters.getServerSessionContext();
+             }
+ 
++            // setup server certificates and private keys.
++            // clients will receive a call back to request certificates.
++            if (!client) {
++                Set<String> keyTypes = new HashSet<String>();
++                for (int sslCipherNativePointer : NativeCrypto.SSL_get_ciphers(sslNativePointer)) {
++                    String keyType = getServerKeyType(sslCipherNativePointer);
++                    if (keyType != null) {
++                        keyTypes.add(keyType);
++                    }
++                }
++                for (String keyType : keyTypes) {
++                    try {
++                        setCertificate(sslParameters.getKeyManager().chooseServerAlias(keyType,
++                                                                                       null,
++                                                                                       this));
++                    } catch (CertificateEncodingException e) {
++                        throw new IOException(e);
++                    }
++                }
++            }
++
+             // setup peer certificate verification
+             if (client) {
+                 // TODO support for anonymous cipher would require us to
+@@ -503,7 +499,7 @@ public class OpenSSLSocketImpl
+ 
+         String[] keyTypes = new String[keyTypeBytes.length];
+         for (int i = 0; i < keyTypeBytes.length; i++) {
+-            keyTypes[i] = CipherSuite.getClientKeyType(keyTypeBytes[i]);
++            keyTypes[i] = getClientKeyType(keyTypeBytes[i]);
+         }
+ 
+         X500Principal[] issuers;
+@@ -1008,4 +1004,95 @@ public class OpenSSLSocketImpl
+         }
+         this.npnProtocols = npnProtocols;
+     }
++
++    /** Key type: RSA. */
++    private static final String KEY_TYPE_RSA = "RSA";
++
++    /** Key type: DSA. */
++    private static final String KEY_TYPE_DSA = "DSA";
++
++    /** Key type: Diffie-Hellman with RSA signature. */
++    private static final String KEY_TYPE_DH_RSA = "DH_RSA";
++
++    /** Key type: Diffie-Hellman with DSA signature. */
++    private static final String KEY_TYPE_DH_DSA = "DH_DSA";
++
++    /** Key type: Elliptic Curve. */
++    private static final String KEY_TYPE_EC = "EC";
++
++    /** Key type: Eliiptic Curve with ECDSA signature. */
++    private static final String KEY_TYPE_EC_EC = "EC_EC";
++
++    /** Key type: Eliiptic Curve with RSA signature. */
++    private static final String KEY_TYPE_EC_RSA = "EC_RSA";
++
++    /**
++     * Returns key type constant suitable for calling X509KeyManager.chooseServerAlias or
++     * X509ExtendedKeyManager.chooseEngineServerAlias. Returns {@code null} for anonymous key
++     * exchanges.
++     */
++    private static String getServerKeyType(int sslCipherNative) throws SSLException {
++        int algorithm_mkey = NativeCrypto.get_SSL_CIPHER_algorithm_mkey(sslCipherNative);
++        int algorithm_auth = NativeCrypto.get_SSL_CIPHER_algorithm_auth(sslCipherNative);
++        switch (algorithm_mkey) {
++            case NativeCrypto.SSL_kRSA:
++                return KEY_TYPE_RSA;
++            case NativeCrypto.SSL_kEDH:
++                switch (algorithm_auth) {
++                    case NativeCrypto.SSL_aDSS:
++                        return KEY_TYPE_DSA;
++                    case NativeCrypto.SSL_aRSA:
++                        return KEY_TYPE_RSA;
++                    case NativeCrypto.SSL_aNULL:
++                        return null;
++                }
++                break;
++            case NativeCrypto.SSL_kECDHr:
++                return KEY_TYPE_EC_RSA;
++            case NativeCrypto.SSL_kECDHe:
++                return KEY_TYPE_EC_EC;
++            case NativeCrypto.SSL_kEECDH:
++                switch (algorithm_auth) {
++                    case NativeCrypto.SSL_aECDSA:
++                        return KEY_TYPE_EC_EC;
++                    case NativeCrypto.SSL_aRSA:
++                        return KEY_TYPE_RSA;
++                    case NativeCrypto.SSL_aNULL:
++                        return null;
++                }
++                break;
++        }
++
++        throw new SSLException("Unsupported key exchange. "
++                + "mkey: 0x" + Long.toHexString(algorithm_mkey & 0xffffffffL)
++                + ", auth: 0x" + Long.toHexString(algorithm_auth & 0xffffffffL));
++    }
++
++    /**
++     * Similar to getServerKeyType, but returns value given TLS
++     * ClientCertificateType byte values from a CertificateRequest
++     * message for use with X509KeyManager.chooseClientAlias or
++     * X509ExtendedKeyManager.chooseEngineClientAlias.
++     */
++    public static String getClientKeyType(byte keyType) {
++        // See also http://www.ietf.org/assignments/tls-parameters/tls-parameters.xml
++        switch (keyType) {
++            case NativeCrypto.TLS_CT_RSA_SIGN:
++                return KEY_TYPE_RSA; // RFC rsa_sign
++            case NativeCrypto.TLS_CT_DSS_SIGN:
++                return KEY_TYPE_DSA; // RFC dss_sign
++            case NativeCrypto.TLS_CT_RSA_FIXED_DH:
++                return KEY_TYPE_DH_RSA; // RFC rsa_fixed_dh
++            case NativeCrypto.TLS_CT_DSS_FIXED_DH:
++                return KEY_TYPE_DH_DSA; // RFC dss_fixed_dh
++            case NativeCrypto.TLS_CT_ECDSA_SIGN:
++                return KEY_TYPE_EC; // RFC ecdsa_sign
++            case NativeCrypto.TLS_CT_RSA_FIXED_ECDH:
++                return KEY_TYPE_EC_RSA; // RFC rsa_fixed_ecdh
++            case NativeCrypto.TLS_CT_ECDSA_FIXED_ECDH:
++                return KEY_TYPE_EC_EC; // RFC ecdsa_fixed_ecdh
++            default:
++                return null;
++        }
++    }
+ }
+diff --git a/luni/src/main/native/org_apache_harmony_xnet_provider_jsse_NativeCrypto.cpp b/luni/src/main/native/org_apache_harmony_xnet_provider_jsse_NativeCrypto.cpp
+index 322f416e344..605e28cfc53 100644
+--- a/luni/src/main/native/org_apache_harmony_xnet_provider_jsse_NativeCrypto.cpp
++++ b/luni/src/main/native/org_apache_harmony_xnet_provider_jsse_NativeCrypto.cpp
+@@ -476,6 +476,16 @@ static SSL_SESSION* to_SSL_SESSION(JNIEnv* env, int ssl_session_address, bool th
+     return ssl_session;
+ }
+ 
++static SSL_CIPHER* to_SSL_CIPHER(JNIEnv* env, int ssl_cipher_address, bool throwIfNull) {
++    SSL_CIPHER* ssl_cipher
++        = reinterpret_cast<SSL_CIPHER*>(static_cast<uintptr_t>(ssl_cipher_address));
++    if ((ssl_cipher == NULL) && throwIfNull) {
++        JNI_TRACE("ssl_cipher == null");
++        jniThrowNullPointerException(env, "ssl_cipher == null");
++    }
++    return ssl_cipher;
++}
++
+ /**
+  * Converts a Java byte[] to an OpenSSL BIGNUM, allocating the BIGNUM on the
+  * fly. Returns true on success. If the return value is false, there is a
+@@ -3222,6 +3232,48 @@ static jlong NativeCrypto_SSL_clear_options(JNIEnv* env, jclass,
+     return result;
+ }
+ 
++static jintArray NativeCrypto_SSL_get_ciphers(JNIEnv* env, jclass, jint ssl_address)
++{
++    SSL* ssl = to_SSL(env, ssl_address, true);
++    JNI_TRACE("ssl=%p NativeCrypto_SSL_get_ciphers", ssl);
++    if (ssl == NULL) {
++        return NULL;
++    }
++
++    STACK_OF(SSL_CIPHER)* cipherStack = SSL_get_ciphers(ssl);
++    int count = (cipherStack != NULL) ? sk_SSL_CIPHER_num(cipherStack) : 0;
++    ScopedLocalRef<jintArray> ciphersArray(env, env->NewIntArray(count));
++    ScopedIntArrayRW ciphers(env, ciphersArray.get());
++    for (int i = 0; i < count; i++) {
++        ciphers[i] = static_cast<jint>(reinterpret_cast<uintptr_t>(sk_SSL_CIPHER_value(cipherStack, i)));
++    }
++
++    JNI_TRACE("NativeCrypto_SSL_get_ciphers(%p) => %p [size=%d]", ssl, ciphersArray.get(), count);
++    return ciphersArray.release();
++}
++
++static jint NativeCrypto_get_SSL_CIPHER_algorithm_mkey(JNIEnv* env, jclass,
++        jint ssl_cipher_address)
++{
++    SSL_CIPHER* cipher = to_SSL_CIPHER(env, ssl_cipher_address, true);
++    if (cipher == NULL) {
++        return 0;
++    }
++    JNI_TRACE("cipher=%p get_SSL_CIPHER_algorithm_mkey => %ld", cipher, cipher->algorithm_mkey);
++    return cipher->algorithm_mkey;
++}
++
++static jint NativeCrypto_get_SSL_CIPHER_algorithm_auth(JNIEnv* env, jclass,
++        jint ssl_cipher_address)
++{
++    SSL_CIPHER* cipher = to_SSL_CIPHER(env, ssl_cipher_address, true);
++    if (cipher == NULL) {
++        return 0;
++    }
++    JNI_TRACE("cipher=%p get_SSL_CIPHER_algorithm_auth => %ld", cipher, cipher->algorithm_auth);
++    return cipher->algorithm_auth;
++}
++
+ /**
+  * Sets the ciphers suites that are enabled in the SSL
+  */
+@@ -4488,6 +4540,9 @@ static JNINativeMethod sNativeCryptoMethods[] = {
+     NATIVE_METHOD(NativeCrypto, SSL_set_options, "(IJ)J"),
+     NATIVE_METHOD(NativeCrypto, SSL_clear_options, "(IJ)J"),
+     NATIVE_METHOD(NativeCrypto, SSL_set_cipher_lists, "(I[Ljava/lang/String;)V"),
++    NATIVE_METHOD(NativeCrypto, SSL_get_ciphers, "(I)[I"),
++    NATIVE_METHOD(NativeCrypto, get_SSL_CIPHER_algorithm_auth, "(I)I"),
++    NATIVE_METHOD(NativeCrypto, get_SSL_CIPHER_algorithm_mkey, "(I)I"),
+     NATIVE_METHOD(NativeCrypto, SSL_set_verify, "(II)V"),
+     NATIVE_METHOD(NativeCrypto, SSL_set_session, "(II)V"),
+     NATIVE_METHOD(NativeCrypto, SSL_set_session_creation_enabled, "(IZ)V"),
+diff --git a/luni/src/test/java/libcore/javax/net/ssl/SSLSocketTest.java b/luni/src/test/java/libcore/javax/net/ssl/SSLSocketTest.java
+index a80fade574c..e2b9b59bb29 100644
+--- a/luni/src/test/java/libcore/javax/net/ssl/SSLSocketTest.java
++++ b/luni/src/test/java/libcore/javax/net/ssl/SSLSocketTest.java
+@@ -327,35 +327,26 @@ public class SSLSocketTest extends TestCase {
+                                                  SSLContext.getDefault(), SSLContext.getDefault());
+         SSLSocket client = (SSLSocket) c.clientContext.getSocketFactory().createSocket(c.host,
+                                                                                        c.port);
+-        // RI used to throw SSLException on accept, now throws on startHandshake
+-        if (StandardNames.IS_RI) {
+-            final SSLSocket server = (SSLSocket) c.serverSocket.accept();
+-            ExecutorService executor = Executors.newSingleThreadExecutor();
+-            Future<Void> future = executor.submit(new Callable<Void>() {
+-                @Override public Void call() throws Exception {
+-                    try {
+-                        server.startHandshake();
+-                        fail();
+-                    } catch (SSLHandshakeException expected) {
+-                    }
+-                    return null;
++        final SSLSocket server = (SSLSocket) c.serverSocket.accept();
++        ExecutorService executor = Executors.newSingleThreadExecutor();
++        Future<Void> future = executor.submit(new Callable<Void>() {
++            @Override public Void call() throws Exception {
++                try {
++                    server.startHandshake();
++                    fail();
++                } catch (SSLHandshakeException expected) {
+                 }
+-            });
+-            executor.shutdown();
+-            try {
+-                client.startHandshake();
+-                fail();
+-            } catch (SSLHandshakeException expected) {
+-            }
+-            future.get();
+-            server.close();
+-        } else {
+-            try {
+-                c.serverSocket.accept();
+-                fail();
+-            } catch (SSLException expected) {
++                return null;
+             }
++        });
++        executor.shutdown();
++        try {
++            client.startHandshake();
++            fail();
++        } catch (SSLHandshakeException expected) {
+         }
++        future.get();
++        server.close();
+         client.close();
+         c.close();
+     }
+diff --git a/luni/src/test/java/org/apache/harmony/xnet/provider/jsse/NativeCryptoTest.java b/luni/src/test/java/org/apache/harmony/xnet/provider/jsse/NativeCryptoTest.java
+index 303c234b0aa..7661083eb29 100644
+--- a/luni/src/test/java/org/apache/harmony/xnet/provider/jsse/NativeCryptoTest.java
++++ b/luni/src/test/java/org/apache/harmony/xnet/provider/jsse/NativeCryptoTest.java
+@@ -800,9 +800,9 @@ public class NativeCryptoTest extends TestCase {
+         // this depends on the SSL_set_cipher_lists call in beforeHandshake
+         // the three returned are the non-ephemeral cases.
+         assertEquals(3, clientCallback.keyTypes.length);
+-        assertEquals("RSA", CipherSuite.getClientKeyType(clientCallback.keyTypes[0]));
+-        assertEquals("DSA", CipherSuite.getClientKeyType(clientCallback.keyTypes[1]));
+-        assertEquals("EC", CipherSuite.getClientKeyType(clientCallback.keyTypes[2]));
++        assertEquals("RSA", OpenSSLSocketImpl.getClientKeyType(clientCallback.keyTypes[0]));
++        assertEquals("DSA", OpenSSLSocketImpl.getClientKeyType(clientCallback.keyTypes[1]));
++        assertEquals("EC", OpenSSLSocketImpl.getClientKeyType(clientCallback.keyTypes[2]));
+         assertEqualPrincipals(getCaPrincipals(),
+                               clientCallback.asn1DerEncodedX500Principals);
+         assertFalse(serverCallback.clientCertificateRequestedCalled);
+diff --git a/luni/src/test/java/org/apache/harmony/xnet/provider/jsse/OpenSSLSocketImplTest.java b/luni/src/test/java/org/apache/harmony/xnet/provider/jsse/OpenSSLSocketImplTest.java
+new file mode 100644
+index 00000000000..79292bef4d9
+--- /dev/null
++++ b/luni/src/test/java/org/apache/harmony/xnet/provider/jsse/OpenSSLSocketImplTest.java
+@@ -0,0 +1,57 @@
++/*
++ * Copyright (C) 2013 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.apache.harmony.xnet.provider.jsse;
++
++import junit.framework.TestCase;
++
++public class OpenSSLSocketImplTest extends TestCase {
++
++  public void testGetClientKeyType() throws Exception {
++    // See http://www.ietf.org/assignments/tls-parameters/tls-parameters.xml
++    byte b = Byte.MIN_VALUE;
++    do {
++      String byteString = Byte.toString(b);
++      String keyType = OpenSSLSocketImpl.getClientKeyType(b);
++      switch (b) {
++        case 1:
++          assertEquals(byteString, "RSA", keyType);
++          break;
++        case 2:
++          assertEquals(byteString, "DSA", keyType);
++          break;
++        case 3:
++          assertEquals(byteString, "DH_RSA", keyType);
++          break;
++        case 4:
++          assertEquals(byteString, "DH_DSA", keyType);
++          break;
++        case 64:
++          assertEquals(byteString, "EC", keyType);
++          break;
++        case 65:
++          assertEquals(byteString, "EC_RSA", keyType);
++          break;
++        case 66:
++          assertEquals(byteString, "EC_EC", keyType);
++          break;
++        default:
++          assertNull(byteString, keyType);
++      }
++      b++;
++    } while (b != Byte.MIN_VALUE);
++  }
++}

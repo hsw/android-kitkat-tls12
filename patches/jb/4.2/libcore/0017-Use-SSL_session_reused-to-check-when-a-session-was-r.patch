@@ -1,0 +1,124 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Kenny Root <kroot@google.com>
+Date: Thu, 12 May 2016 14:15:24 -0700
+Subject: [PATCH 17/32] Use SSL_session_reused to check when a session was
+ reused
+
+The returned session_id could be exactly the same in the case of TLS
+session tickets, so use the SSL_session_reused API to determine exactly
+when a session was reused.
+
+(cherry picked from commit 1115fa0f6dbbff3a913fbce39ca98f9a78425c72)
+
+Bug: 28751153
+Change-Id: Ie82e4d1bb326d7e7deb7981a1e57df393f6c0e1f
+(cherry picked from commit 91f9851e8703ba93d3c9bfbac5c139f84e4c44dd)
+(cherry picked from commit 3f575a65c1d159358ec8484421fd0e72274ca01e)
+
+Android 4.2 port (android-4.2.2_r1) of patch 0017 of the 4.4 series,
+made from its Android 4.3 port. Paths and names: libcore/crypto of 4.4
+(org.conscrypt, org_conscrypt_NativeCrypto.cpp in libjavacrypto) is
+libcore/luni on 4.2 (org.apache.harmony.xnet.provider.jsse,
+org_apache_harmony_xnet_provider_jsse_NativeCrypto.cpp in libjavacore).
+Android 4.2 NativeCrypto passes native pointers as Java int:
+SSL_session_reused(int), a jint C parameter, (I)Z in the JNI table. NULL
+instead of nullptr (C++98), as on 4.3. 4.2 has no sessionToReuse
+(libcore 5911a70, Android 4.3): after the handshake it looked the
+session up by its id in the session context. That lookup misses when
+OpenSSL 1.0.1u gives a resumed session a new id (the server issued a new
+session ticket), and a resumed handshake then created a new session, or
+threw IllegalStateException with session creation disabled. This patch
+therefore also takes the OpenSSLSocketImpl part of 5911a70 that 4.3 has:
+the client keeps the session it offers in a local and takes it over when
+SSL_session_reused() is true; a server, and a client that offered
+nothing, create a new session, as on 4.3 and 4.4. The rest of 5911a70
+(AbstractSessionContext, createCertChain, tests) is not taken.
+---
+ .../harmony/xnet/provider/jsse/NativeCrypto.java    |  2 ++
+ .../xnet/provider/jsse/OpenSSLSocketImpl.java       | 13 +++++++------
+ ...ache_harmony_xnet_provider_jsse_NativeCrypto.cpp | 13 +++++++++++++
+ 3 files changed, 22 insertions(+), 6 deletions(-)
+
+diff --git a/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/NativeCrypto.java b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/NativeCrypto.java
+index 8d7ae4404c3..b541ba25d75 100644
+--- a/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/NativeCrypto.java
++++ b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/NativeCrypto.java
+@@ -704,6 +704,8 @@ public final class NativeCrypto {
+     public static native void SSL_set_session_creation_enabled(
+             int sslNativePointer, boolean creationEnabled) throws SSLException;
+ 
++    public static native boolean SSL_session_reused(int sslNativePointer);
++
+     public static native void SSL_set_tlsext_host_name(int sslNativePointer, String hostname)
+             throws SSLException;
+     public static native String SSL_get_servername(int sslNativePointer);
+diff --git a/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/OpenSSLSocketImpl.java b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/OpenSSLSocketImpl.java
+index 6a8292515bc..4b2acc05330 100644
+--- a/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/OpenSSLSocketImpl.java
++++ b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/OpenSSLSocketImpl.java
+@@ -305,17 +305,19 @@ public class OpenSSLSocketImpl
+             }
+ 
+             AbstractSessionContext sessionContext;
++            OpenSSLSessionImpl sessionToReuse;
+             if (client) {
+                 // look for client session to reuse
+                 ClientSessionContext clientSessionContext = sslParameters.getClientSessionContext();
+                 sessionContext = clientSessionContext;
+-                OpenSSLSessionImpl session = getCachedClientSession(clientSessionContext);
+-                if (session != null) {
++                sessionToReuse = getCachedClientSession(clientSessionContext);
++                if (sessionToReuse != null) {
+                     NativeCrypto.SSL_set_session(sslNativePointer,
+-                                                 session.sslSessionNativePointer);
++                                                 sessionToReuse.sslSessionNativePointer);
+                 }
+             } else {
+                 sessionContext = sslParameters.getServerSessionContext();
++                sessionToReuse = null;
+             }
+ 
+             // setup server certificates and private keys.
+@@ -393,9 +395,8 @@ public class OpenSSLSocketImpl
+                 wrapper.initCause(e);
+                 throw wrapper;
+             }
+-            byte[] sessionId = NativeCrypto.SSL_SESSION_session_id(sslSessionNativePointer);
+-            sslSession = (OpenSSLSessionImpl) sessionContext.getSession(sessionId);
+-            if (sslSession != null) {
++            if (sessionToReuse != null && NativeCrypto.SSL_session_reused(sslNativePointer)) {
++                sslSession = sessionToReuse;
+                 sslSession.lastAccessedTime = System.currentTimeMillis();
+                 NativeCrypto.SSL_SESSION_free(sslSessionNativePointer);
+             } else {
+diff --git a/luni/src/main/native/org_apache_harmony_xnet_provider_jsse_NativeCrypto.cpp b/luni/src/main/native/org_apache_harmony_xnet_provider_jsse_NativeCrypto.cpp
+index 605e28cfc53..06e23f7f65e 100644
+--- a/luni/src/main/native/org_apache_harmony_xnet_provider_jsse_NativeCrypto.cpp
++++ b/luni/src/main/native/org_apache_harmony_xnet_provider_jsse_NativeCrypto.cpp
+@@ -3395,6 +3395,18 @@ static void NativeCrypto_SSL_set_session_creation_enabled(JNIEnv* env, jclass,
+     SSL_set_session_creation_enabled(ssl, creation_enabled);
+ }
+ 
++static jboolean NativeCrypto_SSL_session_reused(JNIEnv* env, jclass, jint ssl_address) {
++    SSL* ssl = to_SSL(env, ssl_address, true);
++    JNI_TRACE("ssl=%p NativeCrypto_SSL_session_reused", ssl);
++    if (ssl == NULL) {
++        return JNI_FALSE;
++    }
++
++    int reused = SSL_session_reused(ssl);
++    JNI_TRACE("ssl=%p NativeCrypto_SSL_session_reused => %d", ssl, reused);
++    return reused == 1 ? JNI_TRUE : JNI_FALSE;
++}
++
+ static void NativeCrypto_SSL_set_tlsext_host_name(JNIEnv* env, jclass,
+         jint ssl_address, jstring hostname)
+ {
+@@ -4546,6 +4558,7 @@ static JNINativeMethod sNativeCryptoMethods[] = {
+     NATIVE_METHOD(NativeCrypto, SSL_set_verify, "(II)V"),
+     NATIVE_METHOD(NativeCrypto, SSL_set_session, "(II)V"),
+     NATIVE_METHOD(NativeCrypto, SSL_set_session_creation_enabled, "(IZ)V"),
++    NATIVE_METHOD(NativeCrypto, SSL_session_reused, "(I)Z"),
+     NATIVE_METHOD(NativeCrypto, SSL_set_tlsext_host_name, "(ILjava/lang/String;)V"),
+     NATIVE_METHOD(NativeCrypto, SSL_get_servername, "(I)Ljava/lang/String;"),
+     NATIVE_METHOD(NativeCrypto, SSL_do_handshake, "(I" FILE_DESCRIPTOR SSL_CALLBACKS "IZ[B)I"),

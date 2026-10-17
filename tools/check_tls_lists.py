@@ -55,6 +55,7 @@ F_HTTP_CONNECTION = "libcore/luni/src/main/java/libcore/net/http/HttpConnection.
 # libcore/luni, HTTPS in libcore.net.http). set_base() points the F_* paths and FILES at the base's layout.
 BASE = "4.4"
 JB_BASES = ("4.3", "4.2", "4.1")
+INT_HANDLE_BASES = ("4.2", "4.1")  # NativeCrypto passes native pointers as Java int
 KK_JSSE = "libcore/crypto/src/main/java/org/conscrypt/"
 JB_JSSE = "libcore/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/"
 GROUPS_OF_BASE = {"4.4": ("openssl", "libcore", "okhttp")}
@@ -668,8 +669,10 @@ def c_server_keytype(root):
     sock = read(root, F_SOCKET)
     if not re.search(r"NativeCrypto\s*\.\s*SSL_get_ciphers\s*\(", sock):
         fails.append("%s never calls NativeCrypto.SSL_get_ciphers() for the server key types" % F_SOCKET)
-    if not re.search(r"\bgetServerKeyType\s*\(\s*long\b", sock):
-        fails.append("%s has no getServerKeyType(long sslCipher)" % F_SOCKET)
+    # the SSL_CIPHER handle is a Java long from 4.3 on, an int on 4.1/4.2 (32-bit NativeCrypto handles)
+    handle = "int" if BASE in INT_HANDLE_BASES else "long"
+    if not re.search(r"\bgetServerKeyType\s*\(\s*%s\b" % handle, sock):
+        fails.append("%s has no getServerKeyType(%s sslCipher)" % (F_SOCKET, handle))
     return fails
 
 

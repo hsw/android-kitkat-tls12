@@ -1,0 +1,119 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: android-kitkat-tls12 <android-kitkat-tls12@users.noreply.github.com>
+Date: Fri, 9 Oct 2026 12:00:00 +0000
+Subject: [PATCH 29/32] Drop the unused AddressUtils.isLiteralIpAddress
+
+The SNI-by-default port (libcore/0013) copied AddressUtils from Android 6.0 whole,
+including isLiteralIpAddress with its 2 KB IPv4/IPv6 regex and the
+cached Pattern, and AddressUtilsTest's five test_isLiteralIpAddress_*
+methods. Nothing in production calls it: isValidSniHostname rejects IP
+literals through Platform.isLiteralIpAddress (InetAddress.isNumeric, no
+lookup), which is what 6.0 does on Android too. Removed with its tests;
+AddressUtilsTest keeps the 7 isValidSniHostname tests.
+
+Android 4.2 port (android-4.2.2_r1) of patch 0030 of the 4.4 series
+(renumbered: the 4.4 patch 0025, the ssl.SocketFactory.provider hook of
+the TLS 1.3 layer, is not part of this series), made from its Android
+4.3 port. Paths and names: libcore/crypto of 4.4 (org.conscrypt,
+org_conscrypt_NativeCrypto.cpp in libjavacrypto) is libcore/luni on 4.2
+(org.apache.harmony.xnet.provider.jsse,
+org_apache_harmony_xnet_provider_jsse_NativeCrypto.cpp in libjavacore).
+Otherwise the same change; only line offsets differ.
+---
+ .../xnet/provider/jsse/AddressUtils.java      | 22 ----------
+ .../xnet/provider/jsse/AddressUtilsTest.java  | 42 -------------------
+ 2 files changed, 64 deletions(-)
+
+diff --git a/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/AddressUtils.java b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/AddressUtils.java
+index 94b961cb98d..96d496278d9 100644
+--- a/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/AddressUtils.java
++++ b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/AddressUtils.java
+@@ -16,20 +16,10 @@
+ 
+ package org.apache.harmony.xnet.provider.jsse;
+ 
+-import java.util.regex.Pattern;
+-
+ /**
+  * Utilities to check whether IP addresses meet some criteria.
+  */
+ public final class AddressUtils {
+-    /*
+-     * Regex that matches valid IPv4 and IPv6 addresses.
+-     */
+-    private static final String IP_PATTERN = "^(?:(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9]?[0-9])\\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9]?[0-9]))|"
+-            + "(?i:(?:(?:[0-9a-f]{1,4}:){7}(?:[0-9a-f]{1,4}|:))|(?:(?:[0-9a-f]{1,4}:){6}(?::[0-9a-f]{1,4}|(?:(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(?:\\.(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3})|:))|(?:(?:[0-9a-f]{1,4}:){5}(?:(?:(?::[0-9a-f]{1,4}){1,2})|:(?:(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(?:\\.(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3})|:))|(?:(?:[0-9a-f]{1,4}:){4}(?:(?:(?::[0-9a-f]{1,4}){1,3})|(?:(?::[0-9a-f]{1,4})?:(?:(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(?:\\.(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}))|:))|(?:(?:[0-9a-f]{1,4}:){3}(?:(?:(?::[0-9a-f]{1,4}){1,4})|(?:(?::[0-9a-f]{1,4}){0,2}:(?:(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(?:\\.(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}))|:))|(?:(?:[0-9a-f]{1,4}:){2}(?:(?:(?::[0-9a-f]{1,4}){1,5})|(?:(?::[0-9a-f]{1,4}){0,3}:(?:(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(?:\\.(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}))|:))|(?:(?:[0-9a-f]{1,4}:){1}(?:(?:(?::[0-9a-f]{1,4}){1,6})|(?:(?::[0-9a-f]{1,4}){0,4}:(?:(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(?:\\.(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}))|:))|(?::(?:(?:(?::[0-9a-f]{1,4}){1,7})|(?:(?::[0-9a-f]{1,4}){0,5}:(?:(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(?:\\.(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}))|:)))$";
+-
+-    private static Pattern ipPattern;
+-
+     private AddressUtils() {
+     }
+ 
+@@ -52,16 +42,4 @@ public final class AddressUtils {
+ 
+         return true;
+     }
+-
+-    /**
+-     * Returns true if the supplied hostname is an literal IP address.
+-     */
+-    public static boolean isLiteralIpAddress(String hostname) {
+-        /* This is here for backwards compatibility for pre-Honeycomb devices. */
+-        Pattern ipPattern = AddressUtils.ipPattern;
+-        if (ipPattern == null) {
+-            AddressUtils.ipPattern = ipPattern = Pattern.compile(IP_PATTERN);
+-        }
+-        return ipPattern.matcher(hostname).matches();
+-    }
+ }
+diff --git a/luni/src/test/java/org/apache/harmony/xnet/provider/jsse/AddressUtilsTest.java b/luni/src/test/java/org/apache/harmony/xnet/provider/jsse/AddressUtilsTest.java
+index d3cc51b18d9..0615bfc94c5 100644
+--- a/luni/src/test/java/org/apache/harmony/xnet/provider/jsse/AddressUtilsTest.java
++++ b/luni/src/test/java/org/apache/harmony/xnet/provider/jsse/AddressUtilsTest.java
+@@ -57,46 +57,4 @@ public class AddressUtilsTest extends TestCase {
+         assertFalse(AddressUtils.isValidSniHostname("localhost"));
+         assertFalse(AddressUtils.isValidSniHostname("::1"));
+     }
+-
+-    public void test_isLiteralIpAddress_IPv4_Success() throws Exception {
+-        assertTrue(AddressUtils.isLiteralIpAddress("127.0.0.1"));
+-        assertTrue(AddressUtils.isLiteralIpAddress("255.255.255.255"));
+-        assertTrue(AddressUtils.isLiteralIpAddress("0.0.00.000"));
+-        assertTrue(AddressUtils.isLiteralIpAddress("192.009.010.19"));
+-        assertTrue(AddressUtils.isLiteralIpAddress("254.249.190.094"));
+-    }
+-
+-    public void test_isLiteralIpAddress_IPv4_ExtraCharacters_Failure() throws Exception {
+-        assertFalse(AddressUtils.isLiteralIpAddress("127.0.0.1a"));
+-        assertFalse(AddressUtils.isLiteralIpAddress(" 255.255.255.255"));
+-        assertFalse(AddressUtils.isLiteralIpAddress("0.0.00.0009"));
+-        assertFalse(AddressUtils.isLiteralIpAddress("192.009z.010.19"));
+-        assertFalse(AddressUtils.isLiteralIpAddress("254.249..094"));
+-    }
+-
+-    public void test_isLiteralIpAddress_IPv4_NumbersTooLarge_Failure() throws Exception {
+-        assertFalse(AddressUtils.isLiteralIpAddress("256.255.255.255"));
+-        assertFalse(AddressUtils.isLiteralIpAddress("255.255.255.256"));
+-        assertFalse(AddressUtils.isLiteralIpAddress("192.168.1.260"));
+-    }
+-
+-    public void test_isLiteralIpAddress_IPv6_Success() throws Exception {
+-        assertTrue(AddressUtils.isLiteralIpAddress("::1"));
+-        assertTrue(AddressUtils.isLiteralIpAddress("2001:Db8::1"));
+-        assertTrue(AddressUtils.isLiteralIpAddress("2001:cdbA:0000:0000:0000:0000:3257:9652"));
+-        assertTrue(AddressUtils.isLiteralIpAddress("2001:cdba:0:0:0:0:3257:9652"));
+-        assertTrue(AddressUtils.isLiteralIpAddress("2001:cdBA::3257:9652"));
+-    }
+-
+-    public void test_isLiteralIpAddress_IPv6_Failure() throws Exception {
+-        assertFalse(AddressUtils.isLiteralIpAddress(":::1"));
+-        assertFalse(AddressUtils.isLiteralIpAddress("::11111"));
+-        assertFalse(AddressUtils.isLiteralIpAddress("20011::1111"));
+-        assertFalse(AddressUtils.isLiteralIpAddress("2001:db8:::1"));
+-        assertFalse(AddressUtils.isLiteralIpAddress("2001:cdba:0000:00000:0000:0000:3257:9652"));
+-        assertFalse(AddressUtils.isLiteralIpAddress("2001:cdbA:0000:0000:0000:0000:0000:3257:9652"));
+-        assertFalse(AddressUtils.isLiteralIpAddress("2001:cdba:0::0:0:0:3257:9652"));
+-        assertFalse(AddressUtils.isLiteralIpAddress("02001:cdba::3257:9652"));
+-        assertFalse(AddressUtils.isLiteralIpAddress("2001:cdba::3257:96521"));
+-    }
+ }
