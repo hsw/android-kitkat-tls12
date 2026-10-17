@@ -31,6 +31,9 @@ gate    4.2  4.2 4.2.1 4.2.2
 base    4.1  android-4.1.2_r2
 target  4.1  full-user      armeabi-v7a
 target  4.1  full_x86-user  x86
+java    4.1  core         framework/core.jar
+java    4.1  libjavacore  lib/libjavacore.so
+gate    4.1  4.1.2
 
 project 4.3  build
 project 4.3  bionic
@@ -91,6 +94,13 @@ project 4.1  bionic
 project 4.1  abi/cpp
 project 4.1  system/core
 project 4.1  external/openssl
+project 4.1  libcore
+project 4.1  libnativehelper
+project 4.1  dalvik
+project 4.1  external/fdlibm
+project 4.1  external/expat
+project 4.1  external/icu4c
+project 4.1  external/proguard
 project 4.1  external/zlib
 project 4.1  frameworks/native
 project 4.1  external/stlport
@@ -167,6 +177,13 @@ rev  android-4.1.2_r2  bionic                                                  e
 rev  android-4.1.2_r2  abi/cpp                                                 eb789ea833d8d800662b67914d9c1785a58c2caa
 rev  android-4.1.2_r2  system/core                                             ca38f2c7cde05b67bc8d582040210c4aad303298
 rev  android-4.1.2_r2  external/openssl                                        9b4b062050bf9a39ae49bce7b735a3c046d7452c
+rev  android-4.1.2_r2  libcore                                                 94534e731dadae876dbffd056badc1bdfbd31a6c
+rev  android-4.1.2_r2  libnativehelper                                         73d3c2e3ed100f1d0ccc08a9675844bf8a0848fa
+rev  android-4.1.2_r2  dalvik                                                  61c966b09d0fc5113d7d10d761594bc1fddc9ed1
+rev  android-4.1.2_r2  external/fdlibm                                         f0c0422e71b8752cc5a6b71f783f8f5a16f861cd
+rev  android-4.1.2_r2  external/expat                                          6f6dbce408598404d701f101a684908cb951e25c
+rev  android-4.1.2_r2  external/icu4c                                          02c1be445f109b3ffe2b10663bff2fd8aaa9bddc
+rev  android-4.1.2_r2  external/proguard                                       10aa7224f49abe49d123bde5d34346202d49aaca
 rev  android-4.1.2_r2  external/zlib                                           7b332dbcb6a69c1919decb488c28d9b1fc5ba141
 rev  android-4.1.2_r2  external/stlport                                        ec42173ef0955aa1844e0be303363c7e5dc98fb7
 rev  android-4.1.2_r2  external/clang                                          094004c9c6693abad38a37906ec4363a7ee9e0df
