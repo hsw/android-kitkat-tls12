@@ -22,7 +22,8 @@
 #   apply    git am patches/jb/<base>/external_openssl/*.patch in external/openssl and, when the base has one, the
 #            libcore series patches/jb/<base>/libcore/*.patch in libcore (both projects must be pristine)
 #   build    per ABI: libcrypto libssl openssl (the command-line tool is a test client, not a release file) and the
-#            base's java modules; every make runs with WITH_DEXPREOPT=false (jars keep classes.dex, no .odex)
+#            base's java modules; every make runs with WITH_DEXPREOPT=false (jars keep classes.dex, no .odex); where
+#            build/ adds classes.dex with aapt (4.1, 4.2) it is the tree's prebuilts/sdk/tools/linux/aapt
 #   collect  lib/libssl.so lib/libcrypto.so and the java files into WORK/out/kktls-jb/<base>/<abi>/ (jars rewritten by
 #            tools/zipnorm.py: sorted entries, fixed time) + SHA256SUMS + BUILD-INFO.txt (with the java modules and the
 #            gate line of the base); bin/openssl into WORK/out/kktls-jb/<base>/test-bin/<abi>/; external/openssl/NOTICE
@@ -94,7 +95,7 @@ while [ $# -gt 0 ]; do
     --reuse-stock) REUSE_STOCK=1; shift ;;
     --dry-run) DRY=1; shift ;;
     all|sync|stock|apply|build|collect|check) CMDS+=("$1"); shift ;;
-    -h|--help) sed -n '2,51p' "$ME"; exit 0 ;;
+    -h|--help) sed -n '2,52p' "$ME"; exit 0 ;;
     *) die "unknown argument: $1" 2 ;;
   esac
 done
@@ -324,9 +325,16 @@ do_apply() {
 do_build() {
   local b=$1 t=$2 d=$WORK/$2 combo abi
   [ -f "$d/apply.done" ] || die "[$t] build before apply" 1
+  # The 4.1/4.2 build/ adds classes.dex to a jar with `$(AAPT) add` (4.3: zip), and the host aapt is built from
+  # frameworks/base, which is not synced: a java base of that kind runs make with the tree's prebuilt aapt
+  local mv=()
+  # shellcheck disable=SC2016
+  if [ -n "$(java_rows "$b")" ] && grep -qF '$(AAPT) add -k' "$d/src/build/core/definitions.mk"; then
+    mv=(AAPT=prebuilts/sdk/tools/linux/aapt)
+  fi
   while read -r combo abi; do
     # shellcheck disable=SC2046
-    run_make "$d" "$combo" "build-$abi" libcrypto libssl openssl $(java_modules "$b") || return 1
+    run_make "$d" "$combo" "build-$abi" libcrypto libssl openssl $(java_modules "$b") ${mv[@]+"${mv[@]}"} || return 1
   done < <(rows_of "$b")
 }
 
