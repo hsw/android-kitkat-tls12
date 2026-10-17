@@ -78,8 +78,8 @@ ones listed in `patches/jb/<ver>/allow-missing-*.txt` are gone, nothing in AOSP 
 compared with 4.4: ALPN (all three) and Channel ID (4.1/4.2), which are features, not fixes; their struct members
 would move fields that stock callers use. 4.1's stock `libcrypto` offered zlib TLS compression (CRIME); this build
 does not, as stock 4.2. The CVE reproducers run on each Jelly Bean recipe too (`openssl-cve-test.sh --jb-base`).
-The 4.3 java zip gives the Java layer of 4.3 the defaults of 4.4 layer A (the same lists, so condition 5 applies to it
-too). On 4.1 and 4.2, Java apps keep the stock defaults: SSLv3 and RC4 enabled, and an `HttpsURLConnection` retry
+The 4.3 and 4.2 java zips give the Java layer of 4.3 and 4.2 the defaults of 4.4 layer A (the same lists, so
+condition 5 applies to them too). On 4.1, Java apps keep the stock defaults: SSLv3 and RC4 enabled, and an `HttpsURLConnection` retry
 over SSLv3 without SNI after a failed handshake; there only the CA store and the native libraries change.
 
 ## Conditions
