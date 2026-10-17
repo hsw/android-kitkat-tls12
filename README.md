@@ -218,7 +218,8 @@ tools/install-adb.sh [-s SERIAL] --restore kktls-restore-v2.zip
 
 **Not tested yet:** a real TWRP or CWM recovery (only host tests run `update-binary`); 4.4.4 on x86 in an emulator;
 ART (all runs used Dalvik); real hardware other than the device below; Android 4.4.0, 4.4.1 and 4.4.3; Jelly Bean
-on real hardware; the Jelly Bean java zips on a system with `.odex` files whose jars keep `classes.dex` (host tests only). Reports welcome.
+on real hardware; the Jelly Bean java zips on a system with `.odex` files whose jars keep `classes.dex` (host tests
+only). Reports welcome.
 
 ## Build from source
 
