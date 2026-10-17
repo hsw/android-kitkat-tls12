@@ -1,0 +1,52 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Alex Klyubin <klyubin@google.com>
+Date: Thu, 19 Dec 2013 11:10:26 -0800
+Subject: [PATCH 07/30] Fix test breakages due to TLSv1.2 enabled and FS
+ preferred.
+
+Bug: 11220570
+Change-Id: Ic918e806ae1d8ea9b98c690cfabd9c3245886525
+(cherry picked from commit 9de94e4aaa6de951d1c7ca08d137d57b36d24fa3)
+
+Android 4.3 port (android-4.3_r3) of patch 0007 of the 4.4 series. The
+same change; only line offsets differ.
+---
+ luni/src/test/java/libcore/java/net/URLConnectionTest.java    | 4 ++--
+ .../src/test/java/tests/api/javax/net/ssl/SSLSessionTest.java | 2 +-
+ 2 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/luni/src/test/java/libcore/java/net/URLConnectionTest.java b/luni/src/test/java/libcore/java/net/URLConnectionTest.java
+index ab5f91827..2e58657a2 100644
+--- a/luni/src/test/java/libcore/java/net/URLConnectionTest.java
++++ b/luni/src/test/java/libcore/java/net/URLConnectionTest.java
+@@ -469,7 +469,7 @@ public final class URLConnectionTest extends TestCase {
+ 
+         RecordedRequest request = server.takeRequest();
+         assertEquals("GET /foo HTTP/1.1", request.getRequestLine());
+-        assertEquals("TLSv1", request.getSslProtocol());
++        assertEquals("TLSv1.2", request.getSslProtocol());
+     }
+ 
+     public void testConnectViaHttpsReusingConnections() throws IOException, InterruptedException {
+@@ -1618,7 +1618,7 @@ public final class URLConnectionTest extends TestCase {
+                     + "CN=" + hostName + " 1, "
+                     + "CN=Test Intermediate Certificate Authority 1, "
+                     + "CN=Test Root Certificate Authority 1"
+-                    + "] RSA"),
++                    + "] ECDHE_RSA"),
+                     trustManager.calls);
+         } finally {
+             HttpsURLConnection.setDefaultHostnameVerifier(defaultHostnameVerifier);
+diff --git a/luni/src/test/java/tests/api/javax/net/ssl/SSLSessionTest.java b/luni/src/test/java/tests/api/javax/net/ssl/SSLSessionTest.java
+index 508442233..4bd7c7913 100644
+--- a/luni/src/test/java/tests/api/javax/net/ssl/SSLSessionTest.java
++++ b/luni/src/test/java/tests/api/javax/net/ssl/SSLSessionTest.java
+@@ -174,7 +174,7 @@ public class SSLSessionTest extends TestCase {
+      * javax.net.ssl.SSLSession#getProtocol()
+      */
+     public void test_getProtocol() {
+-        assertEquals("TLSv1", clientSession.getProtocol());
++        assertEquals("TLSv1.2", clientSession.getProtocol());
+     }
+ 
+     /**

@@ -1,5 +1,30 @@
 # Changelog
 
+## v3 (unreleased)
+
+Android 4.3: the Java TLS layer (layer A) on ARM.
+
+### New
+
+- `kktls-java-4.3-armeabi-v7a-<rel>.zip`: `core.jar` and `libjavacore.so` built from `android-4.3_r3` with the libcore
+  series of 4.4 in the Jelly Bean layout (`patches/jb/4.3/libcore/`): TLS 1.1 and 1.2 on by default, the 13 default
+  suites, SNI on every client path, stricter wildcard matching, the intermediate CA fixes. `HttpsURLConnection`
+  (`libcore.net.http` on 4.3, no okhttp) retries a failed handshake over TLSv1 with `TLS_FALLBACK_SCSV` instead of
+  SSLv3. Installs on 4.3.x (AOSP: 4.3, 4.3.1) after the 4.3 openssl zip; the restore zip undoes it.
+- The x86 build of that zip is packed only with `tools/mkzips.sh --out-unreleased DIR` (CI: artifact
+  `zips-unreleased`), not released until it has booted on an x86 4.3 system.
+- `tools/kktls-jb-openssl-build.sh` builds `core` and `libjavacore` for a base with `java` lines in
+  `patches/jb/targets.txt` and checks them (`classes.dex` present, `libjavacore.so` exports and `NEEDED` against stock);
+  `tools/kktls-jb-remap.py` maps the 4.4 libcore series to the Jelly Bean paths; `tools/check_jni_signatures.py`
+  compares the Java `native` declarations with the JNI registration table; `tools/check_tls_lists.py --base <ver>`
+  reads the Jelly Bean sources, including the `libcore.net.http` fallback.
+
+### Unchanged
+
+- The 4.4 zips, the 4.1 and 4.2 openssl zips, the CA store and the restore zip: same payload and installer. The 4.3
+  openssl zip has the same libraries; its `kktls/BUILD-INFO.txt` also lists the java build.
+- 4.1 and 4.2: no Java layer yet.
+
 ## v2
 
 Android 4.1 to 4.3 (Jelly Bean, API 16-18): native OpenSSL and the CA store. The Java TLS layer and TLS 1.3 stay

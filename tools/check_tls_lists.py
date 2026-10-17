@@ -9,10 +9,11 @@ pin of the branch next to libcore's runtime fallback tests). Input is a director
 trial tree after apply-patches.sh). Stdlib only, plus kktlsfmt.py next to this script (the A6/A7/SSL_MODE values); run as
 `python3 -I`.
 
-  check_tls_lists.py DIR [--group G ...] [--check NAME ...]   run checks (exit 1 if any fails; 2 for an unknown
+  check_tls_lists.py DIR [--base B] [--group G ...] [--check NAME ...]
+                                                              run checks (exit 1 if any fails; 2 for an unknown
                                                               group/check or when nothing is selected); groups:
-                                                              openssl, libcore, okhttp
-  check_tls_lists.py --list-files                             tree-relative paths the checks read (for tar/rsync)
+                                                              openssl, libcore, okhttp (4.4), libcore.net.http (JB)
+  check_tls_lists.py --list-files [--base B]                  tree-relative paths the checks read (for tar/rsync)
   check_tls_lists.py --list-checks                            check names and groups
   check_tls_lists.py --selftest                               run every check on fixtures/good (all must pass) and on
                                                               each mutation in fixtures/mutations.json (the named
@@ -21,6 +22,12 @@ trial tree after apply-patches.sh). Stdlib only, plus kktlsfmt.py next to this s
 
 Fetch the inputs from a patched AOSP 4.4 tree:
   (cd <tree> && tar -cf - $(python3 -I check_tls_lists.py --list-files)) | tar -x -C DIR
+
+--base 4.4 (default) is the KitKat layout above. --base 4.3, 4.2 or 4.1 (Jelly Bean, the per-base series
+patches/jb/<base>/libcore/) reads the same libcore files from luni/src/main/java/org/apache/harmony/xnet/provider/jsse/
+(Platform.java there is the series' own minimal class), the base's own OpenSSL 1.0.1u headers, and replaces the okhttp
+group (HttpsURLConnection does not use okhttp before 4.4) by the libcore.net.http group: the TLS-intolerance retry of
+libcore.net.http.HttpConnection.setupSecureSocket. The selftest runs the 4.4 fixtures and a Jelly Bean copy of them.
 """
 import json
 import os
@@ -43,6 +50,15 @@ F_SSL_LOCL_H = "external/openssl/ssl/ssl_locl.h"
 F_OKHTTP_PLATFORM = "external/okhttp/android/main/java/com/squareup/okhttp/internal/Platform.java"
 F_ADDRESS_UTILS = "libcore/crypto/src/main/java/org/conscrypt/AddressUtils.java"
 F_CONSCRYPT_PLATFORM = "libcore/crypto/src/main/java/org/conscrypt/Platform.java"
+F_HTTP_CONNECTION = "libcore/luni/src/main/java/libcore/net/http/HttpConnection.java"
+# Bases: 4.4 (KitKat, org.conscrypt in libcore/crypto) and the Jelly Bean bases (org.apache.harmony.xnet.provider.jsse in
+# libcore/luni, HTTPS in libcore.net.http). set_base() points the F_* paths and FILES at the base's layout.
+BASE = "4.4"
+JB_BASES = ("4.3", "4.2", "4.1")
+KK_JSSE = "libcore/crypto/src/main/java/org/conscrypt/"
+JB_JSSE = "libcore/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/"
+GROUPS_OF_BASE = {"4.4": ("openssl", "libcore", "okhttp")}
+GROUPS_OF_BASE.update((b, ("openssl", "libcore", "libcore.net.http")) for b in JB_BASES)
 # OpenSSL keeps two copies of its public SSL headers: ssl/<h> (the source) and include/openssl/<h> (what libssl itself, via
 # <openssl/ssl.h>, and every client such as libjavacrypto compile against). A1 (cm-11 a8c4a5f) edits both copies.
 OPENSSL_HEADER_PAIRS = [("external/openssl/ssl/%s" % h, "external/openssl/include/openssl/%s" % h)
@@ -50,6 +66,26 @@ OPENSSL_HEADER_PAIRS = [("external/openssl/ssl/%s" % h, "external/openssl/includ
 FILES = [F_NATIVE, F_SERVER, F_SOCKET, F_ADDRESS_UTILS, F_CONSCRYPT_PLATFORM, F_SSL_H, F_SSL_H_INC, F_SSL_LOCL_H,
          F_OKHTTP_PLATFORM] + \
     [f for pair in OPENSSL_HEADER_PAIRS for f in pair if f not in (F_SSL_H, F_SSL_H_INC)]
+FILES_KK = list(FILES)
+JSSE_PATHS = ("F_NATIVE", "F_SERVER", "F_SOCKET", "F_ADDRESS_UTILS", "F_CONSCRYPT_PLATFORM")
+
+
+def set_base(base):
+    """Point the libcore paths and FILES at the layout of base ("4.4" or a Jelly Bean base); 4.4 is the default."""
+    global BASE, FILES
+    if base not in GROUPS_OF_BASE:
+        raise ValueError("unknown base %s (known: %s)" % (base, ", ".join(sorted(GROUPS_OF_BASE))))
+    BASE = base
+    g = globals()
+    for name in JSSE_PATHS:
+        kk = g[name + "_KK"] if name + "_KK" in g else g[name]
+        g.setdefault(name + "_KK", kk)
+        g[name] = kk if base == "4.4" else JB_JSSE + kk[len(KK_JSSE):]
+    if base == "4.4":
+        FILES = list(FILES_KK)
+    else:
+        jb = dict((g[n + "_KK"], g[n]) for n in JSSE_PATHS)
+        FILES = [jb.get(f, f) for f in FILES_KK if f != F_OKHTTP_PLATFORM] + [F_HTTP_CONNECTION]
 
 # Other NativeCrypto constants that mirror an ssl.h #define (SSL_OP_*, SSL_MODE_*, SSL_VERIFY_*): each must equal both
 # ssl.h copies (Task 7d audit of the 1.0.1u headers; checked by ssl-cipher-constants).
@@ -391,16 +427,18 @@ def const_value(expr, suffix, bits, what):
     return value
 
 
-def java_long(text, name, rel=F_NATIVE):
+def java_long(text, name, rel=None):
     """Value of a long constant; None when there is none; CheckError when its initializer cannot be evaluated."""
+    rel = rel or F_NATIVE
     m = re.search(r"\blong\s+%s\s*=\s*([^;]*);" % name, text)
     return const_value(m.group(1), JAVA_TYPES["long"][0], JAVA_TYPES["long"][1], "%s long %s" % (rel, name)) \
         if m else None
 
 
-def java_int(text, name, rel=F_NATIVE):
+def java_int(text, name, rel=None):
     """Value of an int or byte constant (the kktls port of 2d089e18 adds SSL_k*/SSL_a* ints and TLS_CT_* bytes); None
     when there is none; CheckError when its initializer cannot be evaluated."""
+    rel = rel or F_NATIVE
     m = re.search(r"\b(int|byte)\s+%s\s*=\s*([^;]*);" % name, text)
     if not m:
         return None
@@ -795,6 +833,33 @@ def c_okhttp(root):
     return fails + okhttp_scsv_guard(body)
 
 
+@check("http-fallback", "libcore.net.http")
+def c_http_fallback(root):
+    """Jelly Bean A11: HttpsURLConnection's TLS-intolerance retry (libcore.net.http.HttpConnection.setupSecureSocket and
+    the HttpConnection methods it calls) is TLSv1 plus TLS_FALLBACK_SCSV, not SSLv3: no "SSLv3" literal in
+    HttpConnection, every setEnabledProtocols there sets exactly {"TLSv1"}, and the SCSV is appended only when
+    getSupportedCipherSuites() lists it (the okhttp-fallback rules of 4.4)."""
+    src = read(root, F_HTTP_CONNECTION)
+    fails = []
+    if '"SSLv3"' in src:
+        fails.append('SSLv3 fallback: %s has an "SSLv3" literal' % F_HTTP_CONNECTION)
+    reach = reachable_bodies(src, "setupSecureSocket")
+    if not reach:
+        return fails + ["%s has no setupSecureSocket()" % F_HTTP_CONNECTION]
+    protos = [p for _, b in reach
+              for p in re.findall(r"setEnabledProtocols\(\s*new\s+String\s*\[\s*\]\s*\{([^}]*)\}\s*\)", b)]
+    if [re.sub(r"\s+", "", p) for p in protos] != ['"TLSv1"']:
+        fails.append("setupSecureSocket's fallback sets protocols %s, want exactly {\"TLSv1\"}"
+                     % (["{%s}" % p.strip() for p in protos] or "none"))
+    scsv = [(path, b) for path, b in reach if '"TLS_FALLBACK_SCSV"' in b]
+    if not scsv:
+        fails.append("no SCSV: setupSecureSocket (and the methods it calls) never adds TLS_FALLBACK_SCSV")
+        return fails
+    for path, body in scsv:
+        fails += ["%s: %s" % (path, f) for f in okhttp_scsv_guard(body)]
+    return fails
+
+
 def okhttp_scsv_guard(body):
     """Task 7 (c3f6560): TLS_FALLBACK_SCSV is appended only if the socket lists it in getSupportedCipherSuites(), so a
     socket factory that does not know the SCSV (an app's own provider, layer D before its adapter) gets no
@@ -877,6 +942,8 @@ def okhttp_scsv_guard(body):
 def run(root, groups=None, names=None, quiet=False):
     results = {}
     for name, group, fn in CHECKS:
+        if group not in GROUPS_OF_BASE[BASE]:
+            continue
         if groups and group not in groups:
             continue
         if names and name not in names:
@@ -893,15 +960,38 @@ def run(root, groups=None, names=None, quiet=False):
     return results
 
 
+def make_jb_fixture(fx, dest):
+    """fixtures/good in the Jelly Bean layout: the org.conscrypt files under JB_JSSE with the JB package name, no okhttp,
+    plus fixtures/jb (libcore.net.http)."""
+    import shutil
+    shutil.copytree(os.path.join(fx, "good"), dest)
+    shutil.rmtree(os.path.join(dest, "external", "okhttp"))
+    kk, jb = os.path.join(dest, KK_JSSE), os.path.join(dest, JB_JSSE)
+    os.makedirs(jb)
+    for n in sorted(os.listdir(kk)):
+        with open(os.path.join(kk, n), encoding="utf-8") as f:
+            text = f.read()
+        with open(os.path.join(jb, n), "w", encoding="utf-8") as f:
+            f.write(re.sub(r"\borg\.conscrypt\b", "org.apache.harmony.xnet.provider.jsse", text))
+    shutil.rmtree(os.path.join(dest, "libcore", "crypto"))
+    jbfx = os.path.join(fx, "jb")
+    for d, _, files in os.walk(jbfx):
+        for n in files:
+            rel = os.path.relpath(os.path.join(d, n), jbfx)
+            os.makedirs(os.path.dirname(os.path.join(dest, rel)), exist_ok=True)
+            shutil.copy(os.path.join(jbfx, rel), os.path.join(dest, rel))
+
+
 def selftest():
     import shutil
     import tempfile
     fx = os.path.join(HERE, "fixtures")
     good = os.path.join(fx, "good")
     ok = True
+    set_base("4.4")
     res = run(good, quiet=True)
     bad = {k: v for k, v in res.items() if v}
-    if bad or len(res) != len(CHECKS):
+    if bad or len(res) != len([c for c in CHECKS if c[1] in GROUPS_OF_BASE["4.4"]]):
         print("SELFTEST FAIL fixtures/good: %s" % json.dumps(bad))
         ok = False
     else:
@@ -928,10 +1018,29 @@ def selftest():
     with open(os.path.join(fx, "mutations.json"), encoding="utf-8") as f:
         mutations = json.load(f)
     seen = set()
+    jbtmp = tempfile.mkdtemp(prefix="tls-selftest-jb-")
+    try:
+        jbgood = os.path.join(jbtmp, "t")
+        make_jb_fixture(fx, jbgood)
+        set_base("4.3")
+        res = run(jbgood, quiet=True)
+        bad = {k: v for k, v in res.items() if v}
+        if bad or len(res) != len([c for c in CHECKS if c[1] in GROUPS_OF_BASE["4.3"]]):
+            print("SELFTEST FAIL Jelly Bean copy of fixtures/good (+ fixtures/jb): %s" % json.dumps(bad))
+            ok = False
+        else:
+            print("selftest ok   Jelly Bean copy of fixtures/good (+ fixtures/jb): %d checks pass" % len(res))
+    finally:
+        set_base("4.4")
     for mu in mutations:
         tmp = tempfile.mkdtemp(prefix="tls-selftest-")
         try:
-            shutil.copytree(good, os.path.join(tmp, "t"))
+            if mu.get("base", "4.4") == "4.4":
+                set_base("4.4")
+                shutil.copytree(good, os.path.join(tmp, "t"))
+            else:
+                set_base(mu["base"])
+                shutil.copytree(jbgood, os.path.join(tmp, "t"))
             root = os.path.join(tmp, "t")
             for ed in mu["edits"]:
                 p = os.path.join(root, ed["file"])
@@ -960,6 +1069,8 @@ def selftest():
                 print("selftest ok   %-34s -> %s: %s" % (mu["name"], mu["check"], mu["expect"]))
         finally:
             shutil.rmtree(tmp)
+            set_base("4.4")
+    shutil.rmtree(jbtmp)
     untested = [n for n, _, _ in CHECKS if n not in seen]
     if untested:
         print("SELFTEST FAIL no mutation exercises: %s" % ", ".join(untested))
@@ -972,7 +1083,12 @@ def main(argv):
     args = argv[1:]
     if args == ["--selftest"]:
         return selftest()
-    if args == ["--list-files"]:
+    if args[:1] == ["--list-files"] and (len(args) == 1 or (len(args) == 3 and args[1] == "--base")):
+        try:
+            set_base(args[2] if len(args) == 3 else "4.4")
+        except ValueError as e:
+            print(e)
+            return 2
         print(" ".join(FILES))
         return 0
     if args == ["--list-checks"]:
@@ -988,6 +1104,12 @@ def main(argv):
         opt = rest.pop(0)
         if opt in ("--group", "--check") and rest:
             (groups if opt == "--group" else names).append(rest.pop(0))
+        elif opt == "--base" and rest:
+            try:
+                set_base(rest.pop(0))
+            except ValueError as e:
+                print(e)
+                return 2
         else:
             print("unknown argument %s" % opt)
             return 2
@@ -995,9 +1117,12 @@ def main(argv):
     if any(n not in known for n in names):
         print("unknown check in %s; --list-checks" % names)
         return 2
-    known_groups = set(g for _, g, _ in CHECKS)
+    known_groups = set(GROUPS_OF_BASE[BASE])
     if any(g not in known_groups for g in groups):
-        print("unknown group in %s; groups: %s" % (groups, ", ".join(sorted(known_groups))))
+        print("unknown group in %s; groups of base %s: %s" % (groups, BASE, ", ".join(sorted(known_groups))))
+        return 2
+    if names and not any(g in known_groups for n, g, _ in CHECKS if n in names):
+        print("check %s is not one of base %s (groups %s)" % (names, BASE, ", ".join(sorted(known_groups))))
         return 2
     if not os.path.isdir(root):
         print("no such directory: %s" % root)

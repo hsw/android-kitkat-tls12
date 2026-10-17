@@ -20,7 +20,8 @@
 # against a real AOSP system. The ARM helpers run through qemu-user binfmt_misc.
 # --jb JB JB_STOCK (with --real): JB is the Jelly Bean openssl output (mkzips.sh --jb), JB_STOCK/<base>/x86/ the stock
 # AOSP x86 libssl/libcrypto of each base: per base its x86 openssl zip installs and restores on a fake <base>.x root with
-# those libraries (the real allow lists against the real stock exports), and the 4.4 zip is refused there.
+# those libraries (the real allow lists against the real stock exports), and the 4.4 zip is refused there; a base with
+# java files also installs its x86 java zip (packed with --out-unreleased) over that openssl zip before the restore.
 # Exit 0 all pass, 1 a failure, 2 usage or a missing tool.
 set -euo pipefail
 export LC_ALL=C
@@ -37,7 +38,7 @@ while [ $# -gt 0 ]; do
                   SDK=$(cd "$2" && pwd); shift 2 ;;
     --jb) [ $# -ge 3 ] && [ -d "$2" ] && [ -d "$3" ] || { echo "run-tests.sh: --jb needs JB JB_STOCK directories" >&2; exit 2; }
           RJB=("$2"); RJB_STOCK=$3; shift 3 ;;
-    -h|--help) sed -n '3,23p' "$0"; exit 0 ;;
+    -h|--help) sed -n '3,24p' "$0"; exit 0 ;;
     *) echo "run-tests.sh: unknown argument $1" >&2; exit 2 ;;
   esac
 done
@@ -141,11 +142,17 @@ mkin() {
       mkdir -p "$d/lib"
       cp "$T/fx/ours.so" "$d/lib/libssl.so"; cp "$T/fx/ours.so" "$d/lib/libcrypto.so"
       printf 'base %s\ntag android-%s_r9\nabi %s\n' "$b" "$b" "$a" > "$d/BUILD-INFO.txt"
+      if [ "$b" = 4.3 ]; then  # a java base (as tools/kktls-jb-openssl-build.sh writes it); 4.2 and 4.1: openssl only
+        mkdir -p "$d/framework"; cp "$T/fx/ours.jar" "$d/framework/core.jar"
+        printf 'javacore %s %s\n' "$b" "$a" > "$d/lib/libjavacore.so"
+        printf 'java core framework/core.jar\njava libjavacore lib/libjavacore.so\ngate 4.3 4.3.1\n' >> "$d/BUILD-INFO.txt"
+      fi
       (cd "$d" && find . -type f ! -name SHA256SUMS ! -name BUILD-INFO.txt | sed 's#^\./##' | sort | xargs sha256sum > SHA256SUMS)
     done
     mkdir -p "$T/jb/$b/notice" "$T/jb/$b/allow"
     echo "fake openssl.NOTICE of android-${b}_r9" > "$T/jb/$b/notice/openssl.NOTICE"
-    (cd "$T/jb/$b/notice" && sha256sum openssl.NOTICE > SHA256SUMS)
+    [ "$b" != 4.3 ] || for n in libcore fdlibm; do echo "fake $n.NOTICE of android-${b}_r9" > "$T/jb/$b/notice/$n.NOTICE"; done
+    (cd "$T/jb/$b/notice" && sha256sum ./*.NOTICE | sed 's# \./# #' > SHA256SUMS)
     cp "$SYM/allow-missing-libssl.txt" "$T/jb/$b/allow/"
     [ "$b" != 4.1 ] || echo BIO_f_zlib > "$T/jb/$b/allow/allow-missing-libcrypto.txt"
     (cd "$T/jb/$b/allow" && sha256sum allow-missing-*.txt > SHA256SUMS)
@@ -157,15 +164,22 @@ mkin() {
 mkin
 
 MK=$REL_DIR/mkzips.sh; [ -f "$MK" ] || MK=$REL_DIR/tools/mkzips.sh   # published layout: tools/
-"$MK" --in "$IN" --release v9 --cacerts "$T/cacerts" --conscrypt-notice "$T/cnotice" --out "$T/z1" --jb "$T/jb" > "$T/mk1.log"
-"$MK" --in "$IN" --release v9 --cacerts "$T/cacerts" --conscrypt-notice "$T/cnotice" --out "$T/z2" --jb "$T/jb" > "$T/mk2.log"
-"$MK" --in "$IN" --release v9 --cacerts "$T/cacerts" --conscrypt-notice "$T/cnotice" --out "$T/z44" > "$T/mk44.log"
-Z=$T/z1
-check "mkzips writes 16 zips (10 + 3 JB bases x 2 ABIs)" [ "$(wc -l < "$Z/SHA256SUMS")" = 16 ]
+MKA=(--in "$IN" --release v9 --cacerts "$T/cacerts" --conscrypt-notice "$T/cnotice")
+"$MK" "${MKA[@]}" --out "$T/z1" --jb "$T/jb" --out-unreleased "$T/u1" > "$T/mk1.log"
+"$MK" "${MKA[@]}" --out "$T/z2" --jb "$T/jb" --out-unreleased "$T/u2" > "$T/mk2.log"
+"$MK" "${MKA[@]}" --out "$T/zn" --jb "$T/jb" > "$T/mkn.log"
+"$MK" "${MKA[@]}" --out "$T/z44" --out-unreleased "$T/u44" > "$T/mk44.log"
+Z=$T/z1 U=$T/u1
+check "mkzips writes 17 zips (10 + 3 JB bases x 2 ABIs + the ARM java zip of 4.3)" [ "$(wc -l < "$Z/SHA256SUMS")" = 17 ]
 check "mkzips without --jb writes the 10 4.4 zips" [ "$(wc -l < "$T/z44/SHA256SUMS")" = 10 ]
+check "nothing unreleased: no --out-unreleased dir, no empty SHA256SUMS" sh -c "[ ! -e '$T/u44' ] && grep -q '^mkzips: no unreleased zips' '$T/mk44.log'"
 check "the 4.4 zips do not depend on --jb" sh -c "grep -v -- '-4\.[123]-' '$Z/SHA256SUMS' | cmp -s - '$T/z44/SHA256SUMS'"
 check "zips are byte-identical across two runs" cmp -s "$T/z1/SHA256SUMS" "$T/z2/SHA256SUMS"
-for z in "$Z"/kktls-*.zip; do
+check "unreleased zips are byte-identical across two runs" cmp -s "$T/u1/SHA256SUMS" "$T/u2/SHA256SUMS"
+check "--out-unreleased holds only the x86 java zip of 4.3" sh -c "[ \"\$(ls '$U' | tr '\n' ' ')\" = 'SHA256SUMS kktls-java-4.3-x86-v9.zip ' ] && [ \"\$(wc -l < '$U/SHA256SUMS')\" = 1 ]"
+check "the release set does not depend on --out-unreleased" cmp -s "$T/z1/SHA256SUMS" "$T/zn/SHA256SUMS"
+check "without --out-unreleased the x86 java zip is not packed" sh -c "! ls '$T/zn' | grep -q java-4.3-x86 && grep -q 'kktls-java-4.3-x86-v9.zip: not packed' '$T/mkn.log'"
+for z in "$Z"/kktls-*.zip "$U"/kktls-*.zip; do
   l=$(unzip -Z1 "$z")
   check "$(basename "$z") has NOTICE" sh -c "echo '$l' | grep -qx NOTICE"
   check "$(basename "$z") has update-binary" sh -c "echo '$l' | grep -qx META-INF/com/google/android/update-binary"
@@ -182,6 +196,46 @@ for b in 4.3 4.2 4.1; do
     check "openssl $b $a: NOTICE has the base's OpenSSL and the 4.4 bionic" sh -c "unzip -p '$zb' NOTICE > '$T/n' && grep -q 'fake openssl.NOTICE of android-${b}_r9' '$T/n' && grep -q 'built from AOSP android-${b}_r9' '$T/n' && grep -q 'fake bionic-libc.NOTICE of android-4.4.2_r2' '$T/n'"
   done
 done
+for a in armeabi-v7a x86; do
+  zj=$Z/kktls-java-4.3-$a-v9.zip; [ "$a" = armeabi-v7a ] || zj=$U/kktls-java-4.3-$a-v9.zip
+  check "java 4.3 $a: zip.conf android=4.3 (gate 4.3 4.3.1) tag=android-4.3_r9" sh -c "unzip -p '$zj' kktls/zip.conf | tr '\n' ' ' | grep -qx 'kind=java release=v9 abi=$a android=4.3 tag=android-4.3_r9 '"
+  check "java 4.3 $a: payload is core.jar and libjavacore.so of the base" sh -c "[ \"\$(unzip -Z1 '$zj' | grep ^system/ | tr '\n' ' ')\" = 'system/framework/core.jar system/lib/libjavacore.so ' ] && unzip -p '$zj' system/lib/libjavacore.so | grep -qx 'javacore 4.3 $a' && unzip -p '$zj' system/framework/core.jar | cmp -s - '$T/fx/ours.jar'"
+  check "java 4.3 $a: BUILD-INFO of the base" sh -c "unzip -p '$zj' kktls/BUILD-INFO.txt | grep -qx 'gate 4.3 4.3.1'"
+  check "java 4.3 $a: helpers of the 4.4 base tag" sh -c "unzip -p '$zj' kktls/bin/$a/kktls-util | cmp -s - '$IN/android-4.4.2_r2/helpers/$a/kktls-util' && [ \"\$(unzip -Z1 '$zj' | grep -c ^kktls/bin/)\" = 2 ]"
+  check "java 4.3 $a: NOTICE has libcore and fdlibm of the base, the 4.4 bionic, no okhttp" sh -c "unzip -p '$zj' NOTICE > '$T/n' && grep -q 'fake libcore.NOTICE of android-4.3_r9' '$T/n' && grep -q 'fake fdlibm.NOTICE of android-4.3_r9' '$T/n' && grep -q 'built from AOSP android-4.3_r9 libcore' '$T/n' && grep -q 'fake bionic-libc.NOTICE of android-4.4.2_r2' '$T/n' && ! grep -qi okhttp '$T/n'"
+done
+check "java 4.4.2 zip NOTICE unchanged by the JB branch (okhttp, the 4.4 libcore)" sh -c "unzip -p '$Z/kktls-java-4.4.2-x86-v9.zip' NOTICE | grep -q 'framework/okhttp.jar from' && unzip -p '$Z/kktls-java-4.4.2-x86-v9.zip' NOTICE | grep -q 'fake libcore.NOTICE of android-4.4.2_r2'"
+# the gate line maps to zip.conf android: one point release exactly, the full AOSP set of a base as 4.N, else refused
+rm -rf "$T/jbx"; cp -r "$T/jb" "$T/jbx"
+jbx_java() { # base gate-arm [gate-x86]: give jbx/<base> java files and gate lines
+  local b=$1 a g
+  for a in armeabi-v7a x86; do
+    g=$2; [ "$a" = armeabi-v7a ] || g=${3:-$2}
+    sed -i '/^java \|^gate /d' "$T/jbx/$b/$a/BUILD-INFO.txt"
+    mkdir -p "$T/jbx/$b/$a/framework"; cp "$T/fx/ours.jar" "$T/jbx/$b/$a/framework/core.jar"
+    echo "javacore $b $a" > "$T/jbx/$b/$a/lib/libjavacore.so"
+    printf 'java core framework/core.jar\njava libjavacore lib/libjavacore.so\n' >> "$T/jbx/$b/$a/BUILD-INFO.txt"
+    [ -z "$g" ] || echo "gate $g" >> "$T/jbx/$b/$a/BUILD-INFO.txt"
+    (cd "$T/jbx/$b/$a" && find . -type f ! -name SHA256SUMS ! -name BUILD-INFO.txt | sed 's#^\./##' | sort | xargs sha256sum > SHA256SUMS)
+  done
+  for n in libcore fdlibm; do echo "fake $n.NOTICE" > "$T/jbx/$b/notice/$n.NOTICE"; done
+  (cd "$T/jbx/$b/notice" && sha256sum ./*.NOTICE | sed 's# \./# #' > SHA256SUMS)
+}
+mkx() { "$MK" "${MKA[@]}" --out "$T/zx" --jb "$T/jbx" > "$T/mkx.log" 2>&1; }
+jbx_java 4.2 4.2.2; jbx_java 4.1 "4.1.2 4.1 4.1.1"
+check "mkzips: gate 4.2.2 -> android=4.2.2, gate of all 4.1 releases -> android=4.1" sh -c "'$MK' --in '$IN' --release v9 --cacerts '$T/cacerts' --conscrypt-notice '$T/cnotice' --out '$T/zx' --jb '$T/jbx' > /dev/null && unzip -p '$T/zx/kktls-java-4.2-armeabi-v7a-v9.zip' kktls/zip.conf | grep -qx android=4.2.2 && unzip -p '$T/zx/kktls-java-4.1-armeabi-v7a-v9.zip' kktls/zip.conf | grep -qx android=4.1 && [ \"\$(wc -l < '$T/zx/SHA256SUMS')\" = 19 ]"
+for g in "4.2" "4.2.1 4.2.2" "4.2.2 4.3" "4.2.x" ""; do
+  jbx_java 4.2 "$g"
+  if mkx; then bad "mkzips accepts the 4.2 gate '$g'"; else ok; fi
+done
+check "mkzips: an empty gate says so" grep -q 'java lines without a gate line' "$T/mkx.log"
+jbx_java 4.2 4.2.2 "4.2 4.2.1 4.2.2"
+if mkx; then bad "mkzips accepts gate lines that differ between ABIs"; else ok; fi
+jbx_java 4.2 4.2.2; rm "$T/jbx/4.2/notice/fdlibm.NOTICE"; (cd "$T/jbx/4.2/notice" && sha256sum ./*.NOTICE | sed 's# \./# #' > SHA256SUMS)
+if mkx; then bad "mkzips accepts a java base without the fdlibm notice"; else ok; fi
+jbx_java 4.2 4.2.2; sed -i '/libjavacore/d' "$T/jbx/4.2/x86/SHA256SUMS"
+if mkx; then bad "mkzips accepts a java file missing from SHA256SUMS"; else ok; fi
+check "mkzips refuses --out-unreleased = --out" sh -c "! '$MK' --in '$IN' --release v9 --cacerts '$T/cacerts' --conscrypt-notice '$T/cnotice' --out '$T/zx' --jb '$T/jb' --out-unreleased '$T/zx' > /dev/null 2>&1"
 check "openssl 4.1 zip carries a libcrypto allow list" sh -c "unzip -Z1 '$Z/kktls-openssl-4.1-x86-v9.zip' | grep -qx kktls/allow-missing-libcrypto.txt"
 check "openssl 4.3 and 4.4 zips carry none" sh -c "! unzip -Z1 '$Z/kktls-openssl-4.3-x86-v9.zip' | grep -q libcrypto.txt && ! unzip -Z1 '$Z/kktls-openssl-4.4-x86-v9.zip' | grep -q libcrypto.txt"
 check "mkzips refuses a tampered JB input" sh -c "echo x >> '$T/jb/4.2/allow/allow-missing-libssl.txt'; ! '$MK' --in '$IN' --release v9 --cacerts '$T/cacerts' --conscrypt-notice '$T/cnotice' --out '$T/z3' --jb '$T/jb' > /dev/null 2>&1"
@@ -193,7 +247,8 @@ cp "$T/fx/ours.so" "$IN/android-4.4.2_r2/x86/lib/libssl.so"
 check "mkzips refuses a bad release name" sh -c "! '$MK' --in '$IN' --release 'v 1' --cacerts '$T/cacerts' --conscrypt-notice '$T/cnotice' --out '$T/z3' > /dev/null 2>&1"
 
 # ---- fake device roots ----------------------------------------------------------------------------------------------
-mkroot() { # dir [key=value...] (build.prop overrides; special: libssl=FIXTURE, libcrypto=FIXTURE, nosdcard=1, media=1, selinuxfs=1|sysfs)
+mkroot() { # dir [key=value...] (build.prop overrides; special: libssl=FIXTURE, libcrypto=FIXTURE, nosdcard=1, media=1, selinuxfs=1|sysfs,
+  # jb=1: a Jelly Bean /system: core.jar but no core-libart/conscrypt/okhttp jars, libjavacore.so but no libjavacrypto.so)
   local r=$1 kv; shift
   rm -rf "$r"; mkdir -p "$r/system/lib" "$r/system/framework" "$r/system/app" "$r/system/priv-app" \
     "$r/system/etc/security/cacerts" "$r/data/dalvik-cache" "$r/sdcard"
@@ -220,6 +275,8 @@ mkroot() { # dir [key=value...] (build.prop overrides; special: libssl=FIXTURE, 
       media=1) mkdir -p "$r/data/media/0" ;;
       selinuxfs=1) mkdir -p "$r/proc"; printf 'nodev\tsysfs\nnodev\tselinuxfs\n\text4\n' > "$r/proc/filesystems" ;;
       selinuxfs=sysfs) mkdir -p "$r/sys/fs/selinux" ;;
+      jb=1) for j in core-libart conscrypt okhttp; do rm -f "$r/system/framework/$j.jar" "$r/system/framework/$j.odex"; done
+            rm -f "$r/system/lib/libjavacrypto.so"; echo "stock javacore" > "$r/system/lib/libjavacore.so" ;;
       *) sed -i "/^${kv%%=*}=/d" "$r/system/build.prop"; echo "$kv" >> "$r/system/build.prop" ;;
     esac
   done
@@ -347,6 +404,53 @@ for kv in "4.3 4.3.1" "4.2 4.2.2" "4.1 4.1.2 libcrypto=dev-zlib.so" "4.1 4.1"; d
   installs "restore after openssl $b on $v" "$R0" "$R"
   check "openssl $b on $v: /system identical after restore" [ "$ORIG" = "$(snap "$R0" system)" ]
 done
+
+# Jelly Bean java zip (4.3): core.jar + libjavacore.so over the 4.3 openssl zip, on 4.3.x only
+JA=$Z/kktls-java-4.3-armeabi-v7a-v9.zip JX=$U/kktls-java-4.3-x86-v9.zip OA=$Z/kktls-openssl-4.3-armeabi-v7a-v9.zip
+jbroot() { # release [key=value...]: an ARM JB root with the kktls openssl marker
+  local v=$1; shift
+  mkroot "$R0" ro.build.version.release="$v" ro.product.cpu.abi=armeabi-v7a jb=1 "$@"
+  mkdir -p "$R0/system/etc/kktls"; echo v9 > "$R0/system/etc/kktls/openssl.version"; chmod 0644 "$R0/system/etc/kktls/openssl.version"
+}
+for v in 4.4.2 4.2.2 4.2 4.1.2 4.30 5.0; do
+  jbroot "$v"; refused "java 4.3 zip on $v" "$R0" "$JA"
+done
+check "java 4.3 zip on 5.0: the refusal names 4.3.x" grep -q "is not 4.3.x" "$T/out"
+jbroot 4.3; refused "java 4.4.2 zip on a JB 4.3" "$R0" "$Z/kktls-java-4.4.2-armeabi-v7a-v9.zip"
+jbroot 4.3.1; refused "java 4.4.4 zip on a JB 4.3.1" "$R0" "$Z/kktls-java-4.4.4-armeabi-v7a-v9.zip"
+jbroot 4.3; rm -r "$R0/system/etc/kktls"
+refused "java 4.3 zip without the openssl marker" "$R0" "$JA"
+check "java 4.3 zip without openssl: the refusal names the openssl zip" grep -q 'install the kktls openssl zip first' "$T/out"
+jbroot 4.3.1 ro.cm.version=10.2
+refused "java 4.3 zip on a CM 4.3.1 build" "$R0" "$JA"
+jbroot 4.3.1; refused "x86 java 4.3 zip on an ARM 4.3.1" "$R0" "$JX"
+jbroot 4.3; cp "$T/fx/nodex.jar" "$R0/system/framework/framework.jar"
+refused "java 4.3 zip on an odexed and stripped 4.3 (the SDK images)" "$R0" "$JA"
+check "java 4.3 zip on a stripped system: the refusal names classes.dex" grep -q 'framework.jar is odexed without classes.dex' "$T/out"
+for v in 4.3 4.3.1; do
+  mkroot "$R0" ro.build.version.release=$v ro.product.cpu.abi=armeabi-v7a jb=1; ORIG=$(snap "$R0" system)
+  : > "$LOG"
+  installs "openssl 4.3 zip on JB $v" "$R0" "$OA"
+  installs "java 4.3 zip on JB $v" "$R0" "$JA"
+  check "java 4.3 on $v: dex check ran" grep -q 'dex check: 5 odexed jar/apk files carry classes.dex' "$T/out"
+  check "java 4.3 on $v: core.jar and libjavacore.so replaced" sh -c "cmp -s '$R0/system/framework/core.jar' '$T/fx/ours.jar' && grep -qx 'javacore 4.3 armeabi-v7a' '$R0/system/lib/libjavacore.so'"
+  check "java 4.3 on $v: core.odex removed, framework.odex kept" sh -c "[ ! -e '$R0/system/framework/core.odex' ] && [ -f '$R0/system/framework/framework.odex' ]"
+  check "java 4.3 on $v: dalvik-cache wiped" [ -z "$(ls -A "$R0/data/dalvik-cache")" ]
+  check "java 4.3 on $v: marker" [ "$(cat "$R0/system/etc/kktls/java.version")" = v9 ]
+  check "java 4.3 on $v: 2 files + marker labelled" [ "$(grep -c "java.version.kktls-new\$\|core.jar.kktls-new\$\|libjavacore.so.kktls-new\$" "$LOG")" = 3 ]
+  MJ=$(grep -l '^kind java' "$R0"/data/kktls-backup/0*/manifest)
+  check "java 4.3 on $v: the backup holds core.jar, libjavacore.so and core.odex" sh -c "grep -q ' system/framework/core.jar\$' '$MJ' && grep -q ' system/lib/libjavacore.so\$' '$MJ' && grep -q '^F .* system/framework/core.odex\$' '$MJ' && grep -qx 'A system/etc/kktls/java.version' '$MJ'"
+  installs "java 4.3 zip rerun on $v (core.odex already gone)" "$R0" "$JA"
+  installs "restore after java 4.3 on $v" "$R0" "$R"
+  check "java 4.3 on $v: /system identical after restore (core.jar, libjavacore.so, core.odex back)" [ "$ORIG" = "$(snap "$R0" system)" ]
+  check "java 4.3 on $v: stock core.odex content back" grep -qx 'odex core' "$R0/system/framework/core.odex"
+done
+mkroot "$R0" ro.build.version.release=4.3.1 jb=1; ORIG=$(snap "$R0" system)
+installs "x86 openssl 4.3 zip on x86 JB 4.3.1" "$R0" "$Z/kktls-openssl-4.3-x86-v9.zip"
+installs "x86 java 4.3 zip (unreleased) on x86 JB 4.3.1" "$R0" "$JX"
+check "x86 java 4.3: libjavacore.so replaced" grep -qx 'javacore 4.3 x86' "$R0/system/lib/libjavacore.so"
+installs "restore after x86 java 4.3" "$R0" "$R"
+check "x86 java 4.3: /system identical after restore" [ "$ORIG" = "$(snap "$R0" system)" ]
 
 # ---- install chain and restore -------------------------------------------------------------------------------------
 mkroot "$R0"; ORIG=$(snap "$R0" system)
@@ -781,12 +885,19 @@ fi
 
 # ---- real release output --------------------------------------------------------------------------------------------
 if [ ${#REAL[@]} = 4 ]; then
-  jbargs=(); nz=10
-  [ ${#RJB[@]} = 0 ] || { jbargs=(--jb "${RJB[0]}"); nz=$((10 + 2 * $(ls -d "${RJB[0]}"/4.[1-3] | wc -l))); }
-  "$MK" --in "${REAL[0]}" --release t1 --cacerts "${REAL[1]}" --conscrypt-notice "${REAL[2]}" --out "$T/r1" "${jbargs[@]}" > "$T/r1.log"
-  "$MK" --in "${REAL[0]}" --release t1 --cacerts "${REAL[1]}" --conscrypt-notice "${REAL[2]}" --out "$T/r2" "${jbargs[@]}" > /dev/null
+  jbargs=() nz=10 nu=0
+  if [ ${#RJB[@]} != 0 ]; then
+    # per JB base 2 openssl zips; a base with java lines also the ARM java zip (x86: --out-unreleased)
+    nu=$(cat "${RJB[0]}"/4.[1-3]/armeabi-v7a/BUILD-INFO.txt | grep -c '^gate ') || true
+    jbargs=(--jb "${RJB[0]}"); nz=$((10 + 2 * $(ls -d "${RJB[0]}"/4.[1-3] | wc -l) + nu))
+  fi
+  "$MK" --in "${REAL[0]}" --release t1 --cacerts "${REAL[1]}" --conscrypt-notice "${REAL[2]}" --out "$T/r1" "${jbargs[@]}" \
+    --out-unreleased "$T/ru1" > "$T/r1.log"
+  "$MK" --in "${REAL[0]}" --release t1 --cacerts "${REAL[1]}" --conscrypt-notice "${REAL[2]}" --out "$T/r2" "${jbargs[@]}" \
+    --out-unreleased "$T/ru2" > /dev/null
   check "real: $nz zips" [ "$(wc -l < "$T/r1/SHA256SUMS")" = "$nz" ]
-  check "real: byte-identical across two runs" cmp -s "$T/r1/SHA256SUMS" "$T/r2/SHA256SUMS"
+  check "real: $nu unreleased zips" [ "$(wc -l < "$T/ru1/SHA256SUMS")" = "$nu" ]
+  check "real: byte-identical across two runs" sh -c "cmp -s '$T/r1/SHA256SUMS' '$T/r2/SHA256SUMS' && cmp -s '$T/ru1/SHA256SUMS' '$T/ru2/SHA256SUMS'"
   mkroot "$R0"
   cp "${REAL[3]}/libssl.so" "${REAL[3]}/libcrypto.so" "$R0/system/lib/"; chmod 0644 "$R0"/system/lib/*.so
   ORIG=$(snap "$R0" system); : > "$LOG"
@@ -814,9 +925,14 @@ if [ ${#REAL[@]} = 4 ]; then
     check "sdk: /system identical after restore" [ "$ORIG" = "$(snap "$R0" system)" ]
   fi
   for jd in ${RJB[0]:+"${RJB[0]}"/4.[1-3]}; do
-    b=${jd##*/} st=$RJB_STOCK/${jd##*/}/x86
+    b=${jd##*/} st=$RJB_STOCK/${jd##*/}/x86 jz=$T/ru1/kktls-java-${jd##*/}-x86-t1.zip rv=${jd##*/}.9
     [ -f "$st/libssl.so" ] && [ -f "$st/libcrypto.so" ] || { bad "real jb $b: no stock x86 libs in $st"; continue; }
-    mkroot "$R0" ro.build.version.release="$b.9"
+    if [ -f "$jz" ]; then  # the java zip's release (a point-release gate) or any <base>.x
+      rv=$(unzip -p "$jz" kktls/zip.conf | sed -n 's/^android=//p'); [ "$rv" != "$b" ] || rv=$b.9
+      mkroot "$R0" ro.build.version.release="$rv" jb=1
+    else
+      mkroot "$R0" ro.build.version.release="$rv"
+    fi
     cp "$st/libssl.so" "$st/libcrypto.so" "$R0/system/lib/"; chmod 0644 "$R0"/system/lib/*.so
     ORIG=$(snap "$R0" system); : > "$LOG"
     refused "real jb $b: the 4.4 openssl zip" "$R0" "$T/r1/kktls-openssl-4.4-x86-t1.zip"
@@ -824,6 +940,10 @@ if [ ${#REAL[@]} = 4 ]; then
       KK_PATH=$T/chcon installs "real jb $b: $z" "$R0" "$T/r1/$z.zip"
     done
     check "real jb $b: libssl is the base's build" cmp -s "$R0/system/lib/libssl.so" "$jd/x86/lib/libssl.so"
+    if [ -f "$jz" ]; then
+      KK_PATH=$T/chcon installs "real jb $b: ${jz##*/}" "$R0" "$jz"
+      check "real jb $b: core.jar, libjavacore.so are the base's build, core.odex removed" sh -c "cmp -s '$R0/system/framework/core.jar' '$jd/x86/framework/core.jar' && cmp -s '$R0/system/lib/libjavacore.so' '$jd/x86/lib/libjavacore.so' && [ ! -e '$R0/system/framework/core.odex' ]"
+    fi
     KK_PATH=$T/chcon installs "real jb $b: restore" "$R0" "$T/r1/kktls-restore-t1.zip"
     check "real jb $b: /system identical after restore" [ "$ORIG" = "$(snap "$R0" system)" ]
   done
