@@ -1,8 +1,8 @@
 # Changelog
 
-## v3 (unreleased)
+## v3
 
-Android 4.3, 4.2 and 4.1.2: the Java TLS layer (layer A) on ARM.
+Android 4.3, 4.2 and 4.1.2 (Jelly Bean, API 16-18): the Java TLS layer (layer A), ARM only. TLS 1.3 stays 4.4 only.
 
 ### New
 
