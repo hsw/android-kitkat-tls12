@@ -43,9 +43,10 @@ series (no 4.4 libcore counterpart: 4.4 has this change in
 external_okhttp 0001 and 0002), made from its Android 4.2 port. 4.1's
 HttpConnection.setupSecureSocket still asks for ZLIB compression on the
 tolerant path (4.2 dropped that, libcore 7695a9b): the call stays,
-inside the new OpenSSLSocketImpl branch, and the Javadoc keeps the
-compression wording (the OpenSSL 1.0.1u of the 4.1 tree is built without
-zlib, so no compression method is offered either way). The test comment
+inside the new OpenSSLSocketImpl branch, and the setupSecureSocket
+Javadoc keeps the compression wording (the OpenSSL 1.0.1u of the 4.1
+tree is built without zlib, so no compression method is offered either
+way); the makeSslConnection Javadoc takes the 4.2 text. The test comment
 names stock 4.1. Otherwise only line offsets differ.
 ---
  .../javax/net/ssl/HttpsURLConnection.java     |  4 +-
