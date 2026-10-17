@@ -1,0 +1,384 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: android-kitkat-tls12 <android-kitkat-tls12@users.noreply.github.com>
+Date: Fri, 9 Oct 2026 12:00:00 +0000
+Subject: [PATCH 13/32] Port of d745755, b221fc9, 342097d, 966ae8a, f67d784:
+ SNI by default
+
+Send Server Name Indication for every client socket that has a
+usable host name, as Android 6.0 does, so that Apache HTTP and plain
+SSLSocketFactory users reach SNI-only virtual hosts with the right
+certificate. Before, only callers of setHostname() (okhttp,
+SSLCertificateSocketFactory) sent SNI.
+
+The 6.0 commits change SSLParametersImpl and Platform of the
+standalone tree; the 4.4 OpenSSLSocketImpl keeps its SNI settings
+itself, so the behaviour is ported there:
+
+- the (String host, ...) constructors keep the host in a new field
+  peerHostname (4.4 passed it to super() only);
+- getSniHostname(): an explicit setHostname() wins (null turns SNI
+  off, 966ae8a's useSni); otherwise, unless jsse.enableSNIExtension is
+  "false" (default "true", read at each handshake; any other value
+  throws, 966ae8a/b221fc9/d745755), the host the socket was created
+  with or the wrapped socket's host. Never getPeerHostName() or
+  getInetAddress().getHostName(), which can do a reverse DNS lookup;
+- SSL_set_tlsext_host_name only for names that
+  AddressUtils.isValidSniHostname() accepts: a dot, not an IP literal
+  (342097d; RFC 6066 section 3); this also applies to setHostname();
+- AddressUtils (342097d + the regex matcher of f67d784) and its test,
+  Platform.isLiteralIpAddress() = InetAddress.isNumeric() (no lookup),
+  plus cases for the literal forms that contain a dot.
+
+The session cache key (getPeerHostName()) and the host passed to the
+trust manager (wrappedHost) are unchanged.
+
+Android 4.2 port (android-4.2.2_r1) of patch 0013 of the 4.4 series,
+made from its Android 4.3 port. Paths and names: libcore/crypto of 4.4
+(org.conscrypt, org_conscrypt_NativeCrypto.cpp in libjavacrypto) is
+libcore/luni on 4.2 (org.apache.harmony.xnet.provider.jsse,
+org_apache_harmony_xnet_provider_jsse_NativeCrypto.cpp in libjavacore).
+4.2 has no Platform class in its JSSE package: as in the 4.3 port, the
+hunk that adds Platform.isLiteralIpAddress() becomes a new minimal
+Platform class with only that method (InetAddress.isNumeric(), no
+lookup), so AddressUtils stays as in 4.4. getSniHostname() and
+isSniEnabledByDefault() are inserted before getPeerHostName(), and their
+Javadoc names the 4.2 socket. The new fields follow hostname (4.2 has no
+TLS Channel ID fields there).
+---
+ .../xnet/provider/jsse/AddressUtils.java      |  67 ++++++++++++
+ .../xnet/provider/jsse/OpenSSLSocketImpl.java |  59 +++++++++-
+ .../harmony/xnet/provider/jsse/Platform.java  |  35 ++++++
+ .../xnet/provider/jsse/AddressUtilsTest.java  | 102 ++++++++++++++++++
+ 4 files changed, 261 insertions(+), 2 deletions(-)
+ create mode 100644 luni/src/main/java/org/apache/harmony/xnet/provider/jsse/AddressUtils.java
+ create mode 100644 luni/src/main/java/org/apache/harmony/xnet/provider/jsse/Platform.java
+ create mode 100644 luni/src/test/java/org/apache/harmony/xnet/provider/jsse/AddressUtilsTest.java
+
+diff --git a/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/AddressUtils.java b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/AddressUtils.java
+new file mode 100644
+index 00000000000..94b961cb98d
+--- /dev/null
++++ b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/AddressUtils.java
+@@ -0,0 +1,67 @@
++/*
++ * Copyright 2014 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.apache.harmony.xnet.provider.jsse;
++
++import java.util.regex.Pattern;
++
++/**
++ * Utilities to check whether IP addresses meet some criteria.
++ */
++public final class AddressUtils {
++    /*
++     * Regex that matches valid IPv4 and IPv6 addresses.
++     */
++    private static final String IP_PATTERN = "^(?:(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9]?[0-9])\\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9]?[0-9]))|"
++            + "(?i:(?:(?:[0-9a-f]{1,4}:){7}(?:[0-9a-f]{1,4}|:))|(?:(?:[0-9a-f]{1,4}:){6}(?::[0-9a-f]{1,4}|(?:(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(?:\\.(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3})|:))|(?:(?:[0-9a-f]{1,4}:){5}(?:(?:(?::[0-9a-f]{1,4}){1,2})|:(?:(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(?:\\.(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3})|:))|(?:(?:[0-9a-f]{1,4}:){4}(?:(?:(?::[0-9a-f]{1,4}){1,3})|(?:(?::[0-9a-f]{1,4})?:(?:(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(?:\\.(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}))|:))|(?:(?:[0-9a-f]{1,4}:){3}(?:(?:(?::[0-9a-f]{1,4}){1,4})|(?:(?::[0-9a-f]{1,4}){0,2}:(?:(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(?:\\.(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}))|:))|(?:(?:[0-9a-f]{1,4}:){2}(?:(?:(?::[0-9a-f]{1,4}){1,5})|(?:(?::[0-9a-f]{1,4}){0,3}:(?:(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(?:\\.(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}))|:))|(?:(?:[0-9a-f]{1,4}:){1}(?:(?:(?::[0-9a-f]{1,4}){1,6})|(?:(?::[0-9a-f]{1,4}){0,4}:(?:(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(?:\\.(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}))|:))|(?::(?:(?:(?::[0-9a-f]{1,4}){1,7})|(?:(?::[0-9a-f]{1,4}){0,5}:(?:(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(?:\\.(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}))|:)))$";
++
++    private static Pattern ipPattern;
++
++    private AddressUtils() {
++    }
++
++    /**
++     * Returns true when the supplied hostname is valid for SNI purposes.
++     */
++    public static boolean isValidSniHostname(String sniHostname) {
++        if (sniHostname == null) {
++            return false;
++        }
++
++        // Must be a FQDN.
++        if (sniHostname.indexOf('.') == -1) {
++            return false;
++        }
++
++        if (Platform.isLiteralIpAddress(sniHostname)) {
++            return false;
++        }
++
++        return true;
++    }
++
++    /**
++     * Returns true if the supplied hostname is an literal IP address.
++     */
++    public static boolean isLiteralIpAddress(String hostname) {
++        /* This is here for backwards compatibility for pre-Honeycomb devices. */
++        Pattern ipPattern = AddressUtils.ipPattern;
++        if (ipPattern == null) {
++            AddressUtils.ipPattern = ipPattern = Pattern.compile(IP_PATTERN);
++        }
++        return ipPattern.matcher(hostname).matches();
++    }
++}
+diff --git a/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/OpenSSLSocketImpl.java b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/OpenSSLSocketImpl.java
+index 0702f88612d..6a8292515bc 100644
+--- a/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/OpenSSLSocketImpl.java
++++ b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/OpenSSLSocketImpl.java
+@@ -74,7 +74,18 @@ public class OpenSSLSocketImpl
+     private String[] enabledProtocols;
+     private String[] enabledCipherSuites;
+     private boolean useSessionTickets;
++    /** The SNI host name set by {@link #setHostname}; used only when {@link #useSni} is set. */
+     private String hostname;
++    /**
++     * Whether SNI is on, as set by {@link #setHostname} ({@code hostname != null}); {@code null}
++     * until then, when the default of {@link #getSniHostname} applies (port of 966ae8a).
++     */
++    private Boolean useSni;
++    /**
++     * The peer's host name if this socket was created with one (the {@code String host}
++     * constructors). Never the result of a reverse lookup, so it can be used for SNI (SNI by default).
++     */
++    private String peerHostname;
+     private OpenSSLSessionImpl sslSession;
+     private final Socket socket;
+     private boolean autoClose;
+@@ -120,6 +131,7 @@ public class OpenSSLSocketImpl
+             throws IOException {
+         super(host, port);
+         this.socket = this;
++        this.peerHostname = host;
+         init(sslParameters);
+     }
+ 
+@@ -136,6 +148,7 @@ public class OpenSSLSocketImpl
+                                 SSLParametersImpl sslParameters) throws IOException {
+         super(host, port, clientAddress, clientPort);
+         this.socket = this;
++        this.peerHostname = host;
+         init(sslParameters);
+     }
+ 
+@@ -280,8 +293,9 @@ public class OpenSSLSocketImpl
+             if (useSessionTickets) {
+                 NativeCrypto.SSL_clear_options(sslNativePointer, NativeCrypto.SSL_OP_NO_TICKET);
+             }
+-            if (hostname != null) {
+-                NativeCrypto.SSL_set_tlsext_host_name(sslNativePointer, hostname);
++            String sniHostname = getSniHostname();
++            if (AddressUtils.isValidSniHostname(sniHostname)) {
++                NativeCrypto.SSL_set_tlsext_host_name(sslNativePointer, sniHostname);
+             }
+ 
+             boolean enableSessionCreation = sslParameters.getEnableSessionCreation();
+@@ -423,6 +437,46 @@ public class OpenSSLSocketImpl
+         }
+     }
+ 
++    /**
++     * Returns the host name to send in the Server Name Indication (SNI) extension, or null. The
++     * caller sends it only if {@link AddressUtils#isValidSniHostname} accepts it (a fully qualified
++     * domain name, not an IP literal; RFC 6066 section 3).
++     *
++     * <p>An explicit {@link #setHostname} wins ({@code null} turns SNI off). Otherwise SNI is on
++     * unless {@code jsse.enableSNIExtension} is {@code false}, and the name is the host this socket
++     * was created with or the host given for the wrapped socket. It is never derived from
++     * {@link #getPeerHostName} or {@code getInetAddress().getHostName()}, which can do a reverse
++     * DNS lookup.
++     *
++     * <p>kktls port of conscrypt d745755, b221fc9, 342097d, 966ae8a and f67d784 (SNI by default in
++     * Android 6.0) onto the 4.2 socket, which keeps its SNI settings itself.
++     */
++    private String getSniHostname() {
++        if (useSni != null) {
++            return useSni.booleanValue() ? hostname : null;
++        }
++        if (!isSniEnabledByDefault()) {
++            return null;
++        }
++        return (peerHostname != null) ? peerHostname : wrappedHost;
++    }
++
++    /**
++     * Returns whether Server Name Indication (SNI) is enabled by default for
++     * sockets. For more information on SNI, see RFC 6066 section 3.
++     */
++    private static boolean isSniEnabledByDefault() {
++        String enableSNI = System.getProperty("jsse.enableSNIExtension", "true");
++        if ("true".equalsIgnoreCase(enableSNI)) {
++            return true;
++        } else if ("false".equalsIgnoreCase(enableSNI)) {
++            return false;
++        } else {
++            throw new RuntimeException(
++                    "Can only set \"jsse.enableSNIExtension\" to \"true\" or \"false\"");
++        }
++    }
++
+     String getPeerHostName() {
+         if (wrappedHost != null) {
+             return wrappedHost;
+@@ -793,6 +847,7 @@ public class OpenSSLSocketImpl
+      * @param hostname the desired SNI hostname, or null to disable
+      */
+     public void setHostname(String hostname) {
++        this.useSni = Boolean.valueOf(hostname != null);
+         this.hostname = hostname;
+     }
+ 
+diff --git a/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/Platform.java b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/Platform.java
+new file mode 100644
+index 00000000000..af1da2f9d40
+--- /dev/null
++++ b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/Platform.java
+@@ -0,0 +1,35 @@
++/*
++ * Copyright (C) 2013 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.apache.harmony.xnet.provider.jsse;
++
++import java.net.InetAddress;
++
++/**
++ * Platform-specific methods of the KitKat org.conscrypt.Platform that the SNI code
++ * (AddressUtils) needs; Android 4.2 has no Platform class in this package.
++ */
++class Platform {
++    private Platform() {
++    }
++
++    /**
++     * Returns true if the supplied hostname is an literal IP address.
++     */
++    public static boolean isLiteralIpAddress(String hostname) {
++        return InetAddress.isNumeric(hostname);
++    }
++}
+diff --git a/luni/src/test/java/org/apache/harmony/xnet/provider/jsse/AddressUtilsTest.java b/luni/src/test/java/org/apache/harmony/xnet/provider/jsse/AddressUtilsTest.java
+new file mode 100644
+index 00000000000..d3cc51b18d9
+--- /dev/null
++++ b/luni/src/test/java/org/apache/harmony/xnet/provider/jsse/AddressUtilsTest.java
+@@ -0,0 +1,102 @@
++/*
++ * Copyright 2014 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.apache.harmony.xnet.provider.jsse;
++
++import junit.framework.TestCase;
++
++/**
++ * Test for AddressUtils
++ */
++public class AddressUtilsTest extends TestCase {
++    public void test_isValidSniHostname_Success() throws Exception {
++        assertTrue(AddressUtils.isValidSniHostname("www.google.com"));
++    }
++
++    public void test_isValidSniHostname_NotFQDN_Failure() throws Exception {
++        assertFalse(AddressUtils.isValidSniHostname("www"));
++    }
++
++    public void test_isValidSniHostname_IPv4_Failure() throws Exception {
++        assertFalse(AddressUtils.isValidSniHostname("192.168.0.1"));
++    }
++
++    public void test_isValidSniHostname_IPv6_Failure() throws Exception {
++        assertFalse(AddressUtils.isValidSniHostname("2001:db8::1"));
++    }
++
++    // kktls: the platform check (Platform.isLiteralIpAddress = InetAddress.isNumeric) on the
++    // forms that contain a dot, so that only the literal-IP test can reject them.
++    public void test_isValidSniHostname_Kktls_LiteralsWithDot_Failure() throws Exception {
++        assertFalse(AddressUtils.isValidSniHostname("127.0.0.1"));
++        assertFalse(AddressUtils.isValidSniHostname("::ffff:127.0.0.1"));
++        assertFalse(AddressUtils.isValidSniHostname("[::ffff:192.168.0.1]"));
++    }
++
++    public void test_isValidSniHostname_Kktls_Names_Success() throws Exception {
++        assertTrue(AddressUtils.isValidSniHostname("localhost.localdomain"));
++        assertTrue(AddressUtils.isValidSniHostname("sni.tls.test"));
++        assertTrue(AddressUtils.isValidSniHostname("1.2.3.4.example.com"));
++    }
++
++    public void test_isValidSniHostname_Kktls_NotFQDN_Failure() throws Exception {
++        assertFalse(AddressUtils.isValidSniHostname(null));
++        assertFalse(AddressUtils.isValidSniHostname("localhost"));
++        assertFalse(AddressUtils.isValidSniHostname("::1"));
++    }
++
++    public void test_isLiteralIpAddress_IPv4_Success() throws Exception {
++        assertTrue(AddressUtils.isLiteralIpAddress("127.0.0.1"));
++        assertTrue(AddressUtils.isLiteralIpAddress("255.255.255.255"));
++        assertTrue(AddressUtils.isLiteralIpAddress("0.0.00.000"));
++        assertTrue(AddressUtils.isLiteralIpAddress("192.009.010.19"));
++        assertTrue(AddressUtils.isLiteralIpAddress("254.249.190.094"));
++    }
++
++    public void test_isLiteralIpAddress_IPv4_ExtraCharacters_Failure() throws Exception {
++        assertFalse(AddressUtils.isLiteralIpAddress("127.0.0.1a"));
++        assertFalse(AddressUtils.isLiteralIpAddress(" 255.255.255.255"));
++        assertFalse(AddressUtils.isLiteralIpAddress("0.0.00.0009"));
++        assertFalse(AddressUtils.isLiteralIpAddress("192.009z.010.19"));
++        assertFalse(AddressUtils.isLiteralIpAddress("254.249..094"));
++    }
++
++    public void test_isLiteralIpAddress_IPv4_NumbersTooLarge_Failure() throws Exception {
++        assertFalse(AddressUtils.isLiteralIpAddress("256.255.255.255"));
++        assertFalse(AddressUtils.isLiteralIpAddress("255.255.255.256"));
++        assertFalse(AddressUtils.isLiteralIpAddress("192.168.1.260"));
++    }
++
++    public void test_isLiteralIpAddress_IPv6_Success() throws Exception {
++        assertTrue(AddressUtils.isLiteralIpAddress("::1"));
++        assertTrue(AddressUtils.isLiteralIpAddress("2001:Db8::1"));
++        assertTrue(AddressUtils.isLiteralIpAddress("2001:cdbA:0000:0000:0000:0000:3257:9652"));
++        assertTrue(AddressUtils.isLiteralIpAddress("2001:cdba:0:0:0:0:3257:9652"));
++        assertTrue(AddressUtils.isLiteralIpAddress("2001:cdBA::3257:9652"));
++    }
++
++    public void test_isLiteralIpAddress_IPv6_Failure() throws Exception {
++        assertFalse(AddressUtils.isLiteralIpAddress(":::1"));
++        assertFalse(AddressUtils.isLiteralIpAddress("::11111"));
++        assertFalse(AddressUtils.isLiteralIpAddress("20011::1111"));
++        assertFalse(AddressUtils.isLiteralIpAddress("2001:db8:::1"));
++        assertFalse(AddressUtils.isLiteralIpAddress("2001:cdba:0000:00000:0000:0000:3257:9652"));
++        assertFalse(AddressUtils.isLiteralIpAddress("2001:cdbA:0000:0000:0000:0000:0000:3257:9652"));
++        assertFalse(AddressUtils.isLiteralIpAddress("2001:cdba:0::0:0:0:3257:9652"));
++        assertFalse(AddressUtils.isLiteralIpAddress("02001:cdba::3257:9652"));
++        assertFalse(AddressUtils.isLiteralIpAddress("2001:cdba::3257:96521"));
++    }
++}

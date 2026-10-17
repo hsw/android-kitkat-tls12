@@ -1,0 +1,667 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: android-kitkat-tls12 <android-kitkat-tls12@users.noreply.github.com>
+Date: Fri, 9 Oct 2026 12:00:00 +0000
+Subject: [PATCH 30/32] Tests - tighter assertions and missing cases of the
+ series
+
+Review of this series; tests only.
+
+SSLSocketTest:
+- test_SSLSocket_ClientHello_padding asserts the padded ClientHello is
+  exactly 512 bytes (OpenSSL 1.0.1u pads the handshake message to
+  0x200), not at least 512.
+- getSupportedCipherSuites_connect: the non-export DHE suites from the
+  AndroidOpenSSL client to the HarmonyJSSE server (libcore/0024) must
+  now fail in the client with SSLHandshakeException "dh key too small"
+  (OpenSSL's Logjam check against the 512-bit group); before, any
+  exception counted as the expected failure.
+- handshakeWrapped (session reuse tests) uses 30 s socket and future
+  timeouts, so a stalled handshake fails the test instead of the run.
+  test_SSLSocket_sessionReuse_onlyWhenResumed stays a guard test: it
+  passes before and after cm-11 3f575a6.
+- test_SSLSocket_SNI_ipLiteral_noReverseDns is renamed
+  test_SSLSocket_SNI_wrappedIpLiteral_noReverseDns: it covers a wrapped
+  socket only and passed before the SNI-by-default port too. New
+  test_SSLSocket_SNI_inetAddress_noReverseDns: for a platform socket
+  created with an InetAddress, the SNI helper returns null and does not
+  resolve the peer's name (the handshake still does, for the session
+  cache key, as in 4.4 and 6.0, so the helper is called directly).
+- The ClientHello capture helper (upstream 0007cf6/b1fe85c) no longer
+  races: the reading task closed the accepted socket itself, so the
+  client could fail and cancel the reading future before call()
+  returned, and get() threw CancellationException although the
+  ClientHello had been read (seen on the single-vCPU emulator). The
+  test thread now closes it after get(). A client that fails before
+  sending a ClientHello is reported with its own exception: the
+  IOException its startHandshake() ended with (swallowed as expected
+  before) becomes the cause of the helper's exception, so a
+  CancellationException never hides why nothing was captured. New
+  test_SSLSocket_ClientHello_captureReportsEarlyClientFailure (a never
+  connected socket; failed with CancellationException before).
+
+SSLSocketFactoryTest.test_SSLSocketFactory_getDefault_isProviderClass:
+getDefault() is the class named by ssl.SocketFactory.provider whenever
+that class is loadable (libcore/0025 names the layer-D wrapper;
+getDefault() falls back silently if it cannot create it).
+
+URLConnectionTest.testSslFallback_socketWithoutScsvSupport: okhttp's
+TLSv1 retry with a socket that does not list TLS_FALLBACK_SCSV as
+supported (a delegating ScsvHidingSSLSocket around the platform socket)
+goes out without it and connects (the c3f6560 branch that had no
+runtime test). A HarmonyJSSE client factory cannot serve here: its
+createSocket(Socket, host, port, autoClose) throws a
+NullPointerException on 4.4 (SSLSocketWrapper initialises its transport
+in the superclass constructor before the wrapped socket is set).
+
+TrustManagerImplTest.testLearnedIntermediateCrossSignedPairTerminates:
+the bare leaf and the chain ending in the cross-signed cycle must
+terminate within 60 s and be either rejected or accepted with a trusted
+chain from the leaf to the root (a valid path through I_R exists; the
+4.4 walk rejects it, a backtracking builder may accept it). The worker
+thread is shared by a runWithin helper.
+
+Android 4.2 port (android-4.2.2_r1) of patch 0031 of the 4.4 series
+(renumbered: the 4.4 patch 0025, the ssl.SocketFactory.provider hook of
+the TLS 1.3 layer, is not part of this series), made from its Android
+4.3 port. Paths and names: libcore/crypto of 4.4 (org.conscrypt,
+org_conscrypt_NativeCrypto.cpp in libjavacrypto) is libcore/luni on 4.2
+(org.apache.harmony.xnet.provider.jsse,
+org_apache_harmony_xnet_provider_jsse_NativeCrypto.cpp in libjavacore).
+Otherwise the same change; only line offsets differ.
+---
+ .../libcore/java/net/URLConnectionTest.java   | 165 +++++++++++++++++
+ .../javax/net/ssl/SSLSocketFactoryTest.java   |  26 +++
+ .../libcore/javax/net/ssl/SSLSocketTest.java  | 167 +++++++++++++++---
+ .../provider/jsse/TrustManagerImplTest.java   |  44 ++++-
+ 4 files changed, 378 insertions(+), 24 deletions(-)
+
+diff --git a/luni/src/test/java/libcore/java/net/URLConnectionTest.java b/luni/src/test/java/libcore/java/net/URLConnectionTest.java
+index 0a4d632c8c3..ebf91fc2299 100644
+--- a/luni/src/test/java/libcore/java/net/URLConnectionTest.java
++++ b/luni/src/test/java/libcore/java/net/URLConnectionTest.java
+@@ -43,6 +43,7 @@ import java.net.ProtocolException;
+ import java.net.Proxy;
+ import java.net.ResponseCache;
+ import java.net.Socket;
++import java.net.SocketException;
+ import java.net.SocketTimeoutException;
+ import java.net.URI;
+ import java.net.URL;
+@@ -70,6 +71,7 @@ import java.util.concurrent.atomic.AtomicReference;
+ import java.util.zip.GZIPInputStream;
+ import java.util.zip.GZIPOutputStream;
+ import javax.net.SocketFactory;
++import javax.net.ssl.HandshakeCompletedListener;
+ import javax.net.ssl.HostnameVerifier;
+ import javax.net.ssl.HttpsURLConnection;
+ import javax.net.ssl.SSLContext;
+@@ -2282,6 +2284,43 @@ public final class URLConnectionTest extends TestCase {
+                 StandardNames.CIPHER_SUITE_FALLBACK);
+     }
+ 
++    /**
++     * kktls: okhttp's retry adds TLS_FALLBACK_SCSV only when the socket lists it as supported
++     * (okhttp c3f6560, external_okhttp/0001). The client sockets here hide the SCSV from
++     * getSupportedCipherSuites() (as a socket of a provider without it would; HarmonyJSSE cannot
++     * serve, its createSocket(Socket, ...) throws a NullPointerException on 4.4), so the TLSv1
++     * retry must go out without the SCSV and still connect.
++     */
++    public void testSslFallback_socketWithoutScsvSupport() throws Exception {
++        TestSSLContext testSSLContext = TestSSLContext.create();
++        SSLSocketFactory serverSocketFactory = new LimitedProtocolsSocketFactory(
++                testSSLContext.serverContext.getSocketFactory(), "TLSv1");
++        server.useHttps(serverSocketFactory, false);
++        server.enqueue(new MockResponse().setSocketPolicy(SocketPolicy.FAIL_HANDSHAKE));
++        server.enqueue(new MockResponse().setBody("This required a 2nd handshake"));
++        server.play();
++
++        HttpsURLConnection connection = (HttpsURLConnection) server.getUrl("/").openConnection();
++        RecordingSocketFactory clientSocketFactory = new RecordingSocketFactory(
++                new ScsvHidingSocketFactory(testSSLContext.clientContext.getSocketFactory()));
++        connection.setSSLSocketFactory(clientSocketFactory);
++        assertEquals("This required a 2nd handshake",
++                readAscii(connection.getInputStream(), Integer.MAX_VALUE));
++
++        server.takeRequest();
++        assertEquals("TLSv1", server.takeRequest().getSslProtocol());
++
++        List<SSLSocket> createdSockets = clientSocketFactory.getCreatedSockets();
++        assertEquals(2, createdSockets.size());
++        SSLSocket retrySocket = createdSockets.get(1);
++        assertContainsNoneMatching(Arrays.asList(retrySocket.getSupportedCipherSuites()),
++                StandardNames.CIPHER_SUITE_FALLBACK);
++        assertEquals(Arrays.asList("TLSv1"), Arrays.asList(retrySocket.getEnabledProtocols()));
++        List<String> retrySuites = Arrays.asList(retrySocket.getEnabledCipherSuites());
++        assertContainsNoneMatching(retrySuites, StandardNames.CIPHER_SUITE_FALLBACK);
++        assertEquals(Arrays.asList(createdSockets.get(0).getEnabledCipherSuites()), retrySuites);
++    }
++
+     public void testInspectSslBeforeConnect() throws Exception {
+         TestSSLContext testSSLContext = TestSSLContext.create();
+         server.useHttps(testSSLContext.serverContext.getSocketFactory(), false);
+@@ -2630,6 +2669,132 @@ public final class URLConnectionTest extends TestCase {
+         }
+     }
+ 
++    /**
++     * kktls: wraps every socket that {@code createSocket(Socket, String, int, boolean)} makes in a
++     * {@link ScsvHidingSSLSocket}.
++     */
++    private static class ScsvHidingSocketFactory extends DelegatingSSLSocketFactory {
++        private ScsvHidingSocketFactory(SSLSocketFactory delegate) {
++            super(delegate);
++        }
++
++        @Override
++        public Socket createSocket(Socket s, String host, int port, boolean autoClose)
++                throws IOException {
++            return new ScsvHidingSSLSocket(
++                    (SSLSocket) delegate.createSocket(s, host, port, autoClose));
++        }
++    }
++
++    /**
++     * kktls: an SSLSocket that delegates to a platform socket but does not list
++     * TLS_FALLBACK_SCSV among its supported cipher suites.
++     */
++    private static class ScsvHidingSSLSocket extends SSLSocket {
++        private final SSLSocket delegate;
++
++        private ScsvHidingSSLSocket(SSLSocket delegate) {
++            this.delegate = delegate;
++        }
++
++        @Override public String[] getSupportedCipherSuites() {
++            List<String> suites = new ArrayList<String>(
++                    Arrays.asList(delegate.getSupportedCipherSuites()));
++            suites.remove(StandardNames.CIPHER_SUITE_FALLBACK);
++            return suites.toArray(new String[suites.size()]);
++        }
++        @Override public String[] getEnabledCipherSuites() {
++            return delegate.getEnabledCipherSuites();
++        }
++        @Override public void setEnabledCipherSuites(String[] suites) {
++            delegate.setEnabledCipherSuites(suites);
++        }
++        @Override public String[] getSupportedProtocols() {
++            return delegate.getSupportedProtocols();
++        }
++        @Override public String[] getEnabledProtocols() {
++            return delegate.getEnabledProtocols();
++        }
++        @Override public void setEnabledProtocols(String[] protocols) {
++            delegate.setEnabledProtocols(protocols);
++        }
++        @Override public SSLSession getSession() {
++            return delegate.getSession();
++        }
++        @Override public void addHandshakeCompletedListener(HandshakeCompletedListener l) {
++            delegate.addHandshakeCompletedListener(l);
++        }
++        @Override public void removeHandshakeCompletedListener(HandshakeCompletedListener l) {
++            delegate.removeHandshakeCompletedListener(l);
++        }
++        @Override public void startHandshake() throws IOException {
++            delegate.startHandshake();
++        }
++        @Override public void setUseClientMode(boolean mode) {
++            delegate.setUseClientMode(mode);
++        }
++        @Override public boolean getUseClientMode() {
++            return delegate.getUseClientMode();
++        }
++        @Override public void setNeedClientAuth(boolean need) {
++            delegate.setNeedClientAuth(need);
++        }
++        @Override public void setWantClientAuth(boolean want) {
++            delegate.setWantClientAuth(want);
++        }
++        @Override public boolean getNeedClientAuth() {
++            return delegate.getNeedClientAuth();
++        }
++        @Override public boolean getWantClientAuth() {
++            return delegate.getWantClientAuth();
++        }
++        @Override public void setEnableSessionCreation(boolean flag) {
++            delegate.setEnableSessionCreation(flag);
++        }
++        @Override public boolean getEnableSessionCreation() {
++            return delegate.getEnableSessionCreation();
++        }
++        @Override public InputStream getInputStream() throws IOException {
++            return delegate.getInputStream();
++        }
++        @Override public OutputStream getOutputStream() throws IOException {
++            return delegate.getOutputStream();
++        }
++        @Override public synchronized void close() throws IOException {
++            delegate.close();
++        }
++        @Override public boolean isClosed() {
++            return delegate.isClosed();
++        }
++        @Override public boolean isConnected() {
++            return delegate.isConnected();
++        }
++        @Override public boolean isInputShutdown() {
++            return delegate.isInputShutdown();
++        }
++        @Override public boolean isOutputShutdown() {
++            return delegate.isOutputShutdown();
++        }
++        @Override public synchronized int getSoTimeout() throws SocketException {
++            return delegate.getSoTimeout();
++        }
++        @Override public synchronized void setSoTimeout(int timeout) throws SocketException {
++            delegate.setSoTimeout(timeout);
++        }
++        @Override public InetAddress getInetAddress() {
++            return delegate.getInetAddress();
++        }
++        @Override public int getPort() {
++            return delegate.getPort();
++        }
++        @Override public InetAddress getLocalAddress() {
++            return delegate.getLocalAddress();
++        }
++        @Override public int getLocalPort() {
++            return delegate.getLocalPort();
++        }
++    }
++
+     /**
+      * An SSLSocketFactory that delegates calls and keeps a record of any sockets created.
+      */
+diff --git a/luni/src/test/java/libcore/javax/net/ssl/SSLSocketFactoryTest.java b/luni/src/test/java/libcore/javax/net/ssl/SSLSocketFactoryTest.java
+index 14a54fdcdc8..42878bca4e5 100644
+--- a/luni/src/test/java/libcore/javax/net/ssl/SSLSocketFactoryTest.java
++++ b/luni/src/test/java/libcore/javax/net/ssl/SSLSocketFactoryTest.java
+@@ -21,6 +21,7 @@ import java.net.InetSocketAddress;
+ import java.net.ServerSocket;
+ import java.net.Socket;
+ import java.net.SocketException;
++import java.security.Security;
+ import libcore.java.security.StandardNames;
+ import javax.net.ServerSocketFactory;
+ import javax.net.SocketFactory;
+@@ -35,6 +36,31 @@ public class SSLSocketFactoryTest extends TestCase {
+         assertTrue(SSLSocketFactory.class.isAssignableFrom(sf.getClass()));
+     }
+ 
++    /**
++     * kktls (libcore/0025): getDefault() is an instance of the class that
++     * security.properties names as ssl.SocketFactory.provider whenever that class can be loaded.
++     * getDefault() logs a failure to create it and falls back to SSLContext.getDefault()
++     * silently, so without this test a broken default factory would leave every other test green.
++     * Skipped when the property is unset or names a class that is not on the class path (a
++     * libcore without this series).
++     */
++    public void test_SSLSocketFactory_getDefault_isProviderClass() throws Exception {
++        String name = Security.getProperty("ssl.SocketFactory.provider");
++        if (name == null) {
++            return;
++        }
++        ClassLoader cl = Thread.currentThread().getContextClassLoader();
++        if (cl == null) {
++            cl = ClassLoader.getSystemClassLoader();
++        }
++        try {
++            Class.forName(name, false, cl);
++        } catch (ClassNotFoundException notOnTheClassPath) {
++            return;
++        }
++        assertEquals(name, SSLSocketFactory.getDefault().getClass().getName());
++    }
++
+     public void test_SSLSocketFactory_getDefaultCipherSuites() {
+         SSLSocketFactory sf = (SSLSocketFactory) SSLSocketFactory.getDefault();
+         String[] cipherSuites = sf.getDefaultCipherSuites();
+diff --git a/luni/src/test/java/libcore/javax/net/ssl/SSLSocketTest.java b/luni/src/test/java/libcore/javax/net/ssl/SSLSocketTest.java
+index 12127894b4c..6b587733dec 100644
+--- a/luni/src/test/java/libcore/javax/net/ssl/SSLSocketTest.java
++++ b/luni/src/test/java/libcore/javax/net/ssl/SSLSocketTest.java
+@@ -43,6 +43,7 @@ import java.util.HashSet;
+ import java.util.List;
+ import java.util.Set;
+ import java.util.concurrent.Callable;
++import java.util.concurrent.CancellationException;
+ import java.util.concurrent.ExecutionException;
+ import java.util.concurrent.ExecutorService;
+ import java.util.concurrent.Executors;
+@@ -163,13 +164,11 @@ public class SSLSocketTest extends TestCase {
+              * Harmony JSSE server always uses a 512-bit group (DHParameters). Android 5.0
+              * removed the Harmony provider, so upstream has no such pair.
+              */
+-            if (!StandardNames.IS_RI
++            boolean weakDhGroup = !StandardNames.IS_RI
+                     && clientProvider.equals("AndroidOpenSSL")
+                     && serverProvider.equals("HarmonyJSSE")
+                     && (cipherSuite.startsWith("SSL_DHE_") || cipherSuite.startsWith("TLS_DHE_"))
+-                    && !cipherSuite.contains("_EXPORT_")) {
+-                errorExpected = true;
+-            }
++                    && !cipherSuite.contains("_EXPORT_");
+             try {
+                 /*
+                  * TLS_EMPTY_RENEGOTIATION_INFO_SCSV cannot be used on
+@@ -216,6 +215,12 @@ public class SSLSocketTest extends TestCase {
+                                           || cipherSuite.endsWith("_SHA384")))
+                         ? new String[] { "TLSv1.2" }
+                         : null;
++                if (weakDhGroup) {
++                    // kktls: the client itself must refuse the group (not any failure will do)
++                    assertClientRefusesWeakDhGroup(c, clientCipherSuiteArray,
++                                                   serverCipherSuiteArray, cipherSuite);
++                    continue;
++                }
+                 SSLSocket[] pair = TestSSLSocketPair.connect(c,
+                                                              clientCipherSuiteArray,
+                                                              serverCipherSuiteArray,
+@@ -249,6 +254,46 @@ public class SSLSocketTest extends TestCase {
+         c.close();
+     }
+ 
++    /**
++     * kktls (OpenSSL 1.0.1u, Logjam): a handshake from the OpenSSL client to the HarmonyJSSE server
++     * over a non-export DHE suite fails in the client with "dh key too small" (the server's
++     * 512-bit group is below the 768-bit minimum of 1.0.1n+). Any other outcome is a failure: a
++     * completed handshake, or a failure for another reason (the server's own failure is ignored).
++     */
++    private static void assertClientRefusesWeakDhGroup(TestSSLContext c, String[] clientSuites,
++            String[] serverSuites, String cipherSuite) throws Exception {
++        final SSLSocket client = (SSLSocket) c.clientContext.getSocketFactory().createSocket(
++                c.host, c.port);
++        final SSLSocket server = (SSLSocket) c.serverSocket.accept();
++        client.setEnabledCipherSuites(clientSuites);
++        server.setEnabledCipherSuites(serverSuites);
++        client.setSoTimeout(30 * 1000);
++        server.setSoTimeout(30 * 1000);
++        ExecutorService executor = Executors.newSingleThreadExecutor();
++        Future<Void> s = executor.submit(new Callable<Void>() {
++            public Void call() throws Exception {
++                server.startHandshake();
++                return null;
++            }
++        });
++        executor.shutdown();
++        try {
++            client.startHandshake();
++            fail(cipherSuite + ": the client accepted the 512-bit DH group of the Harmony server");
++        } catch (SSLHandshakeException expected) {
++            String message = String.valueOf(expected.getMessage());
++            assertTrue(cipherSuite + ": " + message, message.contains("dh key too small"));
++        } finally {
++            client.close();
++            try {
++                s.get(30, TimeUnit.SECONDS);
++            } catch (ExecutionException serverSideFailure) {
++                // the server sees the client's alert or the closed socket
++            }
++            server.close();
++        }
++    }
++
+     public void test_SSLSocket_getEnabledCipherSuites() throws Exception {
+         SSLSocketFactory sf = (SSLSocketFactory) SSLSocketFactory.getDefault();
+         SSLSocket ssl = (SSLSocket) sf.createSocket();
+@@ -444,7 +489,10 @@ public class SSLSocketTest extends TestCase {
+         if (protocols != null) {
+             client.setEnabledProtocols(protocols);
+         }
++        // kktls: a handshake that stalls fails this test after 30 s instead of the whole run
++        client.setSoTimeout(30 * 1000);
+         final SSLSocket accepted = (SSLSocket) server.serverSocket.accept();
++        accepted.setSoTimeout(30 * 1000);
+         ExecutorService executor = Executors.newSingleThreadExecutor();
+         Future<Void> future = executor.submit(new Callable<Void>() {
+             @Override public Void call() throws Exception {
+@@ -455,7 +503,7 @@ public class SSLSocketTest extends TestCase {
+         executor.shutdown();
+         try {
+             client.startHandshake();
+-            future.get();
++            future.get(30, TimeUnit.SECONDS);
+             return client.getSession();
+         } finally {
+             client.close();
+@@ -1510,8 +1558,8 @@ public class SSLSocketTest extends TestCase {
+         assertEquals(Arrays.asList(longHost.toString()), sniExtension.hostnames);
+         assertNotNull("no padding extension in a " + record.fragment.length + "-byte ClientHello",
+                 clientHello.findExtensionByType(HelloExtension.TYPE_PADDING));
+-        assertTrue("padded ClientHello is " + record.fragment.length + " bytes, want 512",
+-                record.fragment.length >= 512);
++        // OpenSSL 1.0.1u pads the handshake message to exactly 512 bytes (t1_lib.c: 0x200)
++        assertEquals("padded ClientHello length", 512, record.fragment.length);
+     }
+ 
+     /** kktls: the ClientHello in {@code record}, which must hold nothing else. */
+@@ -1573,6 +1621,31 @@ public class SSLSocketTest extends TestCase {
+         }, getSSLSocketFactoriesToTest());
+     }
+ 
++    /**
++     * kktls: a client that fails before it sends a ClientHello (here: startHandshake() on a socket
++     * that was never connected, an IOException the capture's client task treats as expected) is
++     * reported with its own exception, not as the CancellationException of the cancelled capture.
++     */
++    public void test_SSLSocket_ClientHello_captureReportsEarlyClientFailure() throws Exception {
++        try {
++            captureTlsHandshakeFirstTransmittedChunkBytes(new ClientSocketMaker() {
++                public SSLSocket make(ServerSocket listeningSocket, Socket[] sockets)
++                        throws Exception {
++                    return (SSLSocket) SSLSocketFactory.getDefault().createSocket();
++                }
++            });
++            fail("captured a ClientHello from a socket that was never connected");
++        } catch (CancellationException e) {
++            fail("the client's failure was reported as " + e);
++        } catch (Exception expected) {
++            Throwable root = expected;
++            while (root.getCause() != null) {
++                root = root.getCause();
++            }
++            assertTrue("root cause " + root, root instanceof IOException);
++        }
++    }
++
+     // SNI by default (the behaviour of conscrypt d745755, b221fc9, 342097d, 966ae8a and
+     // f67d784): the host name in the ClientHello for each way a client socket learns its peer's
+     // host. test_SSLSocket_ClientHello_SNI above covers a wrapped socket on every factory.
+@@ -1621,10 +1694,11 @@ public class SSLSocketTest extends TestCase {
+                 wrappingClientSocketMaker(sf, "sni-wrapped.tls.test"), "127.0.0.1")));
+     }
+ 
+-    public void test_SSLSocket_SNI_ipLiteral_noReverseDns() throws Exception {
++    public void test_SSLSocket_SNI_wrappedIpLiteral_noReverseDns() throws Exception {
+         // The SNI host comes from the host the socket was created or wrapped with, never from
+         // getInetAddress().getHostName(): a wrapped socket whose host is an IP literal must leave
+-        // the peer InetAddress unresolved.
++        // the peer InetAddress unresolved. (This held before SNI by default too: the session cache key of a
++        // wrapped socket is the wrapped host. See _inetAddress_noReverseDns for the SNI helper.)
+         final SSLSocketFactory sf = (SSLSocketFactory) SSLSocketFactory.getDefault();
+         final InetAddress peer = InetAddress.getByAddress(new byte[] { 127, 0, 0, 1 });
+         assertNull(inetAddressHostName(peer));
+@@ -1641,6 +1715,46 @@ public class SSLSocketTest extends TestCase {
+         assertNull("reverse DNS of the peer address", inetAddressHostName(peer));
+     }
+ 
++    /**
++     * kktls: for a socket created with an InetAddress the SNI host name is null and computing it
++     * does no reverse DNS lookup. The handshake itself still resolves the peer's name for the
++     * client session cache key (getPeerHostName, unchanged from 4.4 and as in Android 6.0), so
++     * this calls the SNI helper of the platform socket directly before any handshake.
++     */
++    public void test_SSLSocket_SNI_inetAddress_noReverseDns() throws Exception {
++        SSLContext context = SSLContext.getInstance("TLS", StandardNames.JSSE_PROVIDER_NAME);
++        context.init(null, null, null);
++        InetAddress peer = InetAddress.getByAddress(new byte[] { 127, 0, 0, 1 });
++        assertNull(inetAddressHostName(peer));
++        ServerSocket listening = new ServerSocket(0, 50, peer);
++        SSLSocket client = null;
++        try {
++            client = (SSLSocket) context.getSocketFactory().createSocket(
++                    peer, listening.getLocalPort());
++            Method getSniHostname = findMethod(client.getClass(), "getSniHostname");
++            getSniHostname.setAccessible(true);
++            assertNull(getSniHostname.invoke(client));
++            assertNull("reverse DNS of the peer address", inetAddressHostName(peer));
++        } finally {
++            if (client != null) {
++                client.close();
++            }
++            listening.close();
++        }
++    }
++
++    /** kktls: {@code name}, declared by {@code c} or a superclass. */
++    private static Method findMethod(Class<?> c, String name) throws NoSuchMethodException {
++        for (Class<?> k = c; k != null; k = k.getSuperclass()) {
++            for (Method m : k.getDeclaredMethods()) {
++                if (m.getName().equals(name) && m.getParameterTypes().length == 0) {
++                    return m;
++                }
++            }
++        }
++        throw new NoSuchMethodException(c.getName() + "." + name + "()");
++    }
++
+     public void test_SSLSocket_SNI_disabledByProperty() throws Exception {
+         final SSLSocketFactory sf = (SSLSocketFactory) SSLSocketFactory.getDefault();
+         String old = System.getProperty("jsse.enableSNIExtension");
+@@ -1875,22 +1989,24 @@ public class SSLSocketTest extends TestCase {
+                         public byte[] call() throws Exception {
+                             Socket socket = finalListeningSocket.accept();
+                             sockets[1] = socket;
+-                            try {
+-                                byte[] buffer = new byte[64 * 1024];
+-                                int bytesRead = socket.getInputStream().read(buffer);
+-                                if (bytesRead == -1) {
+-                                    throw new EOFException("Failed to read anything");
+-                                }
+-                                return Arrays.copyOf(buffer, bytesRead);
+-                            } finally {
+-                                IoUtils.closeQuietly(socket);
++                            // kktls: the test thread closes the accepted socket (sockets[1]) after get()
++                            // returned, not this task: closing it here let the client fail and cancel
++                            // this future before call() returned (upstream's CancellationException race,
++                            // seen on a single-vCPU emulator).
++                            byte[] buffer = new byte[64 * 1024];
++                            int bytesRead = socket.getInputStream().read(buffer);
++                            if (bytesRead == -1) {
++                                throw new EOFException("Failed to read anything");
+                             }
++                            return Arrays.copyOf(buffer, bytesRead);
+                         }
+                     });
+ 
+             // 3. Create a client socket, connect it to the server socket, and start the TLS/SSL
+             //    handshake.
+             // kktls: the client socket comes from clientSocketMaker (SNI tests).
++            // kktls: the IOException that ended the client's handshake attempt (see below).
++            final IOException[] clientHandshakeFailure = new IOException[1];
+             final Future<Void> clientFuture = executorService.submit(new Callable<Void>() {
+                 @Override
+                 public Void call() throws Exception {
+@@ -1903,7 +2019,11 @@ public class SSLSocketTest extends TestCase {
+                             sslSocket.startHandshake();
+                             fail();
+                             return null;
+-                        } catch (IOException expected) {}
++                        } catch (IOException expected) {
++                            // kktls: expected once the test thread closes the accepted socket; if no
++                            // ClientHello was captured, it is the reason why (reported below).
++                            clientHandshakeFailure[0] = expected;
++                        }
+                         return null;
+                     } finally {
+                         IoUtils.closeQuietly(sockets[2]);
+@@ -1923,13 +2043,20 @@ public class SSLSocketTest extends TestCase {
+             try {
+                 return readFirstReceivedChunkFuture.get(10, TimeUnit.SECONDS);
+             } catch (Exception e) {
+-                // kktls: if the client failed before it sent a ClientHello, report its exception.
++                // kktls: if the client failed before it sent a ClientHello, report its exception: one
++                // it threw (ExecutionException), or the IOException its startHandshake() ended with.
++                // The client cancels this future when it is done, so a CancellationException alone
++                // never says why nothing was captured.
+                 try {
+                     clientFuture.get(5, TimeUnit.SECONDS);
+                 } catch (ExecutionException clientFailure) {
+                     throw clientFailure;
+                 } catch (Exception ignored) {
+                 }
++                if (clientHandshakeFailure[0] != null) {
++                    throw new Exception("client failed before a ClientHello was captured",
++                            clientHandshakeFailure[0]);
++                }
+                 throw e;
+             }
+         } finally {
+diff --git a/luni/src/test/java/org/apache/harmony/xnet/provider/jsse/TrustManagerImplTest.java b/luni/src/test/java/org/apache/harmony/xnet/provider/jsse/TrustManagerImplTest.java
+index 9dad28dcfac..35df7163206 100644
+--- a/luni/src/test/java/org/apache/harmony/xnet/provider/jsse/TrustManagerImplTest.java
++++ b/luni/src/test/java/org/apache/harmony/xnet/provider/jsse/TrustManagerImplTest.java
+@@ -260,10 +260,12 @@ public class TrustManagerImplTest extends TestCase {
+         assertInvalidWithin(new X509Certificate[] { leaf }, tm);
+         // The full chain is valid and caches I_J, J_I and I_R.
+         assertValid(new X509Certificate[] { leaf, iByJ, jByI, iByRoot }, tm);
+-        // The bare leaf is completed through the cycle: this must end, with a failure.
+-        assertInvalidWithin(new X509Certificate[] { leaf }, tm);
++        // The bare leaf is completed through the cycle: this must end. A valid path through
++        // I_R exists, so a path builder that backtracks may accept it (with a chain that ends
++        // at the root); the 4.4 walk takes the first cached issuer and rejects it.
++        assertTerminatesWithin(new X509Certificate[] { leaf }, tm, root);
+         // A presented chain that ends in the cycle stops there too.
+-        assertInvalidWithin(new X509Certificate[] { leaf, iByJ, jByI }, tm);
++        assertTerminatesWithin(new X509Certificate[] { leaf, iByJ, jByI }, tm, root);
+         // The chain through the root-signed certificate still validates.
+         assertValid(new X509Certificate[] { leaf, iByRoot }, tm);
+         assertValid(new X509Certificate[] { leaf, iByJ, jByI, iByRoot }, tm);
+@@ -275,12 +277,46 @@ public class TrustManagerImplTest extends TestCase {
+      */
+     private void assertInvalidWithin(final X509Certificate[] chain, final X509TrustManager tm)
+             throws Exception {
++        runWithin(new Runnable() {
++            public void run() {
++                assertInvalid(chain, tm);
++            }
++        });
++    }
++
++    /**
++     * kktls: checkServerTrusted of {@code chain} returns within the time limit and either rejects
++     * it (CertificateException) or accepts it with a trusted chain from its leaf to {@code root}.
++     */
++    private void assertTerminatesWithin(final X509Certificate[] chain, final TrustManagerImpl tm,
++            final X509Certificate root) throws Exception {
++        runWithin(new Runnable() {
++            public void run() {
++                List<X509Certificate> trusted;
++                try {
++                    trusted = tm.checkServerTrusted(chain, "RSA", "leaf.tls.test");
++                } catch (CertificateException rejected) {
++                    return;
++                }
++                assertEquals(chain[0], trusted.get(0));
++                assertEquals(root, trusted.get(trusted.size() - 1));
++            }
++        });
++    }
++
++    /**
++     * kktls: runs {@code check} in a daemon thread and fails if it does not return within 60 s.
++     * A chain walk that never ends cannot be stopped (Thread.stop is unsupported on Android); it
++     * keeps doubling its chain array until an OutOfMemoryError, normally in that thread, ends
++     * it and frees the array; the 60 s limit makes this test fail first.
++     */
++    private static void runWithin(final Runnable check) throws Exception {
+         final Throwable[] failure = new Throwable[1];
+         final boolean[] done = new boolean[1];
+         Thread worker = new Thread(new Runnable() {
+             public void run() {
+                 try {
+-                    assertInvalid(chain, tm);
++                    check.run();
+                 } catch (Throwable t) {
+                     failure[0] = t;
+                 }

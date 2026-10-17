@@ -1,0 +1,65 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: android-kitkat-tls12 <android-kitkat-tls12@users.noreply.github.com>
+Date: Fri, 9 Oct 2026 12:00:00 +0000
+Subject: [PATCH 06/32] Default protocols TLSv1, TLSv1.1, TLSv1.2 for client
+ and server sockets
+
+The behaviour of conscrypt 1f63d2c ("Enable TLSv1.1 and TLSv1.2 by
+default for SSLSocket", 5.0) and dee4e55 ("Remove SSLv3 from default
+protocols list for TLS", 6.0): getDefaultProtocols() returns TLSv1,
+TLSv1.1, TLSv1.2. SSLv3 stays in getSupportedProtocols() and can still
+be enabled with setEnabledProtocols().
+
+Server sockets enable the same defaults instead of every supported
+protocol, as conscrypt ae2ecac ("SSLParametersImpl is the source of
+enabled cipher suites and protocols") made them: OpenSSLServerSocketImpl
+initialises enabledProtocols from getDefaultProtocols().
+
+The Harmony SSLEngine (SSLParametersImpl, ProtocolVersion) is not
+changed.
+
+Android 4.2 port (android-4.2.2_r1) of patch 0006 of the 4.4 series,
+made from its Android 4.3 port. Paths and names: libcore/crypto of 4.4
+(org.conscrypt, org_conscrypt_NativeCrypto.cpp in libjavacrypto) is
+libcore/luni on 4.2 (org.apache.harmony.xnet.provider.jsse,
+org_apache_harmony_xnet_provider_jsse_NativeCrypto.cpp in libjavacore).
+Otherwise the same change; only line offsets differ.
+---
+ .../apache/harmony/xnet/provider/jsse/NativeCrypto.java  | 9 +++++++--
+ .../xnet/provider/jsse/OpenSSLServerSocketImpl.java      | 2 +-
+ 2 files changed, 8 insertions(+), 3 deletions(-)
+
+diff --git a/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/NativeCrypto.java b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/NativeCrypto.java
+index cd3eb157b14..55b8709b11b 100644
+--- a/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/NativeCrypto.java
++++ b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/NativeCrypto.java
+@@ -508,9 +508,14 @@ public final class NativeCrypto {
+ 
+     public static native long SSL_clear_options(int ssl, long options);
+ 
++    /**
++     * kktls default protocols for client and server sockets: TLSv1, TLSv1.1 and TLSv1.2
++     * (Android 6.0+). SSLv3 stays supported, but only when enabled explicitly.
++     */
+     public static String[] getDefaultProtocols() {
+-        return new String[] { SUPPORTED_PROTOCOL_SSLV3,
+-                              SUPPORTED_PROTOCOL_TLSV1,
++        return new String[] { SUPPORTED_PROTOCOL_TLSV1,
++                              SUPPORTED_PROTOCOL_TLSV1_1,
++                              SUPPORTED_PROTOCOL_TLSV1_2,
+         };
+     }
+ 
+diff --git a/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/OpenSSLServerSocketImpl.java b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/OpenSSLServerSocketImpl.java
+index b19f01711cb..5bbf2cd3d2e 100644
+--- a/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/OpenSSLServerSocketImpl.java
++++ b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/OpenSSLServerSocketImpl.java
+@@ -25,7 +25,7 @@ import java.net.Socket;
+  */
+ public class OpenSSLServerSocketImpl extends javax.net.ssl.SSLServerSocket {
+     private final SSLParametersImpl sslParameters;
+-    private String[] enabledProtocols = NativeCrypto.getSupportedProtocols();
++    private String[] enabledProtocols = NativeCrypto.getDefaultProtocols();
+     private String[] enabledCipherSuites = NativeCrypto.getDefaultCipherSuites();
+ 
+     protected OpenSSLServerSocketImpl(SSLParametersImpl sslParameters) throws IOException {

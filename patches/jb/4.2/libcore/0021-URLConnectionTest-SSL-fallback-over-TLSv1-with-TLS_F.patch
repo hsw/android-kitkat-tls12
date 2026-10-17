@@ -1,0 +1,150 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: android-kitkat-tls12 <android-kitkat-tls12@users.noreply.github.com>
+Date: Fri, 9 Oct 2026 12:00:00 +0000
+Subject: [PATCH 21/32] URLConnectionTest SSL fallback over TLSv1 with
+ TLS_FALLBACK_SCSV
+
+libcore 6c9609af5f (libcore/0001) rewrote testSslFallback for
+okhttp c3f6560, whose KitKat fallback retries over SSLv3 with
+TLS_FALLBACK_SCSV, against a server that speaks only SSLv3. The
+okhttp series (external_okhttp/0001-0003) retries over TLSv1 instead,
+as Android 6/7 do, so the test follows that shape:
+
+- testSslFallback: the server speaks only TLSv1, the protocol of the
+  retry, so the SCSV does not trigger its inappropriate_fallback check
+  (the client's highest version equals the server's). The retry is
+  TLSv1; the first socket has the default client protocols
+  (StandardNames.SSL_SOCKET_PROTOCOLS_CLIENT_DEFAULT) and no SCSV; the
+  retry socket has exactly {TLSv1} and the first socket's suites plus
+  TLS_FALLBACK_SCSV;
+- testSslFallback_rejectedByTls12Server (new): the first handshake
+  fails, and the server supports TLSv1.2, so it must reject the TLSv1
+  retry with the inappropriate_fallback alert. This shows that the
+  SCSV reaches the server; without it the retry would succeed over
+  TLSv1 (the downgrade the SCSV prevents).
+
+Both fail before the okhttp series: the SSLv3 retry finds no SSLv3 on
+the server, and no SCSV is sent.
+
+Android 4.2 port (android-4.2.2_r1) of patch 0021 of the 4.4 series,
+made from its Android 4.3 port. The same change; only line offsets
+differ.
+---
+ .../libcore/java/net/URLConnectionTest.java   | 76 +++++++++++++++----
+ 1 file changed, 63 insertions(+), 13 deletions(-)
+
+diff --git a/luni/src/test/java/libcore/java/net/URLConnectionTest.java b/luni/src/test/java/libcore/java/net/URLConnectionTest.java
+index 2e58657a260..0a4d632c8c3 100644
+--- a/luni/src/test/java/libcore/java/net/URLConnectionTest.java
++++ b/luni/src/test/java/libcore/java/net/URLConnectionTest.java
+@@ -80,6 +80,7 @@ import javax.net.ssl.SSLSocket;
+ import javax.net.ssl.SSLSocketFactory;
+ import javax.net.ssl.TrustManager;
+ import javax.net.ssl.X509TrustManager;
++import junit.framework.AssertionFailedError;
+ import junit.framework.TestCase;
+ import libcore.java.lang.ref.FinalizationTester;
+ import libcore.java.security.StandardNames;
+@@ -2185,12 +2186,15 @@ public final class URLConnectionTest extends TestCase {
+     public void testSslFallback() throws Exception {
+         TestSSLContext testSSLContext = TestSSLContext.create();
+ 
+-        // This server socket factory only supports SSLv3. This is to avoid issues due to SCSV
+-        // checks. See https://tools.ietf.org/html/draft-ietf-tls-downgrade-scsv-00
++        // kktls: okhttp retries a failed handshake over TLSv1 with TLS_FALLBACK_SCSV (okhttp c3f6560
++        // plus the kktls TLSv1 hunk; upstream KitKat retried over SSLv3). This server socket factory
++        // only supports TLSv1, the protocol of the retry, so the SCSV in the retry does not trigger
++        // the server's inappropriate_fallback check: the client's highest version equals the
++        // server's. See https://tools.ietf.org/html/draft-ietf-tls-downgrade-scsv-00
+         SSLSocketFactory serverSocketFactory =
+                 new LimitedProtocolsSocketFactory(
+                         testSSLContext.serverContext.getSocketFactory(),
+-                        "SSLv3");
++                        "TLSv1");
+ 
+         server.useHttps(serverSocketFactory, false);
+         server.enqueue(new MockResponse().setSocketPolicy(SocketPolicy.FAIL_HANDSHAKE));
+@@ -2209,27 +2213,73 @@ public final class URLConnectionTest extends TestCase {
+         assertEquals(0, first.getSequenceNumber());
+         RecordedRequest retry = server.takeRequest();
+         assertEquals(0, retry.getSequenceNumber());
+-        assertEquals("SSLv3", retry.getSslProtocol());
++        assertEquals("TLSv1", retry.getSslProtocol());
+ 
+         // Confirm the client fallback looks ok.
+         List<SSLSocket> createdSockets = clientSocketFactory.getCreatedSockets();
+         assertEquals(2, createdSockets.size());
++        // The first attempt is the default configuration (TLSv1-TLSv1.2), without the SCSV.
+         SSLSocket clientSocket1 = createdSockets.get(0);
+-        List<String> clientSocket1EnabledProtocols = Arrays.asList(
+-                clientSocket1.getEnabledProtocols());
+-        assertContains(clientSocket1EnabledProtocols, "TLSv1");
++        assertEquals(StandardNames.SSL_SOCKET_PROTOCOLS_CLIENT_DEFAULT,
++                newSet(clientSocket1.getEnabledProtocols()));
+         List<String> clientSocket1EnabledCiphers =
+                 Arrays.asList(clientSocket1.getEnabledCipherSuites());
+         assertContainsNoneMatching(
+                 clientSocket1EnabledCiphers, StandardNames.CIPHER_SUITE_FALLBACK);
+ 
++        // The retry is TLSv1 only (never SSLv3) and adds exactly the SCSV to the same suites.
+         SSLSocket clientSocket2 = createdSockets.get(1);
+-        List<String> clientSocket2EnabledProtocols =
+-                Arrays.asList(clientSocket2.getEnabledProtocols());
+-        assertContainsNoneMatching(clientSocket2EnabledProtocols, "TLSv1");
+-        List<String> clientSocket2EnabledCiphers =
+-                Arrays.asList(clientSocket2.getEnabledCipherSuites());
+-        assertContains(clientSocket2EnabledCiphers, StandardNames.CIPHER_SUITE_FALLBACK);
++        assertEquals(Arrays.asList("TLSv1"), Arrays.asList(clientSocket2.getEnabledProtocols()));
++        List<String> expectedClientSocket2EnabledCiphers =
++                new ArrayList<String>(clientSocket1EnabledCiphers);
++        expectedClientSocket2EnabledCiphers.add(StandardNames.CIPHER_SUITE_FALLBACK);
++        assertEquals(expectedClientSocket2EnabledCiphers,
++                Arrays.asList(clientSocket2.getEnabledCipherSuites()));
++    }
++
++    /**
++     * kktls: the TLS_FALLBACK_SCSV of okhttp's TLSv1 retry reaches the server. The first handshake
++     * fails (as with a TLS-intolerant middlebox); the server itself supports TLSv1.2, so it must
++     * reject the TLSv1 retry with the inappropriate_fallback alert. Without the SCSV on the wire
++     * the retry would succeed over TLSv1, which is the downgrade the SCSV prevents.
++     */
++    public void testSslFallback_rejectedByTls12Server() throws Exception {
++        TestSSLContext testSSLContext = TestSSLContext.create();
++
++        server.useHttps(testSSLContext.serverContext.getSocketFactory(), false);
++        server.enqueue(new MockResponse().setSocketPolicy(SocketPolicy.FAIL_HANDSHAKE));
++        server.enqueue(new MockResponse().setBody("This must not be reached by a downgrade"));
++        server.play();
++
++        HttpsURLConnection connection = (HttpsURLConnection) server.getUrl("/").openConnection();
++        RecordingSocketFactory clientSocketFactory =
++                new RecordingSocketFactory(testSSLContext.clientContext.getSocketFactory());
++        connection.setSSLSocketFactory(clientSocketFactory);
++        try {
++            readAscii(connection.getInputStream(), Integer.MAX_VALUE);
++            fail("the TLSv1 retry to a TLSv1.2 server was accepted: no TLS_FALLBACK_SCSV");
++        } catch (IOException expected) {
++            boolean inappropriateFallback = false;
++            for (Throwable t = expected; t != null; t = t.getCause()) {
++                String message = t.getMessage();
++                if (message != null && message.contains("inappropriate fallback")) {
++                    inappropriateFallback = true;
++                }
++            }
++            if (!inappropriateFallback) {
++                AssertionFailedError failure = new AssertionFailedError(
++                        "expected the inappropriate_fallback alert, got " + expected);
++                failure.initCause(expected);
++                throw failure;
++            }
++        }
++
++        List<SSLSocket> createdSockets = clientSocketFactory.getCreatedSockets();
++        assertEquals(2, createdSockets.size());
++        SSLSocket retrySocket = createdSockets.get(1);
++        assertEquals(Arrays.asList("TLSv1"), Arrays.asList(retrySocket.getEnabledProtocols()));
++        assertContains(Arrays.asList(retrySocket.getEnabledCipherSuites()),
++                StandardNames.CIPHER_SUITE_FALLBACK);
+     }
+ 
+     public void testInspectSslBeforeConnect() throws Exception {
