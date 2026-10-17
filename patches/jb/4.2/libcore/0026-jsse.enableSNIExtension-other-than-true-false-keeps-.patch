@@ -38,10 +38,10 @@ Otherwise the same change; only line offsets differ.
  2 files changed, 69 insertions(+), 3 deletions(-)
 
 diff --git a/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/OpenSSLSocketImpl.java b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/OpenSSLSocketImpl.java
-index e1b847606ec..4d3f9b1b3b3 100644
+index 4b2acc05330..8e34eaada5b 100644
 --- a/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/OpenSSLSocketImpl.java
 +++ b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/OpenSSLSocketImpl.java
-@@ -467,6 +467,12 @@ public class OpenSSLSocketImpl
+@@ -465,6 +465,12 @@ public class OpenSSLSocketImpl
      /**
       * Returns whether Server Name Indication (SNI) is enabled by default for
       * sockets. For more information on SNI, see RFC 6066 section 3.
@@ -54,7 +54,7 @@ index e1b847606ec..4d3f9b1b3b3 100644
       */
      private static boolean isSniEnabledByDefault() {
          String enableSNI = System.getProperty("jsse.enableSNIExtension", "true");
-@@ -474,12 +480,18 @@ public class OpenSSLSocketImpl
+@@ -472,12 +478,18 @@ public class OpenSSLSocketImpl
              return true;
          } else if ("false".equalsIgnoreCase(enableSNI)) {
              return false;

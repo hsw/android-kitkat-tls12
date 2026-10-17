@@ -45,7 +45,7 @@ Otherwise the same change; only line offsets differ.
  5 files changed, 106 insertions(+), 21 deletions(-)
 
 diff --git a/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/NativeCrypto.java b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/NativeCrypto.java
-index 86a3dcfda84..a125a73ba7a 100644
+index 6f29fb7e94c..d9f37688efa 100644
 --- a/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/NativeCrypto.java
 +++ b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/NativeCrypto.java
 @@ -259,7 +259,6 @@ public final class NativeCrypto {

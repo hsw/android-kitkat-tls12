@@ -30,10 +30,10 @@ Otherwise the same change; only line offsets differ.
  2 files changed, 8 insertions(+), 3 deletions(-)
 
 diff --git a/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/NativeCrypto.java b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/NativeCrypto.java
-index cd3eb157b14..55b8709b11b 100644
+index bca3074edd4..8d7ae4404c3 100644
 --- a/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/NativeCrypto.java
 +++ b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/NativeCrypto.java
-@@ -508,9 +508,14 @@ public final class NativeCrypto {
+@@ -510,9 +510,14 @@ public final class NativeCrypto {
  
      public static native long SSL_clear_options(int ssl, long options);
  

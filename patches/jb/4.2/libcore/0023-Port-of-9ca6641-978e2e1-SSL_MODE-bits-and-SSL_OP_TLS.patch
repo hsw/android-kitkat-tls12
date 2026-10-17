@@ -38,35 +38,26 @@ made from its Android 4.3 port. Paths and names: libcore/crypto of 4.4
 (org.conscrypt, org_conscrypt_NativeCrypto.cpp in libjavacrypto) is
 libcore/luni on 4.2 (org.apache.harmony.xnet.provider.jsse,
 org_apache_harmony_xnet_provider_jsse_NativeCrypto.cpp in libjavacore).
-The Java values are those of 4.4 (SCSV 0x80, cut-through 0x200), which
-the OpenSSL 1.0.1u headers of the 4.2 tree
-(patches/jb/4.2/external_openssl) define. The value replaced differs:
-stock 4.2 Java used cut-through 0x40 (its OpenSSL 1.0.1c value; 0x40 is
-SSL_MODE_SEND_SERVERHELLO_TIME in 1.0.1u), and SCSV 0x200 came from
-patch 0001. The comment names the 4.2 value. The new NativeCryptoTest
-assertion keeps the 4.2 int s2.
+On 4.2 the SSL_MODE change of this patch is already in patch 0001: stock
+4.2 has no SCSV constant and cut-through 0x40 (its OpenSSL 1.0.1c value;
+0x40 is SSL_MODE_SEND_SERVERHELLO_TIME in 1.0.1u), so 0001 adds SCSV as
+0x80 and sets cut-through to 0x200, the values of the OpenSSL 1.0.1u
+headers of the 4.2 tree (patches/jb/4.2/external_openssl), together with
+the comment of this patch, which names the 4.2 value. Here NativeCrypto
+gets only SSL_OP_TLSEXT_PADDING. The new NativeCryptoTest assertion
+keeps the 4.2 int s2.
 ---
- .../xnet/provider/jsse/NativeCrypto.java      |  9 ++--
+ .../xnet/provider/jsse/NativeCrypto.java      |  1 +
  .../libcore/javax/net/ssl/SSLSocketTest.java  | 49 +++++++++++++++++++
  .../xnet/provider/jsse/NativeCryptoTest.java  |  2 +
- 3 files changed, 57 insertions(+), 3 deletions(-)
+ 3 files changed, 52 insertions(+)
 
 diff --git a/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/NativeCrypto.java b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/NativeCrypto.java
-index e1d824aea22..18038936e8b 100644
+index b541ba25d75..18038936e8b 100644
 --- a/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/NativeCrypto.java
 +++ b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/NativeCrypto.java
-@@ -405,11 +405,14 @@ public final class NativeCrypto {
-     public static final int RSA_PKCS1_PADDING = 1;
-     public static final int RSA_NO_PADDING    = 3;
- 
--    // SSL mode from ssl.h
--    public static final long SSL_MODE_HANDSHAKE_CUTTHROUGH = 0x00000040L;
--    public static final long SSL_MODE_SEND_FALLBACK_SCSV   = 0x00000200L;
-+    // SSL mode from ssl.h (OpenSSL 1.0.1u: upstream SSL_MODE_SEND_FALLBACK_SCSV is 0x80 and
-+    // the Android handshake_cutthrough patch uses 0x200, as in Android 5.1; the stock 4.2
-+    // OpenSSL 1.0.1c cut-through value 0x40 means SSL_MODE_SEND_SERVERHELLO_TIME there)
-+    public static final long SSL_MODE_SEND_FALLBACK_SCSV   = 0x00000080L;
-+    public static final long SSL_MODE_HANDSHAKE_CUTTHROUGH = 0x00000200L;
+@@ -412,6 +412,7 @@ public final class NativeCrypto {
+     public static final long SSL_MODE_HANDSHAKE_CUTTHROUGH = 0x00000200L;
  
      // SSL options from ssl.h
 +    public static final long SSL_OP_TLSEXT_PADDING                         = 0x00000010L;

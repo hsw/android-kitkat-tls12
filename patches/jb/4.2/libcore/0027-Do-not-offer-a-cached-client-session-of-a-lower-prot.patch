@@ -42,7 +42,7 @@ Otherwise the same change; only line offsets differ.
  2 files changed, 73 insertions(+)
 
 diff --git a/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/OpenSSLSocketImpl.java b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/OpenSSLSocketImpl.java
-index 4d3f9b1b3b3..4eec0028c60 100644
+index 8e34eaada5b..31302355dfe 100644
 --- a/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/OpenSSLSocketImpl.java
 +++ b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/OpenSSLSocketImpl.java
 @@ -224,6 +224,16 @@ public class OpenSSLSocketImpl

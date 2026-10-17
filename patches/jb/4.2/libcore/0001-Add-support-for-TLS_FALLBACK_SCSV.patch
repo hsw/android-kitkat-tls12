@@ -33,14 +33,17 @@ testConnectViaHttpsWithSSLFallback is removed as in 4.4, and the
 plain-HTTP testRetryableRequestBodyAfterBrokenConnection and
 testNonRetryableRequestBodyAfterBrokenConnection stay. NativeCrypto:
 stock 4.2 defines only SSL_MODE_HANDSHAKE_CUTTHROUGH, as 0x40 (the value
-of its OpenSSL 1.0.1c); it stays, and SSL_MODE_SEND_FALLBACK_SCSV is
-added next to it with the value of the 4.4 patch (0x200). Patch 0023
-sets both to the bits of the OpenSSL 1.0.1u headers of the 4.2 tree. The
-HttpsURLConnection fallback of 4.2 (libcore.net.http.HttpConnection,
-SSLv3) is changed by a later patch of this series; testSslFallback
-expects that change.
+of its OpenSSL 1.0.1c; 0x40 is SSL_MODE_SEND_SERVERHELLO_TIME in
+1.0.1u). The 4.4 patch adds SSL_MODE_SEND_FALLBACK_SCSV as 0x200, its
+OpenSSL 1.0.1e value, which is cut-through in the OpenSSL 1.0.1u headers
+of the 4.2 tree. On 4.2 this patch therefore adds SCSV as 0x80 and moves
+cut-through to 0x200 (the 1.0.1u values, which patch 0023 sets on 4.4),
+so every state of the series matches the headers; patch 0023 adds only
+SSL_OP_TLSEXT_PADDING to NativeCrypto. The HttpsURLConnection fallback
+of 4.2 (libcore.net.http.HttpConnection, SSLv3) is changed by a later
+patch of this series; testSslFallback expects that change.
 ---
- .../xnet/provider/jsse/NativeCrypto.java      |  22 +-
+ .../xnet/provider/jsse/NativeCrypto.java      |  28 +-
  .../jsse/OpenSSLServerSocketImpl.java         |   3 +-
  .../xnet/provider/jsse/OpenSSLSocketImpl.java |   3 +-
  .../libcore/java/net/URLConnectionTest.java   | 243 ++++++++++++++++--
@@ -48,10 +51,10 @@ expects that change.
  .../libcore/javax/net/ssl/SSLSocketTest.java  |  92 +++++++
  .../xnet/provider/jsse/CipherSuiteTest.java   |   3 +-
  .../libcore/java/security/StandardNames.java  |  16 +-
- 8 files changed, 355 insertions(+), 30 deletions(-)
+ 8 files changed, 359 insertions(+), 32 deletions(-)
 
 diff --git a/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/NativeCrypto.java b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/NativeCrypto.java
-index 65373ff0da7..339d763f1e3 100644
+index 65373ff0da7..60152636832 100644
 --- a/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/NativeCrypto.java
 +++ b/luni/src/main/java/org/apache/harmony/xnet/provider/jsse/NativeCrypto.java
 @@ -250,6 +250,14 @@ public final class NativeCrypto {
@@ -89,15 +92,21 @@ index 65373ff0da7..339d763f1e3 100644
      }
  
      // EVP_PKEY types from evp.h and objects.h
-@@ -361,6 +373,7 @@ public final class NativeCrypto {
+@@ -359,8 +371,11 @@ public final class NativeCrypto {
+     public static final int RSA_PKCS1_PADDING = 1;
+     public static final int RSA_NO_PADDING    = 3;
  
-     // SSL mode from ssl.h
-     public static final long SSL_MODE_HANDSHAKE_CUTTHROUGH = 0x00000040L;
-+    public static final long SSL_MODE_SEND_FALLBACK_SCSV   = 0x00000200L;
+-    // SSL mode from ssl.h
+-    public static final long SSL_MODE_HANDSHAKE_CUTTHROUGH = 0x00000040L;
++    // SSL mode from ssl.h (OpenSSL 1.0.1u: upstream SSL_MODE_SEND_FALLBACK_SCSV is 0x80 and
++    // the Android handshake_cutthrough patch uses 0x200, as in Android 5.1; the stock 4.2
++    // OpenSSL 1.0.1c cut-through value 0x40 means SSL_MODE_SEND_SERVERHELLO_TIME there)
++    public static final long SSL_MODE_SEND_FALLBACK_SCSV   = 0x00000080L;
++    public static final long SSL_MODE_HANDSHAKE_CUTTHROUGH = 0x00000200L;
  
      // SSL options from ssl.h
      public static final long SSL_OP_NO_TICKET                              = 0x00004000L;
-@@ -537,6 +550,10 @@ public final class NativeCrypto {
+@@ -537,6 +552,10 @@ public final class NativeCrypto {
              if (cipherSuite.equals(TLS_EMPTY_RENEGOTIATION_INFO_SCSV)) {
                  continue;
              }
@@ -108,7 +117,7 @@ index 65373ff0da7..339d763f1e3 100644
              String openssl = STANDARD_TO_OPENSSL_CIPHER_SUITES.get(cipherSuite);
              String cs = (openssl == null) ? cipherSuite : openssl;
              opensslSuites.add(cs);
-@@ -554,7 +571,8 @@ public final class NativeCrypto {
+@@ -554,7 +573,8 @@ public final class NativeCrypto {
              if (cipherSuite == null) {
                  throw new IllegalArgumentException("cipherSuites[" + i + "] == null");
              }
