@@ -250,7 +250,7 @@ def _class(fields=(), methods=(), strings=(), descs=(), tail=b"\x00\x21\x00\x00\
     for d in descs:
         utf8(d)
     add(b"\x05" + struct.pack(">q", 0x0123456789ABCDEF))
-    utf8("café-д".encode("utf-8"))
+    utf8("caf\u00e9-\u0434".encode("utf-8"))
     n = len(cp) + 2
     return b"\xca\xfe\xba\xbe\x00\x00\x00\x33" + struct.pack(">H", n) + b"".join(cp) + tail
 
