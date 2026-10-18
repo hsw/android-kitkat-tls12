@@ -131,7 +131,7 @@ for b in $JBASES; do
   [ -f "$JB/$b/allow/allow-missing-libssl.txt" ] || die "$JB/$b/allow/allow-missing-libssl.txt missing"
   jb_tag "$b" > /dev/null
   jf=$(jb_java_files "$b") cf=''
-  for a in $ABIS; do cf=$cf$(jb_conscrypt_files "$b" "$a"); done
+  for a in $ABIS; do cf=$cf${cf:+ }$(jb_conscrypt_files "$b" "$a"); done
   [ -n "$jf" ] || [ -z "$cf" ] || die "$JB/$b: conscrypt lines without java lines (layer D needs the base's java zip)"
   [ -n "$jf" ] || continue
   jb_android "$b" > /dev/null
