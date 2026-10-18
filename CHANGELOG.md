@@ -1,6 +1,9 @@
 # Changelog
 
-## v4 (unreleased)
+## v4
+
+Android 4.3, 4.2 and 4.1.2: the x86 builds of the Java TLS layer (layer A) join the release. TLS 1.3 stays 4.4
+only.
 
 ### New
 
