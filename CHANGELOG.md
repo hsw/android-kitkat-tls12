@@ -1,5 +1,18 @@
 # Changelog
 
+## v4 (unreleased)
+
+### New
+
+- `kktls-java-4.3-x86-<rel>.zip`, `kktls-java-4.2-x86-<rel>.zip`, `kktls-java-4.1-x86-<rel>.zip`: the x86 builds of the
+  Jelly Bean java zips join the release set. Each was installed, booted and restored on an AOSP `full_x86-eng` build of
+  its version (no dexpreopt, KVM) with the same results as the ARM zip.
+
+### Changed
+
+- `tools/mkzips.sh` packs the Jelly Bean java zips for both ABIs into `--out`; the `--out-unreleased` option is gone,
+  and CI no longer uploads the `zips-unreleased` artifact.
+
 ## v3
 
 Android 4.3, 4.2 and 4.1.2 (Jelly Bean, API 16-18): the Java TLS layer (layer A), ARM only. TLS 1.3 stays 4.4 only.

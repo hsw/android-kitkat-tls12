@@ -3,7 +3,7 @@
 # mkzips.sh: pack the kktls release recovery zips (+ SHA256SUMS) from the release build output.
 #
 #   mkzips.sh --in DIR --release NAME --cacerts DIR --conscrypt-notice FILE --out DIR [--jb DIR] [--base-tag TAG]
-#             [--mtime EPOCH] [--out-unreleased DIR]
+#             [--mtime EPOCH]
 #
 #   --in DIR       release build output: DIR/<tag>/<abi>/{lib,framework}/... + SHA256SUMS + BUILD-INFO.txt,
 #                  DIR/<tag>/helpers/<abi>/{kktls-symcheck,kktls-util} + allow-missing-libssl.txt + SHA256SUMS,
@@ -17,14 +17,10 @@
 #                  DIR/<base>/allow/allow-missing-lib{ssl,crypto}.txt (each with SHA256SUMS), base = 4.1|4.2|4.3: one
 #                  openssl zip per base and ABI (helpers and the bionic notice from the 4.4 base tag). A base built with
 #                  java lines (BUILD-INFO `java <module> <path>` and `gate <release>...`, equal for every ABI) also has
-#                  those files in <abi>/ and notice/{libcore,fdlibm}.NOTICE: one java zip per base and ABI, released only
-#                  for the ABIs in JB_JAVA_ABIS below (the others go to --out-unreleased)
+#                  those files in <abi>/ and notice/{libcore,fdlibm}.NOTICE: one java zip per base and ABI
 #   --base-tag TAG the tag whose openssl, layer D and helper files go into the ABI-independent zips and the
 #                  openssl/conscrypt zips (default: the first tag in sort order; those files are the same for every tag)
 #   --mtime EPOCH  timestamp of every zip entry (default 1230768000 = 2009-01-01 UTC)
-#   --out-unreleased DIR  also pack the Jelly Bean java zips of the ABIs outside JB_JAVA_ABIS into DIR (+ SHA256SUMS);
-#                  without it they are not packed. Never part of the --out set (the release). When there is none, DIR
-#                  gets no SHA256SUMS (and is removed again if this run created it)
 #
 # Zips (Android version from the tag name android-<ver>_rN; the openssl zips name the Android version they install on):
 #   kktls-openssl-4.4-<abi>-<rel>.zip       system/lib/{libssl,libcrypto}.so (any 4.4.x)
@@ -44,19 +40,16 @@ export LC_ALL=C
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 die() { echo "mkzips: $*" >&2; exit "${2:-1}"; }
-# ABIs whose Jelly Bean java zips are released: libjavacore.so carries all of libcore's natives (a bad one stops the
-# boot), so an ABI joins once its zip has booted on an emulator of the base (x86 needs KVM, not tested yet)
-JB_JAVA_ABIS="armeabi-v7a"
-IN='' REL='' CACERTS='' CNOTICE='' OUT='' BASE='' MTIME=1230768000 JB='' UNREL=''
+IN='' REL='' CACERTS='' CNOTICE='' OUT='' BASE='' MTIME=1230768000 JB=''
 while [ $# -gt 0 ]; do
   case $1 in
-    --in|--release|--cacerts|--conscrypt-notice|--out|--base-tag|--mtime|--jb|--out-unreleased)
+    --in|--release|--cacerts|--conscrypt-notice|--out|--base-tag|--mtime|--jb)
       [ $# -ge 2 ] || die "$1 needs a value" 2
       case $1 in
         --in) IN=$2 ;; --release) REL=$2 ;; --cacerts) CACERTS=$2 ;; --conscrypt-notice) CNOTICE=$2 ;;
-        --out) OUT=$2 ;; --base-tag) BASE=$2 ;; --mtime) MTIME=$2 ;; --jb) JB=$2 ;; --out-unreleased) UNREL=$2 ;;
+        --out) OUT=$2 ;; --base-tag) BASE=$2 ;; --mtime) MTIME=$2 ;; --jb) JB=$2 ;;
       esac; shift 2 ;;
-    -h|--help) sed -n '3,40p' "$0"; exit 0 ;;
+    -h|--help) sed -n '3,37p' "$0"; exit 0 ;;
     *) die "unknown argument $1" 2 ;;
   esac
 done
@@ -142,13 +135,6 @@ done
 
 mkdir -p "$OUT"
 OUT=$(cd "$OUT" && pwd)
-UNREL_NEW=0
-if [ -n "$UNREL" ]; then
-  [ -d "$UNREL" ] || UNREL_NEW=1
-  mkdir -p "$UNREL"; UNREL=$(cd "$UNREL" && pwd)
-  [ "$UNREL" != "$OUT" ] || die "--out-unreleased must not be the --out directory" 2
-  rm -f "$UNREL"/kktls-*.zip "$UNREL/SHA256SUMS"
-fi
 ST=$(mktemp -d); trap 'rm -rf "$ST"' EXIT
 rm -f "$OUT"/kktls-*.zip "$OUT/SHA256SUMS"
 
@@ -216,9 +202,8 @@ payload() { # name dir files... (paths below dir, the <tag>/<abi>/ of a build ou
   cp "$src/BUILD-INFO.txt" "$s/kktls/BUILD-INFO.txt"
 }
 
-pack() { # name [dir]: $ST/name -> dir/name.zip (default $OUT; sorted entries, fixed time, 0755 for update-binary and helpers)
-  local o=${2:-$OUT}
-  python3 -I - "$ST/$1" "$o/$1.zip" "$MTIME" <<'EOF'
+pack() { # name: $ST/name -> $OUT/name.zip (sorted entries, fixed time, 0755 for update-binary and helpers)
+  python3 -I - "$ST/$1" "$OUT/$1.zip" "$MTIME" <<'EOF'
 import os, sys, time, zipfile
 src, out, epoch = sys.argv[1], sys.argv[2], int(sys.argv[3])
 dt = max(time.gmtime(epoch)[:6], (1980, 1, 1, 0, 0, 0))
@@ -236,7 +221,7 @@ with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
         with open(os.path.join(src, n), "rb") as fh:
             z.writestr(zi, fh.read())
 EOF
-  echo "  $1.zip${2:+ (unreleased: $2)}"
+  echo "  $1.zip"
 }
 
 ver_of() { local v=${1#android-}; echo "${v%%_*}"; }
@@ -257,13 +242,11 @@ for a in $ABIS; do
     pack "$n"
     jf=$(jb_java_files "$b")
     [ -n "$jf" ] || continue
-    n=kktls-java-$b-$a-$REL zo=$OUT
-    case " $JB_JAVA_ABIS " in *" $a "*) ;; *) zo=$UNREL ;; esac
-    if [ -z "$zo" ]; then echo "  $n.zip: not packed (not released for $a; --out-unreleased packs it)"; continue; fi
+    n=kktls-java-$b-$a-$REL
     HTAG=$BASE NOTICE_ARGS="$jt $JB/$b/notice" stage "$n" java "$a" "$(jb_android "$b")" "$jt" "$a"
     # shellcheck disable=SC2086
     payload "$n" "$JB/$b/$a" $jf
-    if [ "$zo" = "$OUT" ]; then pack "$n"; else pack "$n" "$zo"; fi
+    pack "$n"
   done
   for t in $TAGS; do
     n=kktls-java-$(ver_of "$t")-$a-$REL
@@ -290,12 +273,3 @@ pack "$n"
 
 (cd "$OUT" && sha256sum kktls-*.zip > SHA256SUMS)
 echo "mkzips: $(wc -l < "$OUT/SHA256SUMS") zips in $OUT (SHA256SUMS)"
-if [ -n "$UNREL" ]; then
-  if ls "$UNREL"/kktls-*.zip > /dev/null 2>&1; then
-    (cd "$UNREL" && sha256sum kktls-*.zip > SHA256SUMS)
-    echo "mkzips: $(wc -l < "$UNREL/SHA256SUMS") unreleased zips in $UNREL (SHA256SUMS)"
-  else # an empty SHA256SUMS would fail `sha256sum -c`
-    [ "$UNREL_NEW" = 0 ] || rmdir "$UNREL"
-    echo "mkzips: no unreleased zips (nothing written to $UNREL)"
-  fi
-fi
