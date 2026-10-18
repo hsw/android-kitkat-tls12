@@ -4,23 +4,35 @@
  * kktls-compat-probe: a device test of libkktls_compat.so (built in the Jelly Bean tree next to the library; a test
  * binary, never a release file).
  *
- *   kktls-compat-probe [LIBRARY]     default libkktls_compat.so (found through LD_LIBRARY_PATH or /system/lib)
+ *   kktls-compat-probe [--uid UID] [LIBRARY]   default libkktls_compat.so (found through LD_LIBRARY_PATH or /system/lib)
+ *   kktls-compat-probe --uid UID --exec PROGRAM [ARG...]
  *
- * dlopen()s the library and dlsym()s every function the library may export, prints which ones it has, and for
- *   getauxval: AT_HWCAP (and its NEON bit), AT_HWCAP2, AT_PAGESZ: the values the Conscrypt library will see;
- *   each fortify function it has: one call within bounds (the result) and one beyond, in a child process, which must
- *              die in abort() (bionic's FATAL "libc" line goes to the log). The Jelly Bean abort() writes to 0xdeadbaad
- *              before it raises SIGABRT ("seg fault seems to produce better debuggerd results", libc/unistd/abort.c),
- *              so the child dies with SIGSEGV there; SIGABRT is accepted too.
+ * First the probe reads its own AT_HWCAP/AT_HWCAP2 from /proc/self/auxv (the reference). With --uid (run as root) it
+ * then drops to UID in the zygote's order for an app without DEBUG_ENABLE_DEBUGGER (4.1/4.2 dalvik_system_Zygote.cpp:
+ * setgroups, setgid, setuid, no PR_SET_DUMPABLE): supplementary group inet (3003), gid and uid UID. setuid() from root
+ * leaves the process not dumpable (fs.suid_dumpable 0), so /proc/self/auxv belongs to root and open() fails with
+ * EACCES, as in every app of a user build and in system_server. The probe prints the dumpable flag and the errno.
+ * With --exec it then runs PROGRAM in that condition: exec() makes a process dumpable again when its real and effective
+ * ids are equal, so the real gid becomes inet (3003) and only the effective gid is UID; the kernel then applies
+ * fs.suid_dumpable at exec() and the program (e.g. app_process with a TLS probe) stays not dumpable. Test only.
+ *
+ * Without --exec it dlopen()s the library and dlsym()s every function the library may export, prints which ones it has,
+ * and for
+ *   getauxval: AT_HWCAP (and its NEON bit), AT_HWCAP2, AT_PAGESZ: the values the Conscrypt library will see. AT_HWCAP
+ *              and AT_HWCAP2 must equal the reference (with --uid: derived from /proc/cpuinfo, which on a kernel that
+ *              names every bit it sets is the same value); AT_PAGESZ must be the page size, with --uid 0 (unreadable);
  * Output lines "probe ...", last line "PROBE PASS" or "PROBE FAIL"; exit status 0 only with PASS.
  */
 #include <dlfcn.h>
+#include <errno.h>
 #include <fcntl.h>
+#include <grp.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/prctl.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -29,6 +41,7 @@
 #define AT_PAGESZ 6
 #define AT_HWCAP2 26
 #define HWCAP_NEON (1u << 12)
+#define AID_INET 3003
 
 static int failed;
 static void *lib;
@@ -85,13 +98,91 @@ static void child_abort(const char *what, void *fn, int case_no) {
     verdict(pid > 0 && WIFSIGNALED(status) && (WTERMSIG(status) == SIGABRT || WTERMSIG(status) == SIGSEGV), label);
 }
 
+/* the value of a type in this process's own /proc/self/auxv (32-bit pairs): 0 absent, -1 unreadable */
+static long long own_auxv(unsigned long type) {
+    unsigned int v[256];
+    ssize_t n;
+    int fd = open("/proc/self/auxv", O_RDONLY), i;
+    if (fd < 0) {
+        return -1;
+    }
+    n = read(fd, v, sizeof(v));
+    close(fd);
+    for (i = 0; n > 0 && i + 1 < n / 4 && v[i] != 0; i += 2) {
+        if (v[i] == type) {
+            return v[i + 1];
+        }
+    }
+    return n > 0 ? 0 : -1;
+}
+
+static void read_line(const char *path, char *out, size_t size) {
+    int fd = open(path, O_RDONLY);
+    ssize_t n = fd < 0 ? -1 : read(fd, out, size - 1);
+    if (fd >= 0) {
+        close(fd);
+    }
+    out[n > 0 ? n : 0] = '\0';
+    if (n > 0 && out[n - 1] == '\n') {
+        out[n - 1] = '\0';
+    }
+}
+
+/* the zygote's order for an app without DEBUG_ENABLE_DEBUGGER; for --exec the real gid is inet (see the header) */
+static int drop(unsigned uid, int for_exec) {
+    gid_t groups[1] = {AID_INET};
+    char sd[16];
+    int fd, err;
+    if (setgroups(1, groups) != 0 || (for_exec ? setresgid(AID_INET, uid, uid) : setgid(uid)) != 0 || setuid(uid) != 0) {
+        printf("probe drop to uid %u: %s (run as root)\n", uid, strerror(errno));
+        return -1;
+    }
+    read_line("/proc/sys/fs/suid_dumpable", sd, sizeof(sd));
+    fd = open("/proc/self/auxv", O_RDONLY);
+    err = errno;
+    printf("probe as uid %u gid %u egid %u: dumpable %d (fs.suid_dumpable %s), /proc/self/auxv: %s\n", (unsigned) getuid(),
+           (unsigned) getgid(), (unsigned) getegid(), prctl(PR_GET_DUMPABLE, 0, 0, 0, 0), sd,
+           fd >= 0 ? "opened" : strerror(err));
+    if (fd >= 0) {
+        close(fd);
+    }
+    verdict(prctl(PR_GET_DUMPABLE, 0, 0, 0, 0) == 0 && fd < 0 && err == EACCES,
+            "not dumpable and /proc/self/auxv EACCES (the condition of a non-debuggable app)");
+    return 0;
+}
+
 int main(int argc, char **argv) {
-    const char *path = argc > 1 ? argv[1] : "libkktls_compat.so";
+    const char *path = "libkktls_compat.so";
+    long long ref_hwcap = own_auxv(AT_HWCAP), ref_hwcap2 = own_auxv(AT_HWCAP2);
+    int uid = -1, a = 1;
     unsigned long (*auxv)(unsigned long);
     void *mc, *mm, *ms, *sl, *op;
     char d[16], s[16] = "0123456789abcde";
 
     setvbuf(stdout, NULL, _IONBF, 0);
+    printf("probe reference /proc/self/auxv AT_HWCAP 0x%08llx, AT_HWCAP2 0x%08llx (-1 unreadable)\n", ref_hwcap,
+           ref_hwcap2);
+    if (a + 1 < argc && strcmp(argv[a], "--uid") == 0) {
+        uid = atoi(argv[a + 1]);
+        a += 2;
+    }
+    if (a + 1 < argc && strcmp(argv[a], "--exec") == 0) {
+        if (uid <= 0 || drop((unsigned) uid, 1) != 0 || failed) {
+            printf("PROBE FAIL\n");
+            return 1;
+        }
+        printf("probe exec %s\n", argv[a + 1]);
+        execv(argv[a + 1], argv + a + 1);
+        printf("probe exec %s: %s\nPROBE FAIL\n", argv[a + 1], strerror(errno));
+        return 1;
+    }
+    if (a < argc) {
+        path = argv[a];
+    }
+    if (uid >= 0 && drop((unsigned) uid, 0) != 0) {
+        printf("PROBE FAIL\n");
+        return 1;
+    }
     lib = dlopen(path, RTLD_NOW);
     if (!lib) {
         printf("probe dlopen %s: %s\nPROBE FAIL\n", path, dlerror());
@@ -106,10 +197,15 @@ int main(int argc, char **argv) {
     vsn_p = (vsn_fn) sym("__vsnprintf_chk");
     op = sym("__open_2");
     if (auxv) {
-        unsigned long hwcap = auxv(AT_HWCAP);
+        unsigned long hwcap = auxv(AT_HWCAP), hwcap2 = auxv(AT_HWCAP2), pagesz = auxv(AT_PAGESZ);
         printf("probe getauxval AT_HWCAP 0x%08lx neon %s, AT_HWCAP2 0x%08lx, AT_PAGESZ %lu\n", hwcap,
-               (hwcap & HWCAP_NEON) ? "yes" : "no", auxv(AT_HWCAP2), auxv(AT_PAGESZ));
-        verdict(auxv(AT_PAGESZ) == (unsigned long) sysconf(_SC_PAGESIZE), "getauxval(AT_PAGESZ) = sysconf page size");
+               (hwcap & HWCAP_NEON) ? "yes" : "no", hwcap2, pagesz);
+        verdict(ref_hwcap >= 0 && hwcap == (unsigned long) ref_hwcap && hwcap2 == (unsigned long) ref_hwcap2,
+                uid >= 0 ? "getauxval(AT_HWCAP/AT_HWCAP2) from /proc/cpuinfo = the reference from /proc/self/auxv"
+                         : "getauxval(AT_HWCAP/AT_HWCAP2) = the reference from /proc/self/auxv");
+        verdict(uid >= 0 ? pagesz == 0 : pagesz == (unsigned long) sysconf(_SC_PAGESIZE),
+                uid >= 0 ? "getauxval(AT_PAGESZ) = 0 (vector unreadable; only the HWCAPs come from /proc/cpuinfo)"
+                         : "getauxval(AT_PAGESZ) = sysconf page size");
     }
     if (mc) {
         verdict(((mem_fn) mc)(d, s, 8, sizeof(d)) == d && memcmp(d, "01234567", 8) == 0, "__memcpy_chk within bounds");

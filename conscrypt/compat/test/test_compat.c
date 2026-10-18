@@ -29,10 +29,13 @@
 #ifdef KK_FAKE
 static const char *kk_test_auxv = "/nonexistent";
 #define KKTLS_AUXV_PATH kk_test_auxv
+static const char *kk_test_cpuinfo = "/nonexistent";
+#define KKTLS_CPUINFO_PATH kk_test_cpuinfo
 #define KKTLS_AUXV_WORD uint32_t
 #endif
 
 static int log_count;
+static char last_log[512];
 int __android_log_print(int prio, const char *tag, const char *fmt, ...) {
     char msg[512];
     va_list ap;
@@ -40,6 +43,7 @@ int __android_log_print(int prio, const char *tag, const char *fmt, ...) {
     vsnprintf(msg, sizeof(msg), fmt, ap);
     va_end(ap);
     log_count++;
+    snprintf(last_log, sizeof(last_log), "%s", msg);
     fprintf(stderr, "LOG %d %s %s", prio, tag, msg);
     fflush(stderr);
     return 1;
@@ -70,6 +74,30 @@ static const char *fake(const char *name, const uint32_t *words, size_t n) {
         exit(2);
     }
     return path;
+}
+
+static const char *fake_text(const char *name, const char *text) {
+    static char path[512];
+    FILE *f;
+    snprintf(path, sizeof(path), "%s/%s", dir, name);
+    f = fopen(path, "wb");
+    if (!f || fputs(text, f) == EOF || fclose(f) != 0) {
+        perror(path);
+        exit(2);
+    }
+    return path;
+}
+
+/* getauxval(type) with the vector unreadable: value, errno kept, and whether exactly one warning came (reset first) */
+static unsigned long fallback(unsigned long type, int *warned) {
+    int before = log_count;
+    unsigned long v;
+    kk_auxv_warned = 0;
+    kk_test_auxv = "/nonexistent/auxv";
+    errno = 4321;
+    v = kk_getauxval(type);
+    *warned = log_count == before + 1 && errno == 4321;
+    return v;
 }
 
 /* child: run fn, which must abort; parent: SIGABRT and the stub's log line in the child's stderr */
@@ -199,6 +227,74 @@ int main(void) {
     kk_test_auxv = fake("unterminated", vec, 4);
     check(kk_getauxval(16) == 0x002fb0d7u && log_count == before + 1, "unterminated: a type before the end is found");
     check(kk_getauxval(6) == 0 && log_count == before + 2, "unterminated: an absent type gives 0 and a warning");
+
+    /* the vector unreadable (a non-dumpable process): AT_HWCAP/AT_HWCAP2 from the first Features line of cpuinfo */
+    {
+        /* the RC2's own (kernel 3.0.36+, tab before ':', trailing blank, two processor blocks before Features) */
+        static const char rc2[] = "Processor\t: ARMv7 Processor rev 1 (v7l)\nprocessor\t: 0\nBogoMIPS\t: 1823.40\n\n"
+                                  "processor\t: 1\nBogoMIPS\t: 1823.40\n\nFeatures\t: swp half thumb fastmult vfp edsp "
+                                  "neon vfpv3 \nCPU implementer\t: 0x41\nCPU architecture: 7\nHardware\t: RK30board\n";
+        /* the ranchu 3.10 emulator kernel (= its AT_HWCAP 0x002fb0d7) */
+        static const char ranchu[] = "Features\t: swp half thumb fastmult vfp edsp neon vfpv3 tls vfpv4 idiva idivt "
+                                     "vfpd32 evtstrm\n";
+        /* an arm64 kernel, 32-bit process: per-CPU blocks, the first Features line wins; every word of both tables */
+        static const char all[] = "processor\t: 0\nFeatures\t: swp half thumb 26bit fastmult fpa vfp edsp java iwmmxt "
+                                  "crunch thumbee neon vfpv3 vfpv3d16 tls vfpv4 idiva idivt vfpd32 lpae evtstrm fphp "
+                                  "asimdhp asimddp asimdfhm asimdbf16 i8mm aes pmull sha1 sha2 crc32 sb ssbs\n\n"
+                                  "processor\t: 1\nFeatures\t: swp\n";
+        char big[4096];
+        size_t n;
+        int warned;
+
+        kk_test_cpuinfo = fake_text("cpuinfo-rc2", rc2);
+        check(fallback(16, &warned) == 0x30d7u && warned, "cpuinfo (RC2): AT_HWCAP 0x30d7 with NEON, errno kept, one warning");
+        check(strstr(last_log, "cannot be opened") && strstr(last_log, "getauxval(16) = 0x000030d7 from the Features line"),
+              "cpuinfo: the warning names the cause and the value");
+        check(fallback(26, &warned) == 0 && warned, "cpuinfo (RC2): AT_HWCAP2 0 (no crypto words)");
+        check(fallback(6, &warned) == 0 && warned && strstr(last_log, "getauxval(6) returns 0") != NULL,
+              "cpuinfo: another type (AT_PAGESZ) is 0, not a Features value");
+        kk_test_cpuinfo = fake_text("cpuinfo-ranchu", ranchu);
+        check(fallback(16, &warned) == 0x002fb0d7u, "cpuinfo (ranchu 3.10): = that kernel's AT_HWCAP 0x002fb0d7");
+        kk_test_cpuinfo = fake_text("cpuinfo-all", all);
+        check(fallback(16, &warned) == 0x0fffffffu && fallback(26, &warned) == 0x7fu,
+              "cpuinfo: all 28 HWCAP and 7 HWCAP2 words = bits 0-27 and 0-6; the first Features line wins");
+        kk_test_cpuinfo = fake_text("cpuinfo-unknown", "Features : neonx foo NEON neon\tvfp aes2 sha256 aes\n");
+        check(fallback(16, &warned) == 0x1040u && fallback(26, &warned) == 1u,
+              "cpuinfo: unknown and look-alike words ignored, tab separates, case matters");
+        kk_test_cpuinfo = fake_text("cpuinfo-keys", "CPU Features : neon\nFeatures2: vfp\nflags : neon\n"
+                                    "Features:half\r\n");
+        check(fallback(16, &warned) == 0x2u, "cpuinfo: only the key Features (no space needed, CR ignored)");
+        kk_test_cpuinfo = fake_text("cpuinfo-none", "processor\t: 0\nflags\t\t: fpu sse2 neon\n");
+        check(fallback(16, &warned) == 0 && warned && strstr(last_log, "= 0x00000000 from the Features line") != NULL,
+              "cpuinfo without a Features line: 0 and the warning says so");
+        kk_test_cpuinfo = fake_text("cpuinfo-empty", "");
+        check(fallback(16, &warned) == 0 && warned, "empty cpuinfo: 0");
+        kk_test_cpuinfo = fake_text("cpuinfo-noeol", "Features\t: neon vfpv3");
+        check(fallback(16, &warned) == 0x3000u, "cpuinfo: a last line without a newline");
+        /* a Features line longer than the parser's buffer is skipped; the next one crosses a 512-byte read */
+        n = (size_t) snprintf(big, sizeof(big), "%s", "Features\t: swp ");
+        memset(big + n, 'x', 2040 - n);
+        n = 2040;
+        n += (size_t) snprintf(big + n, sizeof(big) - n, "%s", "\nFeatures\t: thumb neon\n");
+        kk_test_cpuinfo = fake_text("cpuinfo-long", big);
+        check(fallback(16, &warned) == 0x1004u, "cpuinfo: an over-long line skipped, a Features line across reads");
+        kk_test_cpuinfo = "/nonexistent/cpuinfo";
+        check(fallback(16, &warned) == 0 && warned && strstr(last_log, "returns 0, cannot read /nonexistent/cpuinfo"),
+              "auxv and cpuinfo unreadable: 0, errno kept, the warning says both");
+        kk_auxv_warned = 0;
+        kk_test_auxv = fake("unterminated2", vec, 4);
+        kk_test_cpuinfo = fake_text("cpuinfo-rc2b", rc2);
+        check(kk_getauxval(26) == 0 && strstr(last_log, "ends early (no AT_NULL): getauxval(26) = 0x00000000 from") != NULL,
+              "auxv ends early: AT_HWCAP2 from cpuinfo too");
+        /* the vector readable: cpuinfo is not consulted, also not for an absent AT_HWCAP2 */
+        before = log_count;
+        kk_auxv_warned = 0;
+        kk_test_auxv = fake("auxv2", vec, sizeof(vec) / sizeof(vec[0]));
+        kk_test_cpuinfo = fake_text("cpuinfo-all2", all);
+        check(kk_getauxval(16) == 0x002fb0d7u && kk_getauxval(26) == 0 && log_count == before,
+              "a readable vector wins over cpuinfo (absent AT_HWCAP2 stays 0), no warning");
+        kk_test_cpuinfo = "/nonexistent";
+    }
 
     {
         char s[16] = "0123456789abcde", d[16];
