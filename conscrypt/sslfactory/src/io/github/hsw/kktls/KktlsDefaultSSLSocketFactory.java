@@ -48,7 +48,8 @@ import javax.net.ssl.SSLSocketFactory;
  * so it must be a boot class. It is part of libcore ({@code luni}, built into {@code core.jar} for Dalvik and
  * {@code core-libart.jar} for ART), so layer D changes neither the boot class path nor the ramdisk: it is three files
  * in /system, {@value #CONSCRYPT_JAR}, {@value #FILTER_JAR} and {@code libkktls_conscrypt_jni.so} in
- * {@value #CONSCRYPT_LIBRARY_PATH}. Conscrypt itself is <b>not</b> on the boot class path: a boot copy of
+ * {@value #CONSCRYPT_LIBRARY_PATH} (and {@code libkktls_compat.so} there on Android 4.1 and 4.2, where that base and
+ * ABI lacks bionic functions of the library). Conscrypt itself is <b>not</b> on the boot class path: a boot copy of
  * {@code org.conscrypt} would shadow an app's own Conscrypt (parent-first loading). The constructor:
  * <ol>
  * <li>reads the <b>kill switch</b>, the system property {@value #GATE_PROPERTY}: exactly {@code "0"} keeps layer D off
@@ -77,7 +78,11 @@ import javax.net.ssl.SSLSocketFactory;
  *     {@code System.loadLibrary}, where nothing can fall back. For an ARM library ({@code e_machine} 40) it then
  *     checks that the CPU has NEON ({@link #checkNeon}, a failure as in step 5): the aar's armeabi-v7a library is
  *     built with NEON as its baseline and dies with SIGILL at load on an ARMv7 CPU (or kernel) without it, before
- *     any Java code could fall back. Then it creates its own
+ *     any Java code could fall back. An x86 library ({@code e_machine} 3) gets no CPU check: it assumes the NDK x86
+ *     ABI baseline (up to SSSE3), which every x86 Android CPU has. If {@value #COMPAT_LIBRARY} exists (Android 4.1
+ *     and 4.2: the bionic functions that the edited Conscrypt library loads through {@code DT_NEEDED}), it gets the
+ *     same {@link #checkLibrary} (a truncated one is the same SIGBUS in the linker); absent, nothing is checked, and
+ *     a Conscrypt library that needs it fails to load as in step 5. Then it creates its own
  *     {@code dalvik.system.PathClassLoader(}{@value #CONSCRYPT_JAR}{@code :}{@value #FILTER_JAR}{@code , }{@value
  *     #CONSCRYPT_LIBRARY_PATH}{@code , <this class's loader>)} (the boot class loader on the device, so the KitKat
  *     adapter resolves {@code com.android.org.conscrypt.OpenSSLSocketImpl} from the boot class path, and Conscrypt's
@@ -97,11 +102,13 @@ import javax.net.ssl.SSLSocketFactory;
  *     ({@code init(null, null, null)}: key and trust managers come from the installed providers, so trust stays with
  *     the platform TrustManagerImpl and the system CA store); the provider is not installed in {@code Security};</li>
  * <li>installed, on <b>any</b> {@link Throwable} (a class missing from the jar, the {@code IOException} of the library
- *     check, the {@code IOException} of the NEON check, {@code UnsatisfiedLinkError} from libkktls_conscrypt_jni.so, {@code ExceptionInInitializerError},
+ *     checks, the {@code IOException} of the NEON check, {@code UnsatisfiedLinkError} from libkktls_conscrypt_jni.so, {@code ExceptionInInitializerError},
  *     {@code NoSuchAlgorithmException}, {@code KeyManagementException}, ...) logs one warning per process
  *     (java.util.logging, tag {@value #LOG_TAG}) and uses the platform factory {@value #PLATFORM_FACTORY_CLASS},
  *     created exactly as the 4.4 {@code getDefault()} created it from the previous {@code ssl.SocketFactory.provider}
- *     value: by name, public no-arg constructor. A failure to load Conscrypt is kept for the process (no retry, no second loader);</li>
+ *     value: by name, public no-arg constructor. A failure to load Conscrypt, or to make a factory of its provider
+ *     ({@code SSLContext} and, on Jelly Bean, the adapter's inner factory), is kept for the process: no retry, no
+ *     second loader, and every later construction uses the platform factory;</li>
  * <li>if the platform factory fails too (any path), throws {@link IllegalStateException}, a RuntimeException, so
  *     {@code getDefault()}'s own {@code catch (Exception)} falls back to {@code SSLContext.getDefault()}. No
  *     {@code Error} ever leaves the constructor (getDefault() would not catch it).</li>
@@ -158,6 +165,8 @@ public final class KktlsDefaultSSLSocketFactory extends SSLSocketFactory {
     static final String CONSCRYPT_LIBRARY_PATH = SYSTEM_ROOT + "/lib";
     /** The JNI library that Conscrypt's {@code System.loadLibrary("kktls_conscrypt_jni")} opens from that directory. */
     static final String CONSCRYPT_LIBRARY = CONSCRYPT_LIBRARY_PATH + "/libkktls_conscrypt_jni.so";
+    /** Android 4.1/4.2 only: the bionic functions those bases lack, a {@code DT_NEEDED} of their Conscrypt library. */
+    static final String COMPAT_LIBRARY = CONSCRYPT_LIBRARY_PATH + "/libkktls_compat.so";
     static final String PATH_CLASS_LOADER_CLASS = "dalvik.system.PathClassLoader";
     /** procfs, for the NEON check. The host test compiles a copy with a temporary directory here. */
     static final String PROC_ROOT = "/proc";
@@ -183,6 +192,8 @@ public final class KktlsDefaultSSLSocketFactory extends SSLSocketFactory {
     /** Guards the per-process Conscrypt state below: one loader, one provider, or the failure that stopped them. */
     private static final Object CONSCRYPT_LOCK = new Object();
     private static Loaded conscryptLoaded;
+    /** The first failure to load Conscrypt or to make a factory of it (then {@link #conscryptLoaded} may be set too):
+     *  once set, Conscrypt is not tried again in this process. */
     private static Throwable conscryptFailure;
 
     /** What the Conscrypt loader yields, set together under {@link #CONSCRYPT_LOCK}: the provider and the constructor
@@ -232,7 +243,13 @@ public final class KktlsDefaultSSLSocketFactory extends SSLSocketFactory {
         Throwable failure = null;
         try {
             Loaded loaded = conscryptLoaded();
-            f = newConscryptFactory(loaded.provider);
+            try {
+                f = newConscryptFactory(loaded.provider);
+            } catch (Throwable t) {
+                // kept: the next construction gets it from conscryptLoaded() and does not try Conscrypt again
+                keepFailure(unwrap(t));
+                throw t;
+            }
             ctor = loaded.filterSocketCtor;
         } catch (Throwable t) {
             failure = unwrap(t);
@@ -306,11 +323,26 @@ public final class KktlsDefaultSSLSocketFactory extends SSLSocketFactory {
         }
     }
 
+    /** Keeps the first failure to make a Conscrypt factory for the process (a load failure is kept already). */
+    private static void keepFailure(Throwable failure) {
+        synchronized (CONSCRYPT_LOCK) {
+            if (conscryptFailure == null) {
+                conscryptFailure = failure;
+            }
+        }
+    }
+
     private static Loaded loadConscrypt() throws Exception {
         // Before anything can dlopen the library: a truncated .so is a SIGBUS in the linker, not an exception.
         // An ARM library needs NEON: without it the linker's first NEON instruction is a SIGILL, not an exception.
+        // An x86 library assumes the NDK x86 ABI baseline (up to SSSE3), which every x86 Android CPU has: no check.
         if (checkLibrary(CONSCRYPT_LIBRARY) == EM_ARM) {
             checkNeon(AUXV, CPUINFO);
+        }
+        // The compat library that the 4.1/4.2 Conscrypt library NEEDs: the same SIGBUS if truncated. Absent: nothing to
+        // map (a library that needs it then fails in System.loadLibrary with UnsatisfiedLinkError, a fallback).
+        if (new File(COMPAT_LIBRARY).exists()) {
+            checkLibrary(COMPAT_LIBRARY);
         }
         // One loader for Conscrypt and our SSLv3-filtering socket: both off the boot class path, both org.conscrypt, so
         // a wrapped socket's class still tells which stack made it. A missing/unloadable kktls-sslfilter then fails

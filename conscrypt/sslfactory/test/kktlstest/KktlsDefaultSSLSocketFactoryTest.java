@@ -76,6 +76,8 @@ public class KktlsDefaultSSLSocketFactoryTest extends TestCase {
     /** libkktls_conscrypt_jni.so: the wrapper checks its ELF header before it creates the loader (truncated = SIGBUS
      *  in the 4.4 linker); install() writes a valid fixture, the library cases replace it. */
     static final File LIBRARY = new File(ROOT + "/lib/libkktls_conscrypt_jni.so");
+    /** libkktls_compat.so (Android 4.1/4.2): checked like LIBRARY when it exists; install() removes it. */
+    static final File COMPAT = new File(ROOT + "/lib/libkktls_compat.so");
     static final int EM_ARM = 40;
     /** The wrapper's PROC_ROOT in this run ("/proc" on a device). */
     static final String PROC = System.getProperty("kktlstest.proc", "<run through run-host-tests.sh>");
@@ -201,6 +203,7 @@ public class KktlsDefaultSSLSocketFactoryTest extends TestCase {
         assertTrue("cannot create " + d, d.isDirectory() || d.mkdirs());
         assertTrue("cannot create " + INSTALLED_JAR, INSTALLED_JAR.isFile() || INSTALLED_JAR.createNewFile());
         writeLibrary(elf(EM_ARM, 8192));
+        assertTrue("cannot delete " + COMPAT, !COMPAT.exists() || COMPAT.delete());
         writeAuxv(HWCAP_WITH_NEON);
         writeCpuinfo(null);
     }
@@ -533,6 +536,51 @@ public class KktlsDefaultSSLSocketFactoryTest extends TestCase {
         assertFallsBack("null", IllegalStateException.class);
     }
 
+    // --- a failure to make the Conscrypt factory (after the provider loaded) is kept for the process, as a load
+    //     failure: later constructions neither build another TLS context nor log again (PR #9 review)
+
+    /** mode makes newConscryptFactory() fail; three constructions in one process, then the cause goes away. */
+    private void assertFactoryFailureIsNotRetried(String mode, String platform, Class<? extends Throwable> cause,
+            String getInstanceCall) throws Throwable {
+        System.setProperty("kktlstest.mode", mode);
+        RecordingLoader cl = loader("android", "conscrypt", platform);
+        for (int i = 0; i < 3; i++) {
+            assertTrue(newWrapper(cl).toString().startsWith("KktlsDefaultSSLSocketFactory[platform: "));
+        }
+        System.clearProperty("kktlstest.mode"); // the cause is gone, but the process keeps the failure
+        SSLSocketFactory f = newWrapper(cl);
+        List<String> calls = RecordingSSLSocketFactory.CALLS;
+        assertEquals(calls.toString(), 1, count(calls, CONSCRYPT_LOADER));
+        assertEquals(calls.toString(), 1, count(calls, BUILD));
+        assertEquals("one TLS context, made by the first construction: " + calls, 1, count(calls, getInstanceCall));
+        assertOneFallbackRecord(cause);
+        assertDelegatesTo("platform", f);
+        RecordingSSLSocketFactory.reset();
+        assertTrue("a new process tries again", newWrapper(loader("android", "conscrypt", platform)).toString()
+                .startsWith("KktlsDefaultSSLSocketFactory[conscrypt: "));
+    }
+
+    public void testNullSocketFactoryIsNotRetried() throws Throwable {
+        assertFactoryFailureIsNotRetried("null", "platform", IllegalStateException.class, INIT);
+    }
+
+    public void testJellyBeanAdapterWithoutInnerFactoryIsNotRetried() throws Throwable {
+        assertFactoryFailureIsNotRetried("adapter-null", "platformjb", IllegalStateException.class, INIT);
+    }
+
+    public void testFactoryFailureAfterASuccessIsKept() throws Throwable {
+        RecordingLoader cl = loader("android", "conscrypt", "platform");
+        SSLSocketFactory first = newWrapper(cl);
+        assertTrue(first.toString(), first.toString().startsWith("KktlsDefaultSSLSocketFactory[conscrypt: "));
+        System.setProperty("kktlstest.mode", "null");
+        assertTrue(newWrapper(cl).toString().startsWith("KktlsDefaultSSLSocketFactory[platform: "));
+        System.clearProperty("kktlstest.mode");
+        assertTrue("kept for the process", newWrapper(cl).toString().startsWith("KktlsDefaultSSLSocketFactory[platform: "));
+        assertEquals(RecordingSSLSocketFactory.CALLS.toString(), 2, count(RecordingSSLSocketFactory.CALLS, INIT));
+        assertOneFallbackRecord(IllegalStateException.class);
+        assertDelegatesTo("conscrypt", first); // a factory made before the failure keeps working
+    }
+
     // --- libkktls_conscrypt_jni.so checked before the loader: a library the 4.4 linker would map past EOF (SIGBUS)
     //     is a fallback like any other, and the loader is never created, so nothing ever dlopens it
 
@@ -619,6 +667,39 @@ public class KktlsDefaultSSLSocketFactoryTest extends TestCase {
         RecordingSSLSocketFactory.reset();
         assertTrue("a new process uses the repaired library", newWrapper(loader("android", "conscrypt", "platform"))
                 .toString().contains("[conscrypt: "));
+    }
+
+    // --- libkktls_compat.so (Android 4.1/4.2: the Conscrypt library NEEDs it): the same check when it exists
+
+    public void testValidCompatLibraryUsesConscrypt() throws Throwable {
+        write(COMPAT, elf(EM_ARM, 4097));
+        SSLSocketFactory f = newWrapper(loader("android", "conscrypt", "platform"));
+        assertEquals(CONSCRYPT_PATH, RecordingSSLSocketFactory.CALLS);
+        assertDelegatesTo("conscrypt", f);
+        assertEquals(0, records.size());
+    }
+
+    public void testTruncatedCompatLibraryFallsBackWithoutALoader() throws Throwable {
+        write(COMPAT, Arrays.copyOf(elf(EM_ARM, 8192), 4096));
+        RecordingLoader cl = loader("android", "conscrypt", "platform");
+        SSLSocketFactory f = newWrapper(cl);
+        assertTrue(f.toString(), f.toString().startsWith("KktlsDefaultSSLSocketFactory[platform: "));
+        assertFalse(RecordingSSLSocketFactory.CALLS.toString(), RecordingSSLSocketFactory.CALLS.contains(CONSCRYPT_LOADER));
+        assertEquals("no org.conscrypt lookup", new ArrayList<String>(), cl.conscryptLookups());
+        assertOneFallbackRecord(IOException.class);
+        String m = records.get(0).getThrown().getMessage();
+        assertTrue(m, m.contains("ELF check of " + COMPAT.getPath() + ": PT_LOAD segment 2 ends at byte 8192"));
+        assertDelegatesTo("platform", f);
+    }
+
+    public void testCompatLibraryIsNotReadWhenLayerDIsOffOrAbsent() throws Throwable {
+        write(COMPAT, new byte[0]); // would be refused (and logged) if the wrapper looked at it
+        System.setProperty("kktlstest.gate", "0");
+        assertGateOff(loader("android", "conscrypt", "platform"));
+        System.setProperty("kktlstest.gate", "1");
+        uninstall();
+        RecordingSSLSocketFactory.reset();
+        assertLayerA(loader("android", "conscrypt", "platform"), "absent", 1);
     }
 
     public void testLibraryIsNotReadWhenLayerDIsOffOrAbsent() throws Throwable {
