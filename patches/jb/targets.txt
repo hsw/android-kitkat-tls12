@@ -10,6 +10,11 @@
 #   gate    BASE RELEASE...   the ro.build.version.release values the java files of BASE are accepted on: every AOSP tag
 #                             that reports one of them has the libcore, dalvik, libnativehelper and native library
 #                             sources of TAG or a reviewed Java-only difference (needed when BASE has java lines)
+#   conscrypt BASE            layer D for BASE (needs java lines and a libcore series: the hook): the `stage` step makes
+#                             the JB Conscrypt stage (conscrypt/mkstage.py --jb), the release files are
+#                             framework/kktls-conscrypt.jar (the pinned JB dex jar), framework/kktls-sslfilter.jar (built
+#                             in this tree) and lib/libkktls_conscrypt_jni.so (the pinned aar .so of the ABI); one
+#                             kktls-conscrypt-BASE-<abi> zip per ABI, installed on the releases of the gate line
 # Modules: libcrypto libssl (the release files lib/libcrypto.so lib/libssl.so) and the openssl command-line tool
 # (a test client only, not a release file), plus the base's java modules. Variant -user, as the 4.4 release build;
 # make runs with WITH_DEXPREOPT=false (the jars keep classes.dex).
@@ -20,6 +25,7 @@ target  4.3  full_x86-user  x86
 java    4.3  core         framework/core.jar
 java    4.3  libjavacore  lib/libjavacore.so
 gate    4.3  4.3 4.3.1
+conscrypt 4.3
 
 base    4.2  android-4.2.2_r1
 target  4.2  full-user      armeabi-v7a

@@ -19,6 +19,12 @@
  * land there too), so an off case can prove that no org.conscrypt class and no PathClassLoader was even looked up
  * (on the device that lookup is what opens the jar and libkktls_conscrypt_jni.so). setUp sets the property to "1";
  * the kill-switch tests change it. jsse.enableSNIExtension is cleared before and after every case (SNI guard).
+ * The NEON check reads <proc>/self/auxv and <proc>/cpuinfo (run-host-tests.sh compiles PROC_ROOT = -Dkktlstest.proc):
+ * install() writes an auxv with HWCAP_NEON and no cpuinfo, the NEON cases change them. The Jelly Bean shape is
+ * stub-platform-jb (org.apache.harmony.xnet.provider.jsse.OpenSSLSocketFactoryImpl instead of stub-platform) and, with
+ * -Dkktlstest.mode=adapter, Conscrypt's KitKat adapter factory without stub-kitkat (no
+ * com.android.org.conscrypt.OpenSSLSocketImpl): the wrapper must take the adapter's inner factory there, and keep the
+ * adapter with stub-kitkat (4.4).
  * This class never names the wrapper at compile time.
  * The host JDK proves behaviour, not Java 6 source compatibility: that proof is the KitKat build of libcore.
  */
@@ -71,6 +77,13 @@ public class KktlsDefaultSSLSocketFactoryTest extends TestCase {
      *  in the 4.4 linker); install() writes a valid fixture, the library cases replace it. */
     static final File LIBRARY = new File(ROOT + "/lib/libkktls_conscrypt_jni.so");
     static final int EM_ARM = 40;
+    /** The wrapper's PROC_ROOT in this run ("/proc" on a device). */
+    static final String PROC = System.getProperty("kktlstest.proc", "<run through run-host-tests.sh>");
+    static final File AUXV = new File(PROC + "/self/auxv");
+    static final File CPUINFO = new File(PROC + "/cpuinfo");
+    /** AT_HWCAP of the 4.3 ARM emulator with a NEON kernel, and the same without HWCAP_NEON (the SDK API 16-18 kernels). */
+    static final long HWCAP_WITH_NEON = 0x2fb0d7L;
+    static final long HWCAP_WITHOUT_NEON = 0x2fa0d7L;
     static final int EM_386 = 3;
     /** The wrapper's own loader for Conscrypt + the SSLv3-filtering wrapper socket: both installed jars, <root>/lib,
      *  parent = the wrapper's loader. The dexPath joins the two with the platform path separator. */
@@ -188,6 +201,46 @@ public class KktlsDefaultSSLSocketFactoryTest extends TestCase {
         assertTrue("cannot create " + d, d.isDirectory() || d.mkdirs());
         assertTrue("cannot create " + INSTALLED_JAR, INSTALLED_JAR.isFile() || INSTALLED_JAR.createNewFile());
         writeLibrary(elf(EM_ARM, 8192));
+        writeAuxv(HWCAP_WITH_NEON);
+        writeCpuinfo(null);
+    }
+
+    /** A 32-bit auxv: AT_PHDR, AT_PAGESZ, then AT_HWCAP = hwcap unless null, AT_NULL. null hwcap and no file: -1. */
+    static void writeAuxv(Long hwcap) throws IOException {
+        File d = AUXV.getParentFile();
+        assertTrue("cannot create " + d, d.isDirectory() || d.mkdirs());
+        ByteArrayOutputStream b = new ByteArrayOutputStream();
+        long[] entries = hwcap == null ? new long[] {3, 0x8034, 6, 4096, 0, 0}
+                : new long[] {3, 0x8034, 6, 4096, 16, hwcap, 0, 0};
+        for (long v : entries) {
+            byte[] w = new byte[4];
+            le(w, 0, v, 4);
+            b.write(w);
+        }
+        write(AUXV, b.toByteArray());
+    }
+
+    static void deleteAuxv() {
+        assertTrue("cannot delete " + AUXV, !AUXV.exists() || AUXV.delete());
+    }
+
+    /** /proc/cpuinfo with this Features line (null: no file). */
+    static void writeCpuinfo(String features) throws IOException {
+        if (features == null) {
+            assertTrue("cannot delete " + CPUINFO, !CPUINFO.exists() || CPUINFO.delete());
+            return;
+        }
+        write(CPUINFO, ("Processor\t: ARMv7 Processor rev 0 (v7l)\nBogoMIPS\t: 12.00\nFeatures\t: " + features
+                + "\nCPU implementer\t: 0x41\n\nHardware\t: Goldfish\n").getBytes("ISO-8859-1"));
+    }
+
+    static void write(File f, byte[] content) throws IOException {
+        FileOutputStream out = new FileOutputStream(f);
+        try {
+            out.write(content);
+        } finally {
+            out.close();
+        }
     }
 
     static void writeLibrary(byte[] content) throws IOException {
@@ -1085,6 +1138,170 @@ public class KktlsDefaultSSLSocketFactoryTest extends TestCase {
                 System.setProperty("kktlstest.filter", saved);
             }
         }
+    }
+
+    // --- NEON check (ARM library only), before the Conscrypt loader exists: no NEON = SIGILL in the linker
+
+    /** Layer A after a failed NEON check: platform factory, one log line with an IOException, no Conscrypt loader. */
+    private void assertNoNeonFallback(RecordingLoader cl, String messagePart) throws Throwable {
+        SSLSocketFactory f = newWrapper(cl);
+        assertDelegatesTo("platform", f);
+        assertOneFallbackRecord(IOException.class);
+        String m = records.get(0).getThrown().getMessage();
+        assertTrue(m, m.contains(messagePart));
+        assertFalse("no PathClassLoader before the NEON check passed", cl.requested.contains(
+                "dalvik.system.PathClassLoader"));
+        assertEquals(new ArrayList<String>(), cl.conscryptLookups());
+    }
+
+    public void testArmWithoutNeonInAuxvFallsBack() throws Throwable {
+        writeAuxv(HWCAP_WITHOUT_NEON);
+        writeCpuinfo("swp half thumb fastmult vfp edsp neon vfpv3 tls"); // auxv decides; cpuinfo is not asked
+        assertNoNeonFallback(loader("android", "conscrypt", "platform"), "AT_HWCAP 0x2fa0d7");
+    }
+
+    public void testNoNeonIsCheckedOncePerProcess() throws Throwable {
+        writeAuxv(HWCAP_WITHOUT_NEON);
+        RecordingLoader cl = loader("android", "conscrypt", "platform");
+        assertNoNeonFallback(cl, "the CPU has no NEON");
+        writeAuxv(HWCAP_WITH_NEON); // kept for the process, as any Conscrypt load failure
+        assertTrue(newWrapper(cl).toString().contains("[platform: "));
+        assertEquals("logged once: " + records, 1, records.size());
+    }
+
+    public void testArmWithNeonInAuxvUsesConscrypt() throws Throwable {
+        writeCpuinfo("swp half thumb fastmult vfp edsp vfpv3 tls"); // auxv decides
+        assertConscrypt(loader("android", "conscrypt", "platform"), 1);
+    }
+
+    public void testNoAuxvCpuinfoWithNeonUsesConscrypt() throws Throwable {
+        deleteAuxv();
+        writeCpuinfo("swp half thumb fastmult vfp edsp neon vfpv3 tls vfpv4 idiva idivt");
+        assertConscrypt(loader("android", "conscrypt", "platform"), 1);
+    }
+
+    public void testAuxvWithoutHwcapCpuinfoWithNeonUsesConscrypt() throws Throwable {
+        writeAuxv(null);
+        writeCpuinfo("half thumb fastmult vfp edsp neon vfpv3 tls");
+        assertConscrypt(loader("android", "conscrypt", "platform"), 1);
+    }
+
+    public void testAuxvEntriesAfterAtNullAreIgnored() throws Throwable {
+        byte[] v = new byte[32];
+        le(v, 0, 6, 4); // AT_PAGESZ
+        le(v, 4, 4096, 4);
+        le(v, 16, 16, 4); // after AT_NULL (bytes 8-15): not part of the vector
+        le(v, 20, HWCAP_WITH_NEON, 4);
+        write(AUXV, v);
+        assertNoNeonFallback(loader("android", "conscrypt", "platform"), "has no AT_HWCAP");
+    }
+
+    public void testNoAuxvCpuinfoWithoutNeonFallsBack() throws Throwable {
+        deleteAuxv();
+        writeCpuinfo("swp half thumb fastmult vfp edsp neonx vfpv3 tls"); // a word, not a substring
+        assertNoNeonFallback(loader("android", "conscrypt", "platform"), "the CPU has no NEON");
+    }
+
+    public void testNeitherAuxvNorCpuinfoFallsBack() throws Throwable {
+        deleteAuxv();
+        writeCpuinfo(null);
+        assertNoNeonFallback(loader("android", "conscrypt", "platform"), "cannot tell whether the CPU has NEON");
+    }
+
+    public void testCpuinfoWithoutFeaturesFallsBack() throws Throwable {
+        deleteAuxv();
+        write(CPUINFO, "Processor\t: ARMv7\nHardware\t: Goldfish\n".getBytes("ISO-8859-1"));
+        assertNoNeonFallback(loader("android", "conscrypt", "platform"), "has no Features line");
+    }
+
+    public void testX86LibraryIsNotCheckedForNeon() throws Throwable {
+        writeLibrary(elf(EM_386, 8192));
+        writeAuxv(HWCAP_WITHOUT_NEON);
+        assertConscrypt(loader("android", "conscrypt", "platform"), 1);
+    }
+
+    public void testNeonIsNotReadWhenLayerDIsOffOrAbsent() throws Throwable {
+        writeAuxv(HWCAP_WITHOUT_NEON); // would be refused (and logged) if the wrapper looked at it
+        System.setProperty("kktlstest.gate", "0");
+        assertGateOff(loader("android", "conscrypt", "platform"));
+        System.setProperty("kktlstest.gate", "1");
+        uninstall();
+        RecordingSSLSocketFactory.reset();
+        assertLayerA(loader("android", "conscrypt", "platform"), "absent", 1);
+    }
+
+    // --- Android 4.1-4.3 (Jelly Bean libcore): platform factory and Conscrypt's KitKat adapter
+
+    public void testJellyBeanPlatformFactoryWhenNotInstalled() throws Throwable {
+        uninstall();
+        SSLSocketFactory f = newWrapper(loader("android", "platformjb"));
+        assertDelegatesTo("platform", "absent", f);
+        assertTrue(f.toString(), f.toString().endsWith(": org.apache.harmony.xnet.provider.jsse.OpenSSLSocketFactoryImpl]"));
+        assertEquals(0, records.size());
+    }
+
+    public void testJellyBeanPlatformFactoryOnFallback() throws Throwable {
+        System.setProperty("kktlstest.mode", "ule");
+        SSLSocketFactory f = newWrapper(loader("android", "conscrypt", "platformjb"));
+        assertDelegatesTo("platform", f);
+        assertTrue(f.toString(), f.toString().endsWith(": org.apache.harmony.xnet.provider.jsse.OpenSSLSocketFactoryImpl]"));
+        assertOneFallbackRecord(UnsatisfiedLinkError.class);
+    }
+
+    public void test44PlatformFactoryWinsOverTheJellyBeanOne() throws Throwable {
+        uninstall();
+        SSLSocketFactory f = newWrapper(loader("android", "platform", "platformjb"));
+        assertTrue(f.toString(), f.toString().endsWith(": com.android.org.conscrypt.OpenSSLSocketFactoryImpl]"));
+    }
+
+    public void testNoPlatformFactoryNamesTheJellyBeanClass() throws Throwable {
+        uninstall();
+        try {
+            newWrapper(loader("android"));
+            fail("no platform factory at all must throw");
+        } catch (IllegalStateException expected) {
+            assertTrue(expected.getMessage(), expected.getMessage().startsWith("the platform factory "
+                    + "org.apache.harmony.xnet.provider.jsse.OpenSSLSocketFactoryImpl is not usable"));
+        }
+    }
+
+    public void testJellyBeanTakesTheInnerFactoryOfTheKitKatAdapter() throws Throwable {
+        System.setProperty("kktlstest.mode", "adapter");
+        SSLSocketFactory f = newWrapper(loader("android", "conscrypt", "platformjb"));
+        assertEquals(CONSCRYPT_PATH, RecordingSSLSocketFactory.CALLS);
+        assertDelegatesTo("conscrypt", f); // exactly one call, to the inner factory: no "adapter:" call
+        assertTrue(f.toString(), f.toString().endsWith(": org.conscrypt.OpenSSLSocketFactoryImpl]"));
+        assertEquals(0, records.size());
+        RecordingSSLSocketFactory.reset();
+        RecordingSSLSocketFactory.returnSslSocket = true;
+        Socket s = f.createSocket("example.org", 443);
+        assertEquals("the inner factory's sockets get the SSLv3 filter too", FILTER_SOCKET_CLASS, s.getClass().getName());
+        s.close();
+    }
+
+    public void test44KeepsTheKitKatAdapter() throws Throwable {
+        System.setProperty("kktlstest.mode", "adapter");
+        SSLSocketFactory f = newWrapper(loader("android", "conscrypt", "platform", "kitkat"));
+        RecordingSSLSocketFactory.reset();
+        f.createSocket("example.org", 443).close();
+        assertEquals(Arrays.asList("adapter:createSocket", "conscrypt:createSocket(example.org,443)"),
+                RecordingSSLSocketFactory.CALLS);
+        assertTrue(f.toString(), f.toString().endsWith(": org.conscrypt.KitKatPlatformOpenSSLSocketAdapterFactory]"));
+        assertEquals(0, records.size());
+    }
+
+    public void testJellyBeanAdapterWithoutInnerFactoryFallsBack() throws Throwable {
+        System.setProperty("kktlstest.mode", "adapter-null");
+        SSLSocketFactory f = newWrapper(loader("android", "conscrypt", "platformjb"));
+        assertDelegatesTo("platform", f);
+        assertOneFallbackRecord(IllegalStateException.class);
+        assertTrue(records.get(0).getThrown().getMessage(), records.get(0).getThrown().getMessage().contains(
+                "BaseOpenSSLSocketAdapterFactory.delegate is null"));
+    }
+
+    public void testJellyBeanPlainConscryptFactoryIsUsedAsItIs() throws Throwable {
+        // not the adapter (as 2.6-alpha2 returns for SDK_INT >= 22): nothing to unwrap
+        assertConscrypt(loader("android", "conscrypt", "platformjb"), 1);
     }
 
     // --- reflection only: no class reference to org.conscrypt in the wrapper's class files (javac 6 cannot read

@@ -16,6 +16,9 @@
  *   nsae  the provider has no SSLContext.TLS, so SSLContext.getInstance() throws NoSuchAlgorithmException
  *   kme   SSLContext.init() throws KeyManagementException
  *   null  SSLContext.getSocketFactory() returns null
+ *   adapter       SSLContext.getSocketFactory() returns the KitKat adapter (as 2.6-alpha2 does for SDK_INT < 22)
+ *                 around the inner org.conscrypt.OpenSSLSocketFactoryImpl (origin "conscrypt")
+ *   adapter-null  the same adapter with a null inner factory
  */
 package org.conscrypt;
 
@@ -124,7 +127,12 @@ public final class Conscrypt {
 
         @Override
         protected SSLSocketFactory engineGetSocketFactory() {
-            return "null".equals(mode()) ? null : new RecordingSSLSocketFactory("conscrypt");
+            String m = mode();
+            if (m.startsWith("adapter")) {
+                // what 2.6-alpha2's SSLContext returns for SDK_INT < 22 (Platform.wrapSocketFactoryIfNeeded)
+                return new KitKatPlatformOpenSSLSocketAdapterFactory(new OpenSSLSocketFactoryImpl());
+            }
+            return "null".equals(m) ? null : new RecordingSSLSocketFactory("conscrypt");
         }
 
         @Override

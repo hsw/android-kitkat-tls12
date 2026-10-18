@@ -5,9 +5,11 @@
     python3 -I check_prebuilt.py AAR [--sums SHA256SUMS]
     python3 -I check_prebuilt.py --selftest AAR [--sums SHA256SUMS]
 
-    python3 -I check_prebuilt.py --stage DIR [--sums SHA256SUMS] [--notice NOTICE] [--bionic FILE] [--bionic-x86 FILE]
+    python3 -I check_prebuilt.py --stage DIR [--sums SHA256SUMS] [--notice NOTICE] [--base 4.4|4.3|4.2|4.1]
+                                 [--bionic FILE] [--bionic-x86 FILE]
     python3 -I check_prebuilt.py --selftest --stage DIR [--alpha3 AAR]
-    python3 -I check_prebuilt.py --bionic-exports LIBDIR      print the export list of LIBDIR/{libc,libdl,libm,liblog}.so
+    python3 -I check_prebuilt.py --bionic-exports LIBDIR [--label TEXT]   print the export list of
+                                 LIBDIR/{libc,libdl,libm,liblog}.so (TEXT names the build in the header)
 
 Stdlib only; the aar is read as data (zipfile, struct), nothing from it is executed. Exit status 0 only if every check passes.
 
@@ -30,6 +32,15 @@ mkstage.py puts in <tree>/stock/conscrypt/2.6-alpha2/: the dex jar kktls-conscry
   x86-so-*        the same five checks for the x86 .so: e_machine x86 (3), symbols against --bionic-x86
                   (bionic44-exports-x86.txt: the 4.4 x86 libdl exports dl_iterate_phdr, ARM's dl_unwind_find_exidx)
   notice          NOTICE = its pinned sha256 and names this Conscrypt tag and BoringSSL commit
+
+--base selects the bionic export lists of the so-symbols checks (BASES; --bionic/--bionic-x86 override them): 4.4
+(default) or a Jelly Bean base, whose lists come from our own AOSP full-eng (ARM) and full_x86-eng builds of
+android-4.3_r3, android-4.2.2_r1 and android-4.1.2_r2. Only the symbol lists change; the dex checks stay those of the
+4.4 stage. The pristine 2.6-alpha2 .so misses exactly JB_MISSING on a JB base (the --selftest --stage cases assert it):
+4.3 nothing, 4.2 ARM getauxval, 4.1 the fortify functions (both ABIs) and getauxval (ARM).
+--jb checks the Jelly Bean stage of mkstage.py --jb instead (same file names): stage-sha256 takes the dex jar pin
+2.6-alpha2/jb/kktls-conscrypt.dex.jar, and dex-classes wants 426 classes, the jb_charsets.py shim
+org/conscrypt/KktlsStandardCharsets and no reference to java/nio/charset/StandardCharsets (API 19).
 
 With the aar sha256 pinned, the structural checks below cannot fail on the pinned file; they are the vetting record that
 re-runs whenever the pin moves (a new Conscrypt release: new SHA256SUMS lines, mkstage.py, this checker), and the
@@ -95,6 +106,11 @@ STAGE_DEXJAR = STAGE_VERSION + "/kktls-conscrypt.dex.jar"
 STAGE_SO = STAGE_VERSION + "/libkktls_conscrypt_jni.so"
 STAGE_SO_X86 = STAGE_VERSION + "/x86/libkktls_conscrypt_jni.so"  # the aar's x86 .so (generic x86 release)
 STAGE_CLASS_COUNT = 425  # 423 classes of the aar + ConscryptSession$-CC and NativeRef$0 (d8 desugaring/backport)
+# --jb: the Jelly Bean stage (mkstage.py --jb), same file names; its dex jar has its own pin and the jb_charsets.py shim
+STAGE_DEXJAR_JB = STAGE_VERSION + "/jb/kktls-conscrypt.dex.jar"
+STAGE_CLASS_COUNT_JB = 426  # the 425 above + org/conscrypt/KktlsStandardCharsets
+JB_SHIM_TYPE = "Lorg/conscrypt/KktlsStandardCharsets;"
+JB_ABSENT_TYPE = "Ljava/nio/charset/StandardCharsets;"  # API 19: must not be referenced by the JB dex
 STAGE_PROPERTIES = {
     "org.conscrypt.boringssl.version": "f91f1447397c6719f9774dfb8e67329378e1f3d3",
     "org.conscrypt.version.major": "2",
@@ -106,6 +122,14 @@ NOTICE_NAME = "NOTICE"  # the module NOTICE
 NOTICE_MUST_NAME = ("google/conscrypt 2.6-alpha2", "f91f1447397c6719f9774dfb8e67329378e1f3d3")
 BIONIC_EXPORTS = "bionic44-exports.txt"
 BIONIC_EXPORTS_X86 = "bionic44-exports-x86.txt"
+BASES = {b: ("bionic%s-exports.txt" % b.replace(".", ""), "bionic%s-exports-x86.txt" % b.replace(".", ""))
+         for b in ("4.4", "4.3", "4.2", "4.1")}  # --base: (ARM list, x86 list)
+_FORTIFY41 = {"__memcpy_chk", "__memmove_chk", "__memset_chk", "__open_2", "__strlen_chk", "__vsnprintf_chk"}
+JB_MISSING = {  # the undefined GLOBAL symbols of the pristine 2.6-alpha2 .so that a JB bionic does not export
+    ("4.3", "arm"): set(), ("4.3", "x86"): set(),
+    ("4.2", "arm"): {"getauxval"}, ("4.2", "x86"): set(),
+    ("4.1", "arm"): _FORTIFY41 | {"getauxval"}, ("4.1", "x86"): set(_FORTIFY41),
+}
 ALPHA3_AAR = "negative/conscrypt-android-2.6-alpha3.aar"  # selftest fixture only, never staged
 SO_CHECKS = ["so-elf", "so-needed", "so-loader", "so-exports", "so-symbols"]
 CHECKS_STAGE = (["stage-present", "stage-sha256", "dex-jar", "dex-classes", "dex-jni-name", "dex-properties"] + SO_CHECKS
@@ -364,12 +388,13 @@ def read_bionic(path):
         return {ln.strip() for ln in f if ln.strip() and not ln.startswith("#")}
 
 
-def bionic_exports(libdir):
-    """Text of bionic44-exports.txt: the defined GLOBAL/WEAK dynamic symbols of the four libraries the .so may need."""
+def bionic_exports(libdir, label="Android 4.4"):
+    """Text of bionic44-exports.txt (or a JB base's list): the defined GLOBAL/WEAK dynamic symbols of the four libraries
+    the .so may need; label names the build in the header."""
     names = set()
-    head = ["# Defined GLOBAL/WEAK dynamic symbols of the 4.4 bionic libraries a Conscrypt .so may need (check_prebuilt.py",
-            "# --stage, check so-symbols). Regenerate: python3 -I check_prebuilt.py --bionic-exports <PRODUCT_OUT>/system/lib",
-            "# (or obj/lib) of a 4.4 build of the ABI; from:"]
+    head = ["# Defined GLOBAL/WEAK dynamic symbols of the bionic libraries a Conscrypt .so may need (check_prebuilt.py",
+            "# --stage, check so-symbols); %s. Regenerate: python3 -I check_prebuilt.py --bionic-exports" % label,
+            "# <PRODUCT_OUT>/system/lib (or obj/lib) of a build of the ABI --label TEXT; from:"]
     for lib in ("libc.so", "libdl.so", "libm.so", "liblog.so"):
         with open(os.path.join(libdir, lib), "rb") as f:
             data = f.read()
@@ -378,7 +403,7 @@ def bionic_exports(libdir):
     return "\n".join(head + sorted(names)) + "\n"
 
 
-def check_symbols(so, bionic, res, prefix=""):
+def check_symbols(so, bionic, res, prefix="", base="4.4"):
     try:
         und = Elf32(so).undefined_dynsyms()
     except (ValueError, IndexError, struct.error) as e:
@@ -386,9 +411,9 @@ def check_symbols(so, bionic, res, prefix=""):
         return
     missing = sorted(n for n, b in und if b == "GLOBAL" and n not in bionic)
     weak = sorted(n for n, b in und if b == "WEAK" and n not in bionic)
-    msg = "%d undefined, all GLOBAL ones in the 4.4 bionic" % len(und)
+    msg = "%d undefined, all GLOBAL ones in the %s bionic" % (len(und), base)
     if missing:
-        msg = "undefined GLOBAL not in the 4.4 bionic: %s" % " ".join(missing)
+        msg = "undefined GLOBAL not in the %s bionic: %s" % (base, " ".join(missing))
     if weak:
         msg += "; WEAK unresolved (BoringSSL checks them for NULL, e.g. the malloc hooks in crypto/mem.cc): %s" % " ".join(weak)
     res[prefix + "so-symbols"] = (not missing, msg)
@@ -398,7 +423,7 @@ def dex_checksum(d):
     return zlib.adler32(d[12:]) & 0xFFFFFFFF
 
 
-def check_dexjar(jar, res):
+def check_dexjar(jar, res, jb=False):
     names = ("dex-jar", "dex-classes", "dex-jni-name", "dex-properties")
     try:
         z = zipfile.ZipFile(io.BytesIO(jar))
@@ -437,9 +462,15 @@ def check_dexjar(jar, res):
                 bad.append("classes outside org/conscrypt/: %s" % outside[:5])
             if missing:
                 bad.append("missing %s" % missing)
-            if len(classes) != STAGE_CLASS_COUNT:
-                bad.append("%d class_defs (want %d)" % (len(classes), STAGE_CLASS_COUNT))
-            res["dex-classes"] = (not bad, "; ".join(bad) or "%d class_defs, all under org/conscrypt/" % len(classes))
+            count = STAGE_CLASS_COUNT_JB if jb else STAGE_CLASS_COUNT
+            if len(classes) != count:
+                bad.append("%d class_defs (want %d)" % (len(classes), count))
+            if jb and JB_SHIM_TYPE not in classes:
+                bad.append("no %s (jb_charsets.py did not run)" % JB_SHIM_TYPE)
+            if jb and JB_ABSENT_TYPE in types:
+                bad.append("references %s (API 19)" % JB_ABSENT_TYPE)
+            res["dex-classes"] = (not bad, "; ".join(bad) or "%d class_defs, all under org/conscrypt/%s" % (
+                len(classes), ", no StandardCharsets" if jb else ""))
             has_new, has_old = "kktls_conscrypt_jni" in strings, "conscrypt_jni" in strings
             res["dex-jni-name"] = (has_new and not has_old,
                                    "kktls_conscrypt_jni %s, conscrypt_jni %s" % ("present" if has_new else "MISSING",
@@ -472,14 +503,16 @@ def check_notice(path, sums, res):
     res["notice"] = (not bad, "; ".join(bad) or "%s = pin %s" % (os.path.basename(path), got[:8]))
 
 
-def check_stage(stage, sums, notice, bionic, bionic_x86):
+def check_stage(stage, sums, notice, bionic, bionic_x86, base="4.4", jb=False):
     """{check: (ok, message)} for every name in CHECKS_STAGE; stage = the directory holding the stage files.
-    bionic / bionic_x86: the export sets of the 4.4 bionic of each ABI (so-symbols / x86-so-symbols)."""
+    bionic / bionic_x86: the export sets of the bionic of each ABI (so-symbols / x86-so-symbols) of base.
+    jb: the Jelly Bean stage (its dex jar pin, class count, the StandardCharsets shim)."""
     res = {}
     files = {}
     absent = []
-    for key in (STAGE_DEXJAR, STAGE_SO, STAGE_SO_X86):
-        p = os.path.join(stage, key.split("/", 1)[1])
+    dexkey = STAGE_DEXJAR_JB if jb else STAGE_DEXJAR
+    for key, rel in ((dexkey, STAGE_DEXJAR), (STAGE_SO, STAGE_SO), (STAGE_SO_X86, STAGE_SO_X86)):
+        p = os.path.join(stage, rel.split("/", 1)[1])
         if os.path.isfile(p):
             with open(p, "rb") as f:
                 files[key] = f.read()
@@ -490,17 +523,17 @@ def check_stage(stage, sums, notice, bionic, bionic_x86):
     bad = ["%s sha256 %s (pinned %s)" % (k, sha256(v), sums.get(k)) for k, v in sorted(files.items())
            if sha256(v) != sums.get(k)]
     res["stage-sha256"] = (not absent and not bad, "; ".join(bad) or ("not run: files missing" if absent else
-                           "dex jar %s, .so %s, x86 .so %s" % (sums[STAGE_DEXJAR][:8], sums[STAGE_SO][:8],
-                                                               sums[STAGE_SO_X86][:8])))
-    if STAGE_DEXJAR in files:
-        check_dexjar(files[STAGE_DEXJAR], res)
+                           "%sdex jar %s, .so %s, x86 .so %s" % ("JB " if jb else "", sums[dexkey][:8],
+                                                                 sums[STAGE_SO][:8], sums[STAGE_SO_X86][:8])))
+    if dexkey in files:
+        check_dexjar(files[dexkey], res, jb)
     else:
         for c in ("dex-jar", "dex-classes", "dex-jni-name", "dex-properties"):
             res[c] = (False, "no dex jar")
     for key, machine, prefix, syms in ((STAGE_SO, EM_ARM, "", bionic), (STAGE_SO_X86, EM_386, "x86-", bionic_x86)):
         if key in files:
             check_so(files[key], res, machine, prefix)
-            check_symbols(files[key], syms, res, prefix)
+            check_symbols(files[key], syms, res, prefix, base)
             for c in SO_CHECKS[1:]:
                 res.setdefault(prefix + c, (False, "not run: %s" % res[prefix + "so-elf"][1]))
         else:
@@ -673,10 +706,13 @@ def selftest(aar, sums):
     return 1 if failures else 0
 
 
-def selftest_stage(stage, sums, notice, bionic, bionic_x86, alpha3=None):
+def selftest_stage(stage, sums, notice, bionic, bionic_x86, alpha3=None, jb=None, jb_dexjar=None):
     """Mutated copies of the real stage; each case names exactly the checks that must fail (the mutated files are
     re-pinned for the case, so only the targeted check reacts). With alpha3 (the real 2.6-alpha3 aar, sha256 pinned as
-    negative/...), its armeabi-v7a .so must fail so-symbols."""
+    negative/...), its armeabi-v7a .so must fail so-symbols. jb = {base: (ARM export set, x86 export set)}: the pristine
+    stage against each JB base fails exactly the so-symbols checks of the ABIs JB_MISSING names, and misses exactly
+    JB_MISSING there. jb_dexjar (the real mkstage.py --jb dex jar, pinned): the JB stage passes on 4.3 with --jb, and each
+    dex jar fails stage-sha256 and dex-classes when checked as the other."""
     tmp = tempfile.mkdtemp(prefix="check-prebuilt-stage-selftest-")
     failures = []
     files = {}
@@ -686,7 +722,8 @@ def selftest_stage(stage, sums, notice, bionic, bionic_x86, alpha3=None):
     with open(notice, "rb") as f:
         notice_data = f.read()
 
-    def case(name, expect, dexjar=None, so=None, notice_bytes=None, pin=True, missing=(), so_x86=None):
+    def case(name, expect, dexjar=None, so=None, notice_bytes=None, pin=True, missing=(), so_x86=None, base="4.4",
+             jbdex=False):
         d = os.path.join(tmp, "case")
         shutil.rmtree(d, ignore_errors=True)
         os.makedirs(d)
@@ -702,13 +739,16 @@ def selftest_stage(stage, sums, notice, bionic, bionic_x86, alpha3=None):
                 f.write(v)
             if pin:
                 s[k] = sha256(v)
+                if k == STAGE_DEXJAR:
+                    s[STAGE_DEXJAR_JB] = sha256(v)
         npath = os.path.join(d, NOTICE_NAME)
         nb = notice_data if notice_bytes is None else notice_bytes
         with open(npath, "wb") as f:
             f.write(nb)
         if pin and notice_bytes is not None and notice_bytes[:1] != b"#":  # "#..." = keep the real pin
             s[NOTICE_NAME] = sha256(nb)
-        res = check_stage(d, s, npath, bionic, bionic_x86)
+        syms = (bionic, bionic_x86) if base == "4.4" else jb[base]
+        res = check_stage(d, s, npath, syms[0], syms[1], base, jbdex)
         failed = {c for c in CHECKS_STAGE if not res[c][0]}
         ok = failed == set(expect)
         print("selftest %s %-44s failed=%s%s" % ("ok  " if ok else "FAIL", name, ",".join(sorted(failed)) or "-",
@@ -745,6 +785,16 @@ def selftest_stage(stage, sums, notice, bionic, bionic_x86, alpha3=None):
 
     try:
         case("pristine stage", (), pin=False)
+        for b in sorted(jb or {}, reverse=True):
+            case("pristine stage, %s bionic" % b, (("so-symbols",) if JB_MISSING[(b, "arm")] else ()) +
+                 (("x86-so-symbols",) if JB_MISSING[(b, "x86")] else ()), pin=False, base=b)
+            for abi, data, exports in (("arm", files[STAGE_SO], jb[b][0]), ("x86", files[STAGE_SO_X86], jb[b][1])):
+                got = {n for n, bind in Elf32(data).undefined_dynsyms() if bind == "GLOBAL"} - exports
+                ok = got == JB_MISSING[(b, abi)]
+                print("selftest %s %-44s %s" % ("ok  " if ok else "FAIL", "%s %s misses exactly JB_MISSING" % (b, abi),
+                                                " ".join(sorted(got)) or "-"))
+                if not ok:
+                    failures.append("%s %s missing set" % (b, abi))
         case("missing stage files", ("stage-present", "stage-sha256", "dex-jar", "dex-classes", "dex-jni-name",
                                      "dex-properties") + tuple(SO_CHECKS) + so_checks_x86,
              missing=(STAGE_DEXJAR, STAGE_SO, STAGE_SO_X86))
@@ -813,6 +863,19 @@ def selftest_stage(stage, sums, notice, bionic, bionic_x86, alpha3=None):
                 case("real 2.6-alpha3 .so (NDK r27/r28)", ("so-symbols",), so=a3so)
         else:
             print("selftest skip real 2.6-alpha3 .so (no --alpha3 AAR)")
+        if jb_dexjar:
+            with open(jb_dexjar, "rb") as f:
+                jd = f.read()
+            if sha256(jd) != sums.get(STAGE_DEXJAR_JB):
+                print("selftest FAIL JB dex jar sha256 %s is not the pin %s" % (sha256(jd), sums.get(STAGE_DEXJAR_JB)))
+                failures.append("JB dex jar")
+            else:
+                case("JB stage (real pins), 4.3 bionic", (), dexjar=jd, pin=False, base="4.3", jbdex=True)
+                case("4.4 dex jar checked as the JB one", ("stage-sha256", "dex-classes"), pin=False, base="4.3",
+                     jbdex=True)
+                case("JB dex jar checked as the 4.4 one", ("stage-sha256", "dex-classes"), dexjar=jd, pin=False)
+        else:
+            print("selftest skip JB dex jar cases (no --jb-dexjar FILE)")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     print("SELFTEST %s" % ("PASS" if not failures else "FAIL: " + ", ".join(failures)))
@@ -828,23 +891,33 @@ def main():
                     help="mutate copies of AAR (or of the --stage files); each case names the checks that must fail")
     ap.add_argument("--stage", metavar="DIR", help="check the %s stage directory instead of an aar" % STAGE_VERSION)
     ap.add_argument("--notice", default=os.path.join(here, NOTICE_NAME))
-    ap.add_argument("--bionic", default=os.path.join(here, BIONIC_EXPORTS))
-    ap.add_argument("--bionic-x86", default=os.path.join(here, BIONIC_EXPORTS_X86))
+    ap.add_argument("--base", choices=sorted(BASES), default="4.4",
+                    help="--stage: the Android base whose bionic export lists so-symbols uses (default 4.4)")
+    ap.add_argument("--bionic", help="ARM export list (default: the --base list, %s for 4.4)" % BIONIC_EXPORTS)
+    ap.add_argument("--bionic-x86", help="x86 export list (default: the --base list, %s for 4.4)" % BIONIC_EXPORTS_X86)
+    ap.add_argument("--label", default="Android 4.4", help="--bionic-exports: the build named in the list header")
     ap.add_argument("--alpha3", metavar="AAR", help="--selftest --stage: the real 2.6-alpha3 aar as a negative fixture")
+    ap.add_argument("--jb", action="store_true",
+                    help="--stage: the Jelly Bean stage of mkstage.py --jb (its dex jar pin %s)" % STAGE_DEXJAR_JB)
+    ap.add_argument("--jb-dexjar", metavar="FILE", help="--selftest --stage: the real JB dex jar (mkstage.py --jb)")
     ap.add_argument("--bionic-exports", metavar="LIBDIR", help="print the bionic export list of LIBDIR and exit")
     a = ap.parse_args()
     if a.bionic_exports:
-        sys.stdout.write(bionic_exports(a.bionic_exports))
+        sys.stdout.write(bionic_exports(a.bionic_exports, a.label))
         return 0
     if a.stage:
-        sums = read_sums(a.sums, (STAGE_DEXJAR, STAGE_SO, STAGE_SO_X86, NOTICE_NAME))
-        bionic, bionic_x86 = read_bionic(a.bionic), read_bionic(a.bionic_x86)
+        sums = read_sums(a.sums, (STAGE_DEXJAR, STAGE_DEXJAR_JB, STAGE_SO, STAGE_SO_X86, NOTICE_NAME))
+        bionic = read_bionic(a.bionic or os.path.join(here, BASES[a.base][0]))
+        bionic_x86 = read_bionic(a.bionic_x86 or os.path.join(here, BASES[a.base][1]))
         if a.selftest:
+            if a.base != "4.4" or a.jb:
+                sys.exit("--selftest --stage runs the 4.4 cases and every JB base itself; leave --base and --jb out")
+            jb = {b: tuple(read_bionic(os.path.join(here, f)) for f in BASES[b]) for b in BASES if b != "4.4"}
             if not all(os.path.isfile(os.path.join(a.stage, k.split("/", 1)[1]))
                        for k in (STAGE_DEXJAR, STAGE_SO, STAGE_SO_X86)):
                 sys.exit("selftest needs the real stage in %s" % a.stage)
-            return selftest_stage(a.stage, sums, a.notice, bionic, bionic_x86, a.alpha3)
-        return report_stage(check_stage(a.stage, sums, a.notice, bionic, bionic_x86))
+            return selftest_stage(a.stage, sums, a.notice, bionic, bionic_x86, a.alpha3, jb, a.jb_dexjar)
+        return report_stage(check_stage(a.stage, sums, a.notice, bionic, bionic_x86, a.base, a.jb))
     if not a.aar:
         ap.error("AAR or --stage DIR is required")
     sums = read_sums(a.sums)

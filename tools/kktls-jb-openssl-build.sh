@@ -2,10 +2,11 @@
 # OpenSSL 1.0.1u (layer A, native libraries) for Android 4.1-4.3 (Jelly Bean): the per-base series of patches/jb/
 # on a partial AOSP tree of the base's tag, the stock libraries of the same tree for the ABI check, the release files in
 # WORK/out/kktls-jb/<base>/<abi>/. A base with `java` lines in patches/jb/targets.txt also gets its libcore-side release
-# files (framework/core.jar, lib/libjavacore.so), built in the same tree against that OpenSSL. The 4.4 release build
-# (tools/kktls-release-build.sh) is not involved.
+# files (framework/core.jar, lib/libjavacore.so), built in the same tree against that OpenSSL. A base with a `conscrypt`
+# line also gets layer D (framework/kktls-conscrypt.jar, framework/kktls-sslfilter.jar, lib/libkktls_conscrypt_jni.so).
+# The 4.4 release build (tools/kktls-release-build.sh) is not involved.
 #
-#   tools/kktls-jb-openssl-build.sh [options] [all|sync|stock|apply|build|collect|check]...
+#   tools/kktls-jb-openssl-build.sh [options] [all|sync|stock|apply|build|stage|collect|check]...
 #   tools/kktls-jb-openssl-build.sh --dry-run [options]   print the selected bases, targets, projects, java files; exit 0
 #
 # Steps per base (all = every step in this order; each step leaves WORK/<tag>/<step>.done and is skipped next time):
@@ -23,10 +24,15 @@
 #            libcore series patches/jb/<base>/libcore/*.patch in libcore (both projects must be pristine)
 #   build    per ABI: libcrypto libssl openssl (the command-line tool is a test client, not a release file) and the
 #            base's java modules; every make runs with WITH_DEXPREOPT=false (jars keep classes.dex, no .odex); where
-#            build/ adds classes.dex with aapt (4.1, 4.2) it is the tree's prebuilts/sdk/tools/linux/aapt
+#            build/ adds classes.dex with aapt (4.1, 4.2) it is the tree's prebuilts/sdk/tools/linux/aapt; a conscrypt
+#            base also builds kktls-sslfilter (conscrypt/sslfilter/, copied to device/kktls/conscrypt/sslfilter/ first)
+#   stage    a conscrypt base only (else nothing): host mkstage.py --jb (the pinned aar -> rename_jni.py, jb_charsets.py,
+#            d8 --min-api 16 --lib <this tree's core classes>, the pinned JB dex jar and the aar's .so files) into
+#            WORK/<tag>/stock/conscrypt/2.6-alpha2-jb/, then check_prebuilt.py --stage --jb --base <base>
 #   collect  lib/libssl.so lib/libcrypto.so and the java files into WORK/out/kktls-jb/<base>/<abi>/ (jars rewritten by
 #            tools/zipnorm.py: sorted entries, fixed time) + SHA256SUMS + BUILD-INFO.txt (with the java modules and the
-#            gate line of the base); bin/openssl into WORK/out/kktls-jb/<base>/test-bin/<abi>/; external/openssl/NOTICE
+#            gate line of the base; a conscrypt base: its three files, kktls-conscrypt.jar and the .so from the stage
+#            byte for byte, and `conscrypt <file>` lines); bin/openssl into WORK/out/kktls-jb/<base>/test-bin/<abi>/; external/openssl/NOTICE
 #            (+ libcore/NOTICE and external/fdlibm/NOTICE for a java base: libjavacore.so links libfdlibm statically)
 #            into .../notice/; patches/jb/<base>/allow-missing-lib{ssl,crypto}.txt (the
 #            zip's kktls-symcheck lists) into .../allow/
@@ -36,8 +42,9 @@
 #            carries classes.dex, and every java lib/*.so keeps the stock-tree build's dynamic exports (none removed)
 #            and its NEEDED list (identical); for a base with a libcore series, once per base on the patched tree:
 #            check_tls_lists.py --base <base> (groups openssl, libcore and libcore.net.http) and check_jni_signatures.py
-#            (Java natives vs the JNI table and C functions, with patches/jb/<base>/jni-signature-allow.txt); summary in
-#            WORK/out/kktls-jb/checks.tsv
+#            (Java natives vs the JNI table and C functions, with patches/jb/<base>/jni-signature-allow.txt); for a
+#            conscrypt base per ABI: kktls-conscrypt.jar and the .so = their SHA256SUMS pins, kktls-sslfilter.jar has
+#            classes.dex; summary in WORK/out/kktls-jb/checks.tsv
 #
 # Options:
 #   --work DIR        scratch root (default ./kktls-jb-work)
@@ -47,10 +54,13 @@
 #   --image NAME      build image (default: tools/docker-image.sh aosp-build); --sync-image NAME (default aosp-sync)
 #   --runner docker|direct   direct = already inside the build image: no docker
 #   --reuse-stock     keep a complete stock-openssl/ of the same inputs (e.g. restored from a CI cache), see `stock`
+#   --aar FILE        Conscrypt 2.6-alpha2 aar for `stage` (default: downloaded from Maven Central into WORK/dl/;
+#                     mkstage.py checks its sha256 pin)
+#   --d8 FILE         Android build-tools 37.0.0 d8 for `stage` (default $D8, else $ANDROID_HOME/build-tools/37.0.0/d8)
 #   --dry-run         validate the targets file of HEAD and print what would be built; nothing is written to --work
 # Environment: KKTLS_CCACHE_MAX  ccache -M of WORK/<tag>/ccache (default 10G)
 #
-# Inputs come from `git archive HEAD` (patches/jb, patches/build, tools) and must be committed (exit 4); a tree is only built further
+# Inputs come from `git archive HEAD` (patches/jb, patches/build, tools, symcheck, conscrypt) and must be committed (exit 4); a tree is only built further
 # while patches/jb at HEAD equals what it was patched with. Exit codes: 0 ok, 1 a failed step or check, 2 usage,
 # 3 missing image or tool, 4 uncommitted inputs or a series change since apply.
 # SPDX-License-Identifier: Apache-2.0
@@ -59,9 +69,12 @@ set -euo pipefail
 ME=$(readlink -f "$0"); HERE=$(dirname "$ME"); REPO_ROOT=$(dirname "$HERE")
 MIRROR=https://android.googlesource.com/platform/manifest
 REPO_REV=v2.69
-INPUT_PATHS="patches/jb patches/build tools symcheck"
-STEPS_ALL="sync stock apply build collect check"
+INPUT_PATHS="patches/jb patches/build tools symcheck conscrypt"
+STEPS_ALL="sync stock apply build stage collect check"
 FILES="lib/libssl.so lib/libcrypto.so"
+# layer D release files of a conscrypt base (the installer's KK_D_FILES, below system/)
+CONSCRYPT_FILES="framework/kktls-conscrypt.jar framework/kktls-sslfilter.jar lib/libkktls_conscrypt_jni.so"
+AAR_URL=https://repo1.maven.org/maven2/org/conscrypt/conscrypt-android/2.6-alpha2/conscrypt-android-2.6-alpha2.aar
 
 die() { echo "kktls-jb-openssl-build: $1" >&2; exit "${2:-1}"; }
 
@@ -82,6 +95,7 @@ if [ "${1:-}" = --inner-make ]; then
 fi
 
 WORK=./kktls-jb-work; SEL_BASES=""; SEL_ABIS=""; CPUS=4; JOBS=4; IMAGE=""; SYNC_IMAGE=""; RUNNER=docker; REUSE_STOCK=0; DRY=0; CMDS=()
+AAR=""; D8=${D8:-${ANDROID_HOME:-$HOME/Android/sdk}/build-tools/37.0.0/d8}
 while [ $# -gt 0 ]; do
   case $1 in
     --work) WORK=${2:?}; shift 2 ;;
@@ -93,9 +107,11 @@ while [ $# -gt 0 ]; do
     --sync-image) SYNC_IMAGE=${2:?}; shift 2 ;;
     --runner) RUNNER=${2:?}; shift 2 ;;
     --reuse-stock) REUSE_STOCK=1; shift ;;
+    --aar) AAR=${2:?}; shift 2 ;;
+    --d8) D8=${2:?}; shift 2 ;;
     --dry-run) DRY=1; shift ;;
-    all|sync|stock|apply|build|collect|check) CMDS+=("$1"); shift ;;
-    -h|--help) sed -n '2,52p' "$ME"; exit 0 ;;
+    all|sync|stock|apply|build|stage|collect|check) CMDS+=("$1"); shift ;;
+    -h|--help) sed -n '2,65p' "$ME"; exit 0 ;;
     *) die "unknown argument: $1" 2 ;;
   esac
 done
@@ -127,6 +143,8 @@ java_files() { java_rows "$1" | awk '{ print $2 }'; }
 java_libs() { java_rows "$1" | awk '$2 ~ /^lib\/[^\/]+\.so$/ { print $2 }'; }  # base -> the java lib/*.so files
 gate_of() { kw gate | awk -v b="$1" '$1 == b { $1 = ""; sub(/^ +/, ""); print }'; }
 libcore_series() { compgen -G "$INPUTS/patches/jb/$1/libcore/*.patch" > /dev/null; }  # base has a libcore series
+conscrypt_base() { [ -n "$(kw conscrypt | awk -v b="$1" '$1 == b')" ]; }  # base has a conscrypt line (layer D)
+so_of() { case $1 in x86) echo x86/libkktls_conscrypt_jni.so ;; *) echo libkktls_conscrypt_jni.so ;; esac; }  # abi -> stage file
 
 BASES=${SEL_BASES:-$(kw base | awk '{print $1}')}
 for b in $BASES; do
@@ -151,7 +169,14 @@ for b in $BASES; do
       case $v in "$b"|"$b".[0-9]|"$b".[0-9][0-9]) ;; *) die "gate $b: $v is not an Android $b release" 2 ;; esac
     done
   fi
+  if conscrypt_base "$b"; then
+    # layer D needs the hook (the libcore series) and the java zip it depends on
+    if [ -z "$(java_rows "$b")" ] || ! libcore_series "$b"; then
+      die "base $b has a conscrypt line but no java lines and libcore series" 2
+    fi
+  fi
 done
+for b in $(kw conscrypt | awk '{ print $1 }'); do [ -n "$(tag_of "$b")" ] || die "conscrypt $b: no base line" 2; done
 
 if [ $DRY = 1 ]; then
   echo "head: $HEAD_SHA"; echo "work: $WORK"; echo "runner: $RUNNER cpus/jobs: $CPUS/$JOBS"; echo "steps: ${CMDS[*]}"
@@ -161,6 +186,7 @@ if [ $DRY = 1 ]; then
     echo "  files: $FILES $(java_files "$b" | tr '\n' ' ')"
     [ -z "$(java_rows "$b")" ] || echo "  java modules: $(java_modules "$b" | tr '\n' ' ')gate: $(gate_of "$b")"
     ! libcore_series "$b" || echo "  libcore series: $(ls "$INPUTS/patches/jb/$b/libcore/"*.patch | wc -l) patches"
+    ! conscrypt_base "$b" || echo "  conscrypt (layer D): $CONSCRYPT_FILES"
     echo "  projects ($(projects_of "$b" | wc -l)): $(projects_of "$b" | tr '\n' ' ')"
   done
   exit 0
@@ -332,22 +358,65 @@ do_build() {
   if [ -n "$(java_rows "$b")" ] && grep -qF '$(AAPT) add -k' "$d/src/build/core/definitions.mk"; then
     mv=(AAPT=prebuilts/sdk/tools/linux/aapt)
   fi
+  local dm=()
+  if conscrypt_base "$b"; then
+    # the SSLv3 filter module of layer D, built against this base's core (as kktls-release-build.sh does for 4.4)
+    rm -rf "$d/src/device/kktls" && mkdir -p "$d/src/device/kktls/conscrypt" &&
+      cp -r "$INPUTS/conscrypt/sslfilter" "$d/src/device/kktls/conscrypt/" || return 1
+    dm=(kktls-sslfilter)
+  fi
   while read -r combo abi; do
     # shellcheck disable=SC2046
-    run_make "$d" "$combo" "build-$abi" libcrypto libssl openssl $(java_modules "$b") ${mv[@]+"${mv[@]}"} || return 1
+    run_make "$d" "$combo" "build-$abi" libcrypto libssl openssl $(java_modules "$b") ${dm[@]+"${dm[@]}"} \
+      ${mv[@]+"${mv[@]}"} || return 1
   done < <(rows_of "$b")
+}
+
+get_aar() {
+  if [ -n "$AAR" ]; then [ -f "$AAR" ] || die "--aar $AAR not found" 3; echo "$AAR"; return; fi
+  local f=$WORK/dl/conscrypt-android-2.6-alpha2.aar
+  if [ ! -f "$f" ]; then
+    mkdir -p "$WORK/dl"
+    curl -fsSL --retry 3 -o "$f.part" "$AAR_URL" || die "download of $AAR_URL failed" 3
+    mv "$f.part" "$f"
+  fi
+  echo "$f"   # mkstage.py checks it against the 2.6-alpha2 pin
+}
+
+do_stage() {
+  local b=$1 t=$2 d=$WORK/$2
+  [ -f "$d/build.done" ] || die "[$t] stage before build" 1
+  conscrypt_base "$b" || { echo "  no conscrypt line: nothing to stage"; return 0; }
+  [ -x "$D8" ] || die "missing tool $D8 (--d8)" 3
+  local aar st=$d/stock/conscrypt/2.6-alpha2-jb; aar=$(get_aar)
+  rm -rf "$st"
+  $PY "$INPUTS/conscrypt/mkstage.py" "$aar" "$st" --jb --java-libs "$d/src/out/target/common/obj/JAVA_LIBRARIES" \
+    --d8 "$D8" --sums "$INPUTS/conscrypt/SHA256SUMS" > "$d/logs/stage.log" 2>&1 || { cat "$d/logs/stage.log" >&2; return 1; }
+  grep '^dex jar' "$d/logs/stage.log"
+  $PY "$INPUTS/conscrypt/check_prebuilt.py" --stage "$st" --jb --base "$b" --sums "$INPUTS/conscrypt/SHA256SUMS" \
+    --notice "$INPUTS/conscrypt/NOTICE" > "$d/logs/stage-check.log" 2>&1 || { tail -n 20 "$d/logs/stage-check.log" >&2; return 1; }
+  echo "  check_prebuilt.py --stage --jb --base $b: $(tail -n1 "$d/logs/stage-check.log")"
 }
 
 do_collect() {
   local b=$1 t=$2 d=$WORK/$2 combo abi f
-  [ -f "$d/build.done" ] || die "[$t] collect before build" 1
+  [ -f "$d/stage.done" ] || die "[$t] collect before stage" 1
+  local st=$d/stock/conscrypt/2.6-alpha2-jb cf=''
+  ! conscrypt_base "$b" || cf=$CONSCRYPT_FILES
   while read -r combo abi; do
     local po; po=$(product_out "$d" "$combo") o=$WORK/out/kktls-jb/$b/$abi
     rm -rf "$o"; mkdir -p "$o"
-    for f in $FILES $(java_files "$b"); do
-      [ -f "$po/system/$f" ] || { echo "[$t] $abi: $f missing in $po/system" >&2; return 1; }
-      install -D -m 0644 "$po/system/$f" "$o/$f"
-      case $f in *.jar) $PY "$INPUTS/tools/zipnorm.py" "$o/$f" > /dev/null || { echo "[$t] $abi: zipnorm $f failed" >&2; return 1; } ;; esac
+    for f in $FILES $(java_files "$b") $cf; do
+      # layer D: the pinned dex jar and the aar's .so come from the stage as they are (kktls-conscrypt.jar is not
+      # zipnorm'ed: it is already normal and pinned); kktls-sslfilter.jar is built here
+      local src=$po/system/$f
+      case $f in framework/kktls-conscrypt.jar) src=$st/kktls-conscrypt.dex.jar ;; lib/libkktls_conscrypt_jni.so) src=$st/$(so_of "$abi") ;; esac
+      [ -f "$src" ] || { echo "[$t] $abi: $f missing ($src)" >&2; return 1; }
+      install -D -m 0644 "$src" "$o/$f"
+      case $f in
+        framework/kktls-conscrypt.jar) ;;
+        *.jar) $PY "$INPUTS/tools/zipnorm.py" "$o/$f" > /dev/null || { echo "[$t] $abi: zipnorm $f failed" >&2; return 1; } ;;
+      esac
     done
     install -D -m 0755 "$po/system/bin/openssl" "$WORK/out/kktls-jb/$b/test-bin/$abi/openssl"
     (cd "$o" && find . -type f ! -name SHA256SUMS ! -name BUILD-INFO.txt | sed 's#^\./##' | LC_ALL=C sort |
@@ -364,6 +433,11 @@ do_collect() {
         java_rows "$b" | sed 's/^/java /'
         echo "make WITH_DEXPREOPT=false"
         echo "gate $(gate_of "$b")"
+      fi
+      if [ -n "$cf" ]; then
+        for f in $cf; do echo "conscrypt $f"; done
+        echo "conscrypt-aar $(sha_of "$st/conscrypt-android-2.6-alpha2.aar")"
+        echo "d8 $("$D8" --version 2>/dev/null | head -n1)"
       fi
     } > "$o/BUILD-INFO.txt"
     echo "  $b/$abi: $(wc -l < "$o/SHA256SUMS") files"
@@ -419,6 +493,26 @@ java_check() {
   return $rc
 }
 
+# conscrypt_check ABI OUT: the layer D release files of a conscrypt base: kktls-conscrypt.jar = the JB dex jar pin, the
+# .so = the pin of its ABI (the aar's file), kktls-sslfilter.jar carries classes.dex; prints the findings, returns 1 on a failure
+conscrypt_check() {
+  local abi=$1 o=$2 rc=0 f key want got
+  for f in $CONSCRYPT_FILES; do
+    case $f in
+      framework/kktls-conscrypt.jar) key=2.6-alpha2/jb/kktls-conscrypt.dex.jar ;;
+      lib/libkktls_conscrypt_jni.so) key=2.6-alpha2/$(so_of "$abi") ;;
+      *) key='' ;;
+    esac
+    if [ -n "$key" ]; then
+      want=$(awk -v k="$key" '$2 == k { print $1 }' "$INPUTS/conscrypt/SHA256SUMS"); got=$(sha_of "$o/$f")
+      if [ -n "$want" ] && [ "$got" = "$want" ]; then echo "$f = pin $key ($got)"; else echo "FAIL $f sha256 $got, pin $key '$want'"; rc=1; fi
+    elif $PY -c 'import sys, zipfile; sys.exit(0 if "classes.dex" in zipfile.ZipFile(sys.argv[1]).namelist() else 1)' "$o/$f"; then
+      echo "$f: classes.dex present"
+    else echo "FAIL $f: no classes.dex"; rc=1; fi
+  done
+  return $rc
+}
+
 do_check() {
   local b=$1 t=$2 d=$WORK/$2 combo abi rc=0
   [ -f "$d/collect.done" ] || die "[$t] check before collect" 1
@@ -452,6 +546,12 @@ do_check() {
       java_check "$b" "$abi" "$o" "$d/stock-openssl/$abi" > "$l/java-$abi.log" 2>&1 || { r=FAIL; rc=1; }
       printf '%s\t%s\tjava-dex-exports\t%s\t%s\n' "$b" "$abi" "$r" "$l/java-$abi.log" >> "$sum"
       echo "  $abi java dex/exports/NEEDED: $r ($(grep -c '^FAIL\|  FAIL' "$l/java-$abi.log") failures)"
+    fi
+    if conscrypt_base "$b"; then
+      r=PASS
+      conscrypt_check "$abi" "$o" > "$l/conscrypt-$abi.log" 2>&1 || { r=FAIL; rc=1; }
+      printf '%s\t%s\tconscrypt-files\t%s\t%s\n' "$b" "$abi" "$r" "$l/conscrypt-$abi.log" >> "$sum"
+      echo "  $abi layer D files: $r ($(grep -c '^FAIL' "$l/conscrypt-$abi.log") failures)"
     fi
   done < <(rows_of "$b")
   if libcore_series "$b"; then
