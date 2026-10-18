@@ -13,7 +13,9 @@
 #   conscrypt BASE            layer D for BASE (needs java lines and a libcore series: the hook): the `stage` step makes
 #                             the JB Conscrypt stage (conscrypt/mkstage.py --jb), the release files are
 #                             framework/kktls-conscrypt.jar (the pinned JB dex jar), framework/kktls-sslfilter.jar (built
-#                             in this tree) and lib/libkktls_conscrypt_jni.so (the pinned aar .so of the ABI); one
+#                             in this tree) and lib/libkktls_conscrypt_jni.so (the pinned aar .so of the ABI; with a
+#                             compat line, on each ABI that needs the compat library: the pinned jb_needed.py copy, and
+#                             lib/libkktls_compat.so built in this tree as a fourth file); one
 #                             kktls-conscrypt-BASE-<abi> zip per ABI, installed on the releases of the gate line
 #   compat BASE               the Conscrypt .so of layer D misses bionic symbols on BASE (check_prebuilt.py JB_MISSING,
 #                             --jb-missing: 4.2 ARM getauxval, 4.1 also six fortify functions on both ABIs): the build
@@ -39,6 +41,7 @@ target  4.2  full_x86-user  x86
 java    4.2  core         framework/core.jar
 java    4.2  libjavacore  lib/libjavacore.so
 gate    4.2  4.2 4.2.1 4.2.2
+conscrypt 4.2
 compat  4.2
 
 base    4.1  android-4.1.2_r2

@@ -70,7 +70,10 @@ python3 -I conscrypt/check_prebuilt.py --stage STAGE/2.6-alpha2-jb --jb --base 4
   resolves against that bionic plus the compat library and that the library exports exactly what is missing.
 - `tools/kktls-jb-openssl-build.sh` stages it for a base with a `conscrypt` or `compat` line in
   `patches/jb/targets.txt` (the `stage` step; a `compat` base also builds the compat library) and ships
-  `kktls-conscrypt-<base>-<abi>` zips through `tools/mkzips.sh --jb`.
+  `kktls-conscrypt-<base>-<abi>` zips through `tools/mkzips.sh --jb`. Where a `conscrypt` base and ABI need the compat
+  library (4.2 ARM), the zip carries the `jb-compat/` `.so` and `lib/libkktls_compat.so` as a fourth file; the
+  installer's restore removes it with the other three, and the default factory checks its ELF header as it does the
+  `.so`'s when the file exists.
 
 ## Checks and tests
 

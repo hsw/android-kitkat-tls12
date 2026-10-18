@@ -18,8 +18,8 @@
 #                  openssl zip per base and ABI (helpers and the bionic notice from the 4.4 base tag). A base built with
 #                  java lines (BUILD-INFO `java <module> <path>` and `gate <release>...`, equal for every ABI) also has
 #                  those files in <abi>/ and notice/{libcore,fdlibm}.NOTICE: one java zip per base and ABI. A java base
-#                  with layer D (BUILD-INFO `conscrypt <path>` lines: the three layer D files, in <abi>/) also gets one
-#                  conscrypt zip per ABI
+#                  with layer D (BUILD-INFO `conscrypt <path>` lines: the three layer D files, in <abi>/, and on an ABI
+#                  whose bionic needs it lib/libkktls_compat.so as a fourth) also gets one conscrypt zip per ABI
 #   --base-tag TAG the tag whose openssl, layer D and helper files go into the ABI-independent zips and the
 #                  openssl/conscrypt zips (default: the first tag in sort order; those files are the same for every tag)
 #   --mtime EPOCH  timestamp of every zip entry (default 1230768000 = 2009-01-01 UTC)
@@ -33,8 +33,9 @@
 #                                           with --jb; installs on the releases of its gate line (zip.conf android: one
 #                                           release, or <base> = every AOSP <base>.x) over that base's openssl zip
 #   kktls-conscrypt-<abi>-<rel>.zip         system/framework/kktls-{conscrypt,sslfilter}.jar, system/lib/libkktls_conscrypt_jni.so
-#   kktls-conscrypt-<base>-<abi>-<rel>.zip  the same files of a Jelly Bean base, with --jb; gate as that base's java zip,
-#                                           needs the java zip of the same release (its marker)
+#   kktls-conscrypt-<base>-<abi>-<rel>.zip  the same files of a Jelly Bean base (+ system/lib/libkktls_compat.so where
+#                                           the base and ABI need it), with --jb; gate as that base's java zip, needs
+#                                           the java zip of the same release (its marker)
 #   kktls-restore-<rel>.zip                 no payload
 # Each holds META-INF/com/google/android/{update-binary,updater-script}, kktls/{zip.conf,checks.sh,install.sh},
 # kktls/bin/<abi>/ helpers, NOTICE, and the payload under system/. Entries are sorted, with fixed timestamps and modes,
@@ -96,10 +97,12 @@ jb_info() { # base key -> the values of the BUILD-INFO lines "key ...", one per 
 jb_java_files() { # base -> the java payload (paths below <abi>/), nothing for an openssl-only base
   jb_info "$1" java | awk '{ print $2 }'
 }
-jb_conscrypt_files() { # base -> the layer D payload (paths below <abi>/), nothing for a base without layer D
-  jb_info "$1" conscrypt
+jb_conscrypt_files() { # base abi -> the layer D payload of that ABI (paths below <abi>/), nothing without layer D; the
+  # ABIs may differ (the compat library)
+  sed -n 's/^conscrypt //p' "$JB/$1/$2/BUILD-INFO.txt"
 }
 D_FILES="framework/kktls-conscrypt.jar framework/kktls-sslfilter.jar lib/libkktls_conscrypt_jni.so"  # installer KK_D_FILES
+D_COMPAT=lib/libkktls_compat.so  # the fourth layer D file where a JB base and ABI need it (also in KK_D_FILES)
 jb_android() { # base -> zip.conf android of its java zip, from the gate line. checks.sh compares one release exactly
   # and takes 4.N as any 4.N.x, so a gate is either one point release or every AOSP release string of the base
   local g all
@@ -127,7 +130,8 @@ for b in $JBASES; do
   done
   [ -f "$JB/$b/allow/allow-missing-libssl.txt" ] || die "$JB/$b/allow/allow-missing-libssl.txt missing"
   jb_tag "$b" > /dev/null
-  jf=$(jb_java_files "$b") cf=$(jb_conscrypt_files "$b")
+  jf=$(jb_java_files "$b") cf=''
+  for a in $ABIS; do cf=$cf$(jb_conscrypt_files "$b" "$a"); done
   [ -n "$jf" ] || [ -z "$cf" ] || die "$JB/$b: conscrypt lines without java lines (layer D needs the base's java zip)"
   [ -n "$jf" ] || continue
   jb_android "$b" > /dev/null
@@ -141,10 +145,13 @@ for b in $JBASES; do
     grep -q " $f.NOTICE\$" "$JB/$b/notice/SHA256SUMS" || die "$JB/$b/notice/SHA256SUMS does not list $f.NOTICE"
   done
   [ -n "$cf" ] || continue
-  # exactly the files the installer's restore removes (KK_D_FILES), each listed for every ABI
-  [ "$(echo $cf)" = "$D_FILES" ] || die "$JB/$b: conscrypt files '$(echo $cf)' are not '$D_FILES'"
-  for f in $cf; do
-    for a in $ABIS; do
+  # on every ABI exactly the files the installer's restore removes (KK_D_FILES): the three, or the three and the compat
+  # library; each listed in that ABI's SHA256SUMS
+  for a in $ABIS; do
+    cf=$(jb_conscrypt_files "$b" "$a")
+    [ "$(echo $cf)" = "$D_FILES" ] || [ "$(echo $cf)" = "$D_FILES $D_COMPAT" ] ||
+      die "$JB/$b/$a: conscrypt files '$(echo $cf)' are not '$D_FILES' [+ $D_COMPAT]"
+    for f in $cf; do
       awk -v f="$f" '$2 == f { ok = 1 } END { exit !ok }' "$JB/$b/$a/SHA256SUMS" || die "$JB/$b/$a/SHA256SUMS does not list $f"
     done
   done
@@ -176,7 +183,11 @@ notice() { # kind tag [openssl-tag openssl-notice-dir] -> NOTICE text (the JB op
             echo "AOSP $t external/okhttp (Apache License 2.0)."
           fi ;;
     conscrypt) echo "framework/kktls-sslfilter.jar is own code under the Apache License 2.0; framework/kktls-conscrypt.jar"
-               echo "and lib/libkktls_conscrypt_jni.so are Conscrypt with BoringSSL (notice below)." ;;
+               echo "and lib/libkktls_conscrypt_jni.so are Conscrypt with BoringSSL (notice below)."
+               [ -z "${COMPAT_NOTICE:-}" ] || {
+                 echo "lib/libkktls_compat.so is own code under the Apache License 2.0, built against the AOSP $ot"
+                 echo "bionic headers; lib/libkktls_conscrypt_jni.so is the Conscrypt library with one .dynamic entry"
+                 echo "changed to load it (DT_SONAME retagged DT_NEEDED)."; } ;;
     cacerts) echo "etc/security/cacerts/* hold the certificates of the Mozilla CA root store (as published by curl,"
              echo "https://curl.se/ca/cacert.pem), made available under the Mozilla Public License 2.0 (text below)." ;;
     restore) ;;
@@ -264,11 +275,13 @@ for a in $ABIS; do
     # shellcheck disable=SC2086
     payload "$n" "$JB/$b/$a" $jf
     pack "$n"
-    [ -n "$(jb_conscrypt_files "$b")" ] || continue
+    cf=$(jb_conscrypt_files "$b" "$a")
+    [ -n "$cf" ] || continue
     n=kktls-conscrypt-$b-$a-$REL
-    HTAG=$BASE NOTICE_ARGS="$jt $JB/$b/notice" stage "$n" conscrypt "$a" "$(jb_android "$b")" "$jt" "$a"
+    cn=''; case " $(echo $cf) " in *" $D_COMPAT "*) cn=1 ;; esac
+    COMPAT_NOTICE=$cn HTAG=$BASE NOTICE_ARGS="$jt $JB/$b/notice" stage "$n" conscrypt "$a" "$(jb_android "$b")" "$jt" "$a"
     # shellcheck disable=SC2086
-    payload "$n" "$JB/$b/$a" $D_FILES
+    payload "$n" "$JB/$b/$a" $cf
     pack "$n"
   done
   for t in $TAGS; do

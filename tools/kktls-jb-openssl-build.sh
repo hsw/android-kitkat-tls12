@@ -37,10 +37,12 @@
 #            libkktls_compat.so, which must be its pin jb-compat/<base>/... in conscrypt/SHA256SUMS)
 #   collect  lib/libssl.so lib/libcrypto.so and the java files into WORK/out/kktls-jb/<base>/<abi>/ (jars rewritten by
 #            tools/zipnorm.py: sorted entries, fixed time) + SHA256SUMS + BUILD-INFO.txt (with the java modules and the
-#            gate line of the base; a conscrypt base: its three files, kktls-conscrypt.jar and the .so from the stage
-#            byte for byte, and `conscrypt <file>` lines); bin/openssl into WORK/out/kktls-jb/<base>/test-bin/<abi>/
+#            gate line of the base; a conscrypt base: its layer D files, kktls-conscrypt.jar and the .so from the stage
+#            byte for byte (on an ABI that needs the compat library: the stage's jb_needed.py copy of the .so, and the
+#            tree's libkktls_compat.so as a fourth file), and `conscrypt <file>` lines, which then differ between the
+#            ABIs); bin/openssl into WORK/out/kktls-jb/<base>/test-bin/<abi>/
 #            (a compat base: also libkktls_compat.so and bin/kktls-compat-probe of each ABI that needs it, for device
-#            tests: the library is no release file of a base without a conscrypt line); external/openssl/NOTICE
+#            tests); external/openssl/NOTICE
 #            (+ libcore/NOTICE and external/fdlibm/NOTICE for a java base: libjavacore.so links libfdlibm statically)
 #            into .../notice/; patches/jb/<base>/allow-missing-lib{ssl,crypto}.txt (the
 #            zip's kktls-symcheck lists) into .../allow/
@@ -81,8 +83,10 @@ REPO_REV=v2.69
 INPUT_PATHS="patches/jb patches/build tools symcheck conscrypt"
 STEPS_ALL="sync stock apply build stage collect check"
 FILES="lib/libssl.so lib/libcrypto.so"
-# layer D release files of a conscrypt base (the installer's KK_D_FILES, below system/)
+# layer D release files of a conscrypt base (the installer's KK_D_FILES, below system/); COMPAT_FILE joins them on an ABI
+# whose bionic misses symbols of the Conscrypt .so (a compat line)
 CONSCRYPT_FILES="framework/kktls-conscrypt.jar framework/kktls-sslfilter.jar lib/libkktls_conscrypt_jni.so"
+COMPAT_FILE=lib/libkktls_compat.so
 AAR_URL=https://repo1.maven.org/maven2/org/conscrypt/conscrypt-android/2.6-alpha2/conscrypt-android-2.6-alpha2.aar
 
 die() { echo "kktls-jb-openssl-build: $1" >&2; exit "${2:-1}"; }
@@ -159,6 +163,14 @@ compat_base() { [ -n "$(kw compat | awk -v b="$1" '$1 == b')" ]; }  # base has a
 compat_abis() { python3 -I "$INPUTS/conscrypt/check_prebuilt.py" --jb-missing "$1" | awk '{ print $1 }'; }
 needs_compat() { local a; compat_base "$1" && a=$(compat_abis "$1") && grep -qx "$2" <<<"$a"; }  # base abi
 stage_base() { conscrypt_base "$1" || compat_base "$1"; }
+# base abi -> the layer D release files of that ABI (nothing for a base without a conscrypt line)
+layer_d_files() {
+  conscrypt_base "$1" || return 0
+  echo $CONSCRYPT_FILES
+  ! needs_compat "$1" "$2" || echo "$COMPAT_FILE"
+}
+# base abi -> the pin key (conscrypt/SHA256SUMS) of that ABI's lib/libkktls_compat.so
+compat_key() { echo "jb-compat/$1/$([ "$2" = x86 ] && echo x86/)libkktls_compat.so"; }
 
 BASES=${SEL_BASES:-$(kw base | awk '{print $1}')}
 for b in $BASES; do
@@ -211,7 +223,9 @@ if [ $DRY = 1 ]; then
     echo "  files: $FILES $(java_files "$b" | tr '\n' ' ')"
     [ -z "$(java_rows "$b")" ] || echo "  java modules: $(java_modules "$b" | tr '\n' ' ')gate: $(gate_of "$b")"
     ! libcore_series "$b" || echo "  libcore series: $(ls "$INPUTS/patches/jb/$b/libcore/"*.patch | wc -l) patches"
-    ! conscrypt_base "$b" || echo "  conscrypt (layer D): $CONSCRYPT_FILES"
+    if conscrypt_base "$b"; then
+      rows_of "$b" | while read -r _ a; do echo "  conscrypt (layer D) $a: $(layer_d_files "$b" "$a" | tr '\n' ' ')"; done
+    fi
     ! compat_base "$b" || echo "  compat (libkktls_compat.so): $(python3 -I "$INPUTS/conscrypt/check_prebuilt.py" --jb-missing "$b" | tr '\n' ';')"
     echo "  projects ($(projects_of "$b" | wc -l)): $(projects_of "$b" | tr '\n' ' ')"
   done
@@ -446,16 +460,19 @@ stage_check() {
 do_collect() {
   local b=$1 t=$2 d=$WORK/$2 combo abi f
   [ -f "$d/stage.done" ] || die "[$t] collect before stage" 1
-  local st=$d/stock/conscrypt/2.6-alpha2-jb cf=''
-  ! conscrypt_base "$b" || cf=$CONSCRYPT_FILES
+  local st=$d/stock/conscrypt/2.6-alpha2-jb cf
   while read -r combo abi; do
-    local po; po=$(product_out "$d" "$combo") o=$WORK/out/kktls-jb/$b/$abi
+    local po so; po=$(product_out "$d" "$combo") o=$WORK/out/kktls-jb/$b/$abi
+    cf=$(layer_d_files "$b" "$abi")
+    so=$st/$(so_of "$abi"); ! needs_compat "$b" "$abi" || so=$st/jb-compat/$(so_of "$abi")
     rm -rf "$o"; mkdir -p "$o"
     for f in $FILES $(java_files "$b") $cf; do
-      # layer D: the pinned dex jar and the aar's .so come from the stage as they are (kktls-conscrypt.jar is not
-      # zipnorm'ed: it is already normal and pinned); kktls-sslfilter.jar is built here
+      # layer D: the pinned dex jar and the .so (the aar's, or its jb_needed.py copy where the base and ABI need the
+      # compat library) come from the stage as they are (kktls-conscrypt.jar is not zipnorm'ed: it is already normal
+      # and pinned); kktls-sslfilter.jar and libkktls_compat.so are built here (the stage check compared the latter
+      # with its pin)
       local src=$po/system/$f
-      case $f in framework/kktls-conscrypt.jar) src=$st/kktls-conscrypt.dex.jar ;; lib/libkktls_conscrypt_jni.so) src=$st/$(so_of "$abi") ;; esac
+      case $f in framework/kktls-conscrypt.jar) src=$st/kktls-conscrypt.dex.jar ;; lib/libkktls_conscrypt_jni.so) src=$so ;; esac
       [ -f "$src" ] || { echo "[$t] $abi: $f missing ($src)" >&2; return 1; }
       install -D -m 0644 "$src" "$o/$f"
       case $f in
@@ -542,14 +559,17 @@ java_check() {
   return $rc
 }
 
-# conscrypt_check ABI OUT: the layer D release files of a conscrypt base: kktls-conscrypt.jar = the JB dex jar pin, the
-# .so = the pin of its ABI (the aar's file), kktls-sslfilter.jar carries classes.dex; prints the findings, returns 1 on a failure
+# conscrypt_check BASE ABI OUT: the layer D release files of a conscrypt base: kktls-conscrypt.jar = the JB dex jar pin,
+# the .so = the pin of its ABI (the aar's file, or the jb_needed.py copy where the base and ABI need the compat library),
+# libkktls_compat.so (there only) = its pin of the base and ABI, kktls-sslfilter.jar carries classes.dex; prints the
+# findings, returns 1 on a failure
 conscrypt_check() {
-  local abi=$1 o=$2 rc=0 f key want got
-  for f in $CONSCRYPT_FILES; do
+  local b=$1 abi=$2 o=$3 rc=0 f key want got
+  for f in $(layer_d_files "$b" "$abi"); do
     case $f in
       framework/kktls-conscrypt.jar) key=2.6-alpha2/jb/kktls-conscrypt.dex.jar ;;
-      lib/libkktls_conscrypt_jni.so) key=2.6-alpha2/$(so_of "$abi") ;;
+      lib/libkktls_conscrypt_jni.so) key=2.6-alpha2/$(so_of "$abi"); ! needs_compat "$b" "$abi" || key=2.6-alpha2/jb-compat/$(so_of "$abi") ;;
+      "$COMPAT_FILE") key=$(compat_key "$b" "$abi") ;;
       *) key='' ;;
     esac
     if [ -n "$key" ]; then
@@ -598,7 +618,7 @@ do_check() {
     fi
     if conscrypt_base "$b"; then
       r=PASS
-      conscrypt_check "$abi" "$o" > "$l/conscrypt-$abi.log" 2>&1 || { r=FAIL; rc=1; }
+      conscrypt_check "$b" "$abi" "$o" > "$l/conscrypt-$abi.log" 2>&1 || { r=FAIL; rc=1; }
       printf '%s\t%s\tconscrypt-files\t%s\t%s\n' "$b" "$abi" "$r" "$l/conscrypt-$abi.log" >> "$sum"
       echo "  $abi layer D files: $r ($(grep -c '^FAIL' "$l/conscrypt-$abi.log") failures)"
     fi
