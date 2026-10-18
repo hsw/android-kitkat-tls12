@@ -22,14 +22,18 @@ are dexed outside the tree by d8 --min-api 19, which desugars and backports, and
      x86/libkktls_conscrypt_jni.so = the aar's x86 .so -> pin "2.6-alpha2/x86/libkktls_conscrypt_jni.so" (the ARM file
      keeps its place at the top of the stage, where existing trees have it);
   6. OUTDIR gets conscrypt-android-2.6-alpha2.aar, kktls-conscrypt.dex.jar, libkktls_conscrypt_jni.so and
-     x86/libkktls_conscrypt_jni.so (written as .partial, renamed after the pins matched).
+     x86/libkktls_conscrypt_jni.so (written as .partial, renamed after the pins matched; --jb: also jb-compat/).
 --jb makes the Jelly Bean stage (Android 4.1-4.3; OUTDIR has the same file names, DIR is the JAVA_LIBRARIES of a built
 JB tree): after step 2, jb_charsets.py moves the StandardCharsets (API 19) references to an own org.conscrypt shim ->
 pin "2.6-alpha2/jb_charsets:classes.jar"; step 3 is d8 --release --min-api 16 --lib core (JB has no platform
 conscrypt jar), expecting exactly three missing types (the two above and com.android.org.conscrypt.OpenSSLSocketImpl,
 the KitKat adapter's super class: the JB hook takes the adapter's inner factory); the dex jar -> pin
-"2.6-alpha2/jb/kktls-conscrypt.dex.jar". The .so files are the same pinned aar files (4.3 needs no change; 4.1/4.2 do,
-see check_prebuilt.py JB_MISSING). One JB dex jar serves every JB base: the d8 output is the same with the 4.1, 4.2 and
+"2.6-alpha2/jb/kktls-conscrypt.dex.jar". The .so files are the same pinned aar files (4.3 needs no change); for the
+4.1/4.2 ABIs that miss bionic symbols (check_prebuilt.py JB_MISSING) jb_needed.py also writes
+jb-compat/libkktls_conscrypt_jni.so and jb-compat/x86/libkktls_conscrypt_jni.so (DT_NEEDED libkktls_compat.so, the
+library conscrypt/compat/ builds in the base's tree) -> pins "2.6-alpha2/jb-compat/libkktls_conscrypt_jni.so" and
+"2.6-alpha2/jb-compat/x86/libkktls_conscrypt_jni.so"; one edited file per ABI serves 4.1 and 4.2 (the edit does not
+depend on the base). One JB dex jar serves every JB base: the d8 output is the same with the 4.1, 4.2 and
 4.3 core jar (checked 2026-10-18).
 The d8 output does not depend on which built 4.4 core.jar is given (checked 2026-10-12 with two trees, with and without
 framework/conscrypt jars); it does depend on the d8 version: pinned with D8 9.2.4-dev (SDK build-tools 37.0.0). A
@@ -58,6 +62,8 @@ JB_CHARSETS_KEY = V + "/jb_charsets:classes.jar"
 JB_DEXJAR_KEY = V + "/jb/kktls-conscrypt.dex.jar"
 STAGE_SO_KEY = V + "/libkktls_conscrypt_jni.so"
 STAGE_SO_X86_KEY = V + "/x86/libkktls_conscrypt_jni.so"
+STAGE_SO_COMPAT_KEY = V + "/jb-compat/libkktls_conscrypt_jni.so"
+STAGE_SO_COMPAT_X86_KEY = V + "/jb-compat/x86/libkktls_conscrypt_jni.so"
 PROPERTIES = "org/conscrypt/conscrypt.properties"
 DATE = (1980, 1, 1, 0, 0, 0)
 EXPECTED_D8_WARNINGS = {
@@ -176,12 +182,28 @@ def make_stage(aar, outdir, libs, d8, sums_path, log=print, jb=False):
                                                                          sha256(dex), dkey))
         log(".so      %s  libkktls_conscrypt_jni.so" % pinned(sums, STAGE_SO_KEY, so, "stage .so"))
         log(".so      %s  x86/libkktls_conscrypt_jni.so" % pinned(sums, STAGE_SO_X86_KEY, so_x86, "stage x86 .so"))
+        edited = []
+        if jb:
+            for key, data in ((STAGE_SO_COMPAT_KEY, so), (STAGE_SO_COMPAT_X86_KEY, so_x86)):
+                src, dst = os.path.join(tmp, "in.so"), os.path.join(tmp, "out.so")
+                with open(src, "wb") as f:
+                    f.write(data)
+                r = subprocess.run([sys.executable, "-I", os.path.join(HERE, "jb_needed.py"), src, dst],
+                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+                if r.returncode:
+                    raise StageError("jb_needed.py failed: %s" % r.stdout.strip())
+                with open(dst, "rb") as f:
+                    out = f.read()
+                log(".so      %s  %s (jb_needed.py)" % (pinned(sums, key, out, "jb_needed.py output"), key.split("/", 1)[1]))
+                edited.append((key, out))
+                os.remove(src)
+                os.remove(dst)
     finally:
         for n in os.listdir(tmp):
             os.remove(os.path.join(tmp, n))
         os.rmdir(tmp)
     # the JB stage has the 4.4 stage's file names (its dex jar is the JB one)
-    for key, data in ((AAR_KEY, aar_data), (DEXJAR_KEY, dexjar), (STAGE_SO_KEY, so), (STAGE_SO_X86_KEY, so_x86)):
+    for key, data in [(AAR_KEY, aar_data), (DEXJAR_KEY, dexjar), (STAGE_SO_KEY, so), (STAGE_SO_X86_KEY, so_x86)] + edited:
         dst = os.path.join(outdir, key.split("/", 1)[1])
         if not os.path.isdir(os.path.dirname(dst)):
             os.makedirs(os.path.dirname(dst))

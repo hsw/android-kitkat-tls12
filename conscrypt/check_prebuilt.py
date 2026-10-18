@@ -38,9 +38,20 @@ mkstage.py puts in <tree>/stock/conscrypt/2.6-alpha2/: the dex jar kktls-conscry
 android-4.3_r3, android-4.2.2_r1 and android-4.1.2_r2. Only the symbol lists change; the dex checks stay those of the
 4.4 stage. The pristine 2.6-alpha2 .so misses exactly JB_MISSING on a JB base (the --selftest --stage cases assert it):
 4.3 nothing, 4.2 ARM getauxval, 4.1 the fortify functions (both ABIs) and getauxval (ARM).
+--compat FILE / --compat-x86 FILE (a JB base whose JB_MISSING is not empty for that ABI: 4.2 ARM, 4.1 both): the
+libkktls_compat.so built in the base's tree (conscrypt/compat/). That ABI's .so checks then take the jb_needed.py output
+jb-compat/[x86/]libkktls_conscrypt_jni.so of the stage instead of the aar's file: so-elf wants no DT_SONAME, so-needed
+the aar's list plus libkktls_compat.so as the last entry (the JB linkers search DT_NEEDED in order, so libc and the
+others come first), so-symbols resolves against the base's bionic plus the compat library's exports. A JB base adds the
+checks compat / x86-compat: the library is ELF32 LE ET_DYN of the ABI with DT_HASH, = its pin
+jb-compat/<base>/[x86/]libkktls_compat.so, exports exactly JB_MISSING of the base and ABI (besides COMPAT_CRT_EXPORTS,
+which every library of the tree has and the Conscrypt .so does not import), none of them a bionic export, imports only
+bionic exports, NEEDED only libc/liblog; on a base or ABI that needs nothing, a compat library given is a failure and
+none given passes. --jb-missing BASE prints the ABIs of BASE that need the compat library and the symbols.
 --jb checks the Jelly Bean stage of mkstage.py --jb instead (same file names): stage-sha256 takes the dex jar pin
 2.6-alpha2/jb/kktls-conscrypt.dex.jar, and dex-classes wants 426 classes, the jb_charsets.py shim
-org/conscrypt/KktlsStandardCharsets and no reference to java/nio/charset/StandardCharsets (API 19).
+org/conscrypt/KktlsStandardCharsets, no reference to java/nio/charset/StandardCharsets (API 19) and no string
+holding the dotted java.nio.charset.StandardCharsets (a reflective Class.forName).
 
 With the aar sha256 pinned, the structural checks below cannot fail on the pinned file; they are the vetting record that
 re-runs whenever the pin moves (a new Conscrypt release: new SHA256SUMS lines, mkstage.py, this checker), and the
@@ -111,6 +122,7 @@ STAGE_DEXJAR_JB = STAGE_VERSION + "/jb/kktls-conscrypt.dex.jar"
 STAGE_CLASS_COUNT_JB = 426  # the 425 above + org/conscrypt/KktlsStandardCharsets
 JB_SHIM_TYPE = "Lorg/conscrypt/KktlsStandardCharsets;"
 JB_ABSENT_TYPE = "Ljava/nio/charset/StandardCharsets;"  # API 19: must not be referenced by the JB dex
+JB_ABSENT_DOTTED = "java.nio.charset.StandardCharsets"  # nor named for reflection (Class.forName) in any string
 STAGE_PROPERTIES = {
     "org.conscrypt.boringssl.version": "f91f1447397c6719f9774dfb8e67329378e1f3d3",
     "org.conscrypt.version.major": "2",
@@ -130,6 +142,27 @@ JB_MISSING = {  # the undefined GLOBAL symbols of the pristine 2.6-alpha2 .so th
     ("4.2", "arm"): {"getauxval"}, ("4.2", "x86"): set(),
     ("4.1", "arm"): _FORTIFY41 | {"getauxval"}, ("4.1", "x86"): set(_FORTIFY41),
 }
+ABI_NAMES = {"arm": "armeabi-v7a", "x86": "x86"}  # JB_MISSING key -> Android ABI name
+# the JB 4.1/4.2 .so of an ABI that needs libkktls_compat.so: jb_needed.py output (DT_SONAME -> DT_NEEDED), mkstage.py --jb
+STAGE_SO_COMPAT = STAGE_VERSION + "/jb-compat/libkktls_conscrypt_jni.so"
+STAGE_SO_COMPAT_X86 = STAGE_VERSION + "/jb-compat/x86/libkktls_conscrypt_jni.so"
+COMPAT_NAME = "libkktls_compat.so"
+COMPAT_ALLOWED_NEEDED = {"libc.so", "liblog.so"}
+# exported by every library the JB tree links (linker-defined absolute symbols; 4.1's crtbegin_so/crtend_so): not part
+# of the compat interface, never imported by the Conscrypt .so (checked), and libc's own come first anyway
+COMPAT_CRT_EXPORTS = {"_edata", "__bss_start", "_end", "__on_dlclose", "__dso_handle", "__INIT_ARRAY__", "__FINI_ARRAY__"}
+COMPAT_CHECKS = ["compat", "x86-compat"]
+
+
+def needs_compat(base, abi):
+    """abi: "arm" or "x86". True when the aar .so misses symbols on that base's bionic (JB_MISSING)."""
+    return bool(JB_MISSING.get((base, abi)))
+
+
+def compat_pin(base, abi):
+    return "jb-compat/%s/%s%s" % (base, "x86/" if abi == "x86" else "", COMPAT_NAME)
+
+
 ALPHA3_AAR = "negative/conscrypt-android-2.6-alpha3.aar"  # selftest fixture only, never staged
 SO_CHECKS = ["so-elf", "so-needed", "so-loader", "so-exports", "so-symbols"]
 CHECKS_STAGE = (["stage-present", "stage-sha256", "dex-jar", "dex-classes", "dex-jni-name", "dex-properties"] + SO_CHECKS
@@ -234,8 +267,9 @@ class Elf32:
         raise ValueError("no .dynsym section")
 
 
-def check_so(so, res, machine=EM_ARM, prefix=""):
-    """so-* checks of one JNI .so; machine = the ABI's e_machine, prefix = the check name prefix ("x86-" for x86)."""
+def check_so(so, res, machine=EM_ARM, prefix="", compat=False):
+    """so-* checks of one JNI .so; machine = the ABI's e_machine, prefix = the check name prefix ("x86-" for x86);
+    compat: the jb_needed.py output (no SONAME, libkktls_compat.so the last NEEDED)."""
     try:
         elf = Elf32(so)
     except (ValueError, struct.error) as e:
@@ -253,13 +287,18 @@ def check_so(so, res, machine=EM_ARM, prefix=""):
         bad.append("e_machine %d (want %s)" % (elf.e_machine, MACHINE_NAMES[machine]))
     if elf.e_type != ET_DYN:
         bad.append("e_type %d (want ET_DYN)" % elf.e_type)
-    if soname != ["libconscrypt_jni.so"]:
+    if soname != ([] if compat else ["libconscrypt_jni.so"]):
         bad.append("SONAME %s" % soname)
-    res[prefix + "so-elf"] = (not bad, "; ".join(bad) or "ELF32 LE %s ET_DYN, SONAME libconscrypt_jni.so"
-                              % MACHINE_NAMES[machine].split("=")[0])
-    extra = sorted(set(needed) - ALLOWED_NEEDED)
-    res[prefix + "so-needed"] = (not extra, ("NEEDED outside libc/libdl/libm/liblog: %s" % extra) if extra
-                        else "NEEDED %s" % " ".join(needed))
+    res[prefix + "so-elf"] = (not bad, "; ".join(bad) or "ELF32 LE %s ET_DYN, %s"
+                              % (MACHINE_NAMES[machine].split("=")[0],
+                                 "no SONAME (jb_needed.py)" if compat else "SONAME libconscrypt_jni.so"))
+    plain = needed[:-1] if compat and needed and needed[-1] == COMPAT_NAME else needed
+    extra = sorted(set(plain) - ALLOWED_NEEDED)
+    if compat and plain is needed:
+        extra.append("no %s as the last entry" % COMPAT_NAME)
+    res[prefix + "so-needed"] = (not extra, ("NEEDED outside libc/libdl/libm/liblog%s: %s"
+                                             % (" + a last libkktls_compat.so" if compat else "", extra)) if extra
+                                 else "NEEDED %s" % " ".join(needed))
     tags = {t for t, _ in dyn}
     flags = sum(v for t, v in dyn if t == DT_FLAGS)
     bad = []
@@ -403,7 +442,7 @@ def bionic_exports(libdir, label="Android 4.4"):
     return "\n".join(head + sorted(names)) + "\n"
 
 
-def check_symbols(so, bionic, res, prefix="", base="4.4"):
+def check_symbols(so, bionic, res, prefix="", base="4.4", with_compat=False):
     try:
         und = Elf32(so).undefined_dynsyms()
     except (ValueError, IndexError, struct.error) as e:
@@ -411,9 +450,10 @@ def check_symbols(so, bionic, res, prefix="", base="4.4"):
         return
     missing = sorted(n for n, b in und if b == "GLOBAL" and n not in bionic)
     weak = sorted(n for n, b in und if b == "WEAK" and n not in bionic)
-    msg = "%d undefined, all GLOBAL ones in the %s bionic" % (len(und), base)
+    where = "the %s bionic%s" % (base, " + libkktls_compat.so" if with_compat else "")
+    msg = "%d undefined, all GLOBAL ones in %s" % (len(und), where)
     if missing:
-        msg = "undefined GLOBAL not in the %s bionic: %s" % (base, " ".join(missing))
+        msg = "undefined GLOBAL not in %s: %s" % (where, " ".join(missing))
     if weak:
         msg += "; WEAK unresolved (BoringSSL checks them for NULL, e.g. the malloc hooks in crypto/mem.cc): %s" % " ".join(weak)
     res[prefix + "so-symbols"] = (not missing, msg)
@@ -469,6 +509,8 @@ def check_dexjar(jar, res, jb=False):
                 bad.append("no %s (jb_charsets.py did not run)" % JB_SHIM_TYPE)
             if jb and JB_ABSENT_TYPE in types:
                 bad.append("references %s (API 19)" % JB_ABSENT_TYPE)
+            if jb and any(JB_ABSENT_DOTTED in x for x in strings):
+                bad.append("a string holds %s (reflection would load the API 19 class)" % JB_ABSENT_DOTTED)
             res["dex-classes"] = (not bad, "; ".join(bad) or "%d class_defs, all under org/conscrypt/%s" % (
                 len(classes), ", no StandardCharsets" if jb else ""))
             has_new, has_old = "kktls_conscrypt_jni" in strings, "conscrypt_jni" in strings
@@ -503,15 +545,73 @@ def check_notice(path, sums, res):
     res["notice"] = (not bad, "; ".join(bad) or "%s = pin %s" % (os.path.basename(path), got[:8]))
 
 
-def check_stage(stage, sums, notice, bionic, bionic_x86, base="4.4", jb=False):
+def compat_exports(data):
+    """The defined GLOBAL/WEAK dynamic symbols of a compat library without COMPAT_CRT_EXPORTS."""
+    return set(Elf32(data).defined_dynsyms()) - COMPAT_CRT_EXPORTS
+
+
+def check_compat(lib, base, abi, bionic, so_undef, sums, res):
+    """The compat / x86-compat check of one ABI; lib = the library bytes or None; so_undef = the undefined GLOBAL
+    symbols of the Conscrypt .so of that ABI."""
+    name = ("x86-" if abi == "x86" else "") + "compat"
+    want = JB_MISSING.get((base, abi), set())
+    if not want:
+        res[name] = (lib is None, "%s given, but the %s %s bionic misses nothing" % (COMPAT_NAME, base, abi)
+                     if lib is not None else "not needed: the %s %s bionic exports every import" % (base, abi))
+        return
+    if lib is None:
+        res[name] = (False, "%s needed on %s %s (%s); none given (--compat%s)"
+                     % (COMPAT_NAME, base, abi, " ".join(sorted(want)), "-x86" if abi == "x86" else ""))
+        return
+    bad = []
+    try:
+        elf = Elf32(lib)
+        dyn = elf.dynamic()
+        needed = elf.dyn_strings(dyn, DT_NEEDED)
+        defined = elf.defined_dynsyms()
+        undef = elf.undefined_dynsyms()
+    except (ValueError, IndexError, StopIteration, struct.error) as e:
+        res[name] = (False, "%s: %s" % (COMPAT_NAME, e))
+        return
+    machine = EM_386 if abi == "x86" else EM_ARM
+    if elf.e_machine != machine or elf.e_type != ET_DYN:
+        bad.append("e_machine %d e_type %d (want %s ET_DYN)" % (elf.e_machine, elf.e_type, MACHINE_NAMES[machine]))
+    if DT_HASH not in {t for t, _ in dyn}:
+        bad.append("no DT_HASH")
+    pin = sums.get(compat_pin(base, abi))
+    if sha256(lib) != pin:
+        bad.append("sha256 %s (pinned %s: %s)" % (sha256(lib), compat_pin(base, abi), pin))
+    exports = set(defined) - COMPAT_CRT_EXPORTS
+    if exports != want:
+        bad.append("exports %s, want exactly %s" % (" ".join(sorted(exports)) or "-", " ".join(sorted(want))))
+    shadow = sorted(exports & bionic)
+    if shadow:
+        bad.append("exports bionic symbols %s" % " ".join(shadow))
+    crt = sorted(COMPAT_CRT_EXPORTS & set(so_undef))
+    if crt:
+        bad.append("the Conscrypt .so imports %s" % " ".join(crt))
+    missing = sorted(n for n, b in undef if b == "GLOBAL" and n not in bionic)
+    if missing:
+        bad.append("imports not in the %s bionic: %s" % (base, " ".join(missing)))
+    extra = sorted(set(needed) - COMPAT_ALLOWED_NEEDED)
+    if extra:
+        bad.append("NEEDED %s (want libc/liblog only)" % " ".join(extra))
+    res[name] = (not bad, "; ".join(bad) or "%s = pin %s, exports %s, %d imports in the %s bionic, NEEDED %s"
+                 % (COMPAT_NAME, pin[:8], " ".join(sorted(exports)), len(undef), base, " ".join(needed)))
+
+
+def check_stage(stage, sums, notice, bionic, bionic_x86, base="4.4", jb=False, compat=None, compat_x86=None):
     """{check: (ok, message)} for every name in CHECKS_STAGE; stage = the directory holding the stage files.
     bionic / bionic_x86: the export sets of the bionic of each ABI (so-symbols / x86-so-symbols) of base.
-    jb: the Jelly Bean stage (its dex jar pin, class count, the StandardCharsets shim)."""
+    jb: the Jelly Bean stage (its dex jar pin, class count, the StandardCharsets shim). compat / compat_x86: the bytes of
+    libkktls_compat.so of the ABI (a JB base that needs it): that ABI's .so checks take the stage's jb-compat/ file."""
     res = {}
     files = {}
     absent = []
     dexkey = STAGE_DEXJAR_JB if jb else STAGE_DEXJAR
-    for key, rel in ((dexkey, STAGE_DEXJAR), (STAGE_SO, STAGE_SO), (STAGE_SO_X86, STAGE_SO_X86)):
+    so_key = STAGE_SO_COMPAT if compat is not None else STAGE_SO
+    so_x86_key = STAGE_SO_COMPAT_X86 if compat_x86 is not None else STAGE_SO_X86
+    for key, rel in ((dexkey, STAGE_DEXJAR), (so_key, so_key), (so_x86_key, so_x86_key)):
         p = os.path.join(stage, rel.split("/", 1)[1])
         if os.path.isfile(p):
             with open(p, "rb") as f:
@@ -524,32 +624,50 @@ def check_stage(stage, sums, notice, bionic, bionic_x86, base="4.4", jb=False):
            if sha256(v) != sums.get(k)]
     res["stage-sha256"] = (not absent and not bad, "; ".join(bad) or ("not run: files missing" if absent else
                            "%sdex jar %s, .so %s, x86 .so %s" % ("JB " if jb else "", sums[dexkey][:8],
-                                                                 sums[STAGE_SO][:8], sums[STAGE_SO_X86][:8])))
+                                                                 sums[so_key][:8], sums[so_x86_key][:8])))
     if dexkey in files:
         check_dexjar(files[dexkey], res, jb)
     else:
         for c in ("dex-jar", "dex-classes", "dex-jni-name", "dex-properties"):
             res[c] = (False, "no dex jar")
-    for key, machine, prefix, syms in ((STAGE_SO, EM_ARM, "", bionic), (STAGE_SO_X86, EM_386, "x86-", bionic_x86)):
+    for key, machine, prefix, syms, lib, abi in ((so_key, EM_ARM, "", bionic, compat, "arm"),
+                                                 (so_x86_key, EM_386, "x86-", bionic_x86, compat_x86, "x86")):
+        extra = set()
+        if lib is not None:
+            try:
+                extra = compat_exports(lib)
+            except (ValueError, IndexError, struct.error):
+                pass  # the compat check reports it
         if key in files:
-            check_so(files[key], res, machine, prefix)
-            check_symbols(files[key], syms, res, prefix, base)
+            check_so(files[key], res, machine, prefix, compat=lib is not None)
+            check_symbols(files[key], syms | extra, res, prefix, base, with_compat=lib is not None)
             for c in SO_CHECKS[1:]:
                 res.setdefault(prefix + c, (False, "not run: %s" % res[prefix + "so-elf"][1]))
         else:
             for c in SO_CHECKS:
                 res[prefix + c] = (False, "no %s" % key.split("/", 1)[1])
+        if base != "4.4":
+            try:
+                und = [n for n, b in Elf32(files[key]).undefined_dynsyms() if b == "GLOBAL"] if key in files else []
+            except (ValueError, IndexError, struct.error):
+                und = []
+            check_compat(lib, base, abi, syms, und, sums, res)
     check_notice(notice, sums, res)
     return res
 
 
+def stage_checks(res):
+    """CHECKS_STAGE, plus compat / x86-compat for a JB base."""
+    return CHECKS_STAGE + [c for c in COMPAT_CHECKS if c in res]
+
+
 def report_stage(res, out=sys.stdout):
-    for c in CHECKS_STAGE:
+    names = stage_checks(res)
+    for c in names:
         ok, msg = res[c]
         print("%-4s %-15s %s" % ("PASS" if ok else "FAIL", c, msg), file=out)
-    failed = [c for c in CHECKS_STAGE if not res[c][0]]
-    print("RESULT %s (%d of %d)" % ("PASS" if not failed else "FAIL", len(CHECKS_STAGE) - len(failed),
-                                    len(CHECKS_STAGE)), file=out)
+    failed = [c for c in names if not res[c][0]]
+    print("RESULT %s (%d of %d)" % ("PASS" if not failed else "FAIL", len(names) - len(failed), len(names)), file=out)
     return 1 if failed else 0
 
 
@@ -723,14 +841,18 @@ def selftest_stage(stage, sums, notice, bionic, bionic_x86, alpha3=None, jb=None
         notice_data = f.read()
 
     def case(name, expect, dexjar=None, so=None, notice_bytes=None, pin=True, missing=(), so_x86=None, base="4.4",
-             jbdex=False):
+             jbdex=False, compat=None, compat_x86=None, unpinned=()):
         d = os.path.join(tmp, "case")
         shutil.rmtree(d, ignore_errors=True)
         os.makedirs(d)
         cur = {STAGE_DEXJAR: files[STAGE_DEXJAR] if dexjar is None else dexjar,
                STAGE_SO: files[STAGE_SO] if so is None else so,
-               STAGE_SO_X86: files[STAGE_SO_X86] if so_x86 is None else so_x86}
+               STAGE_SO_X86: files[STAGE_SO_X86] if so_x86 is None else so_x86,
+               STAGE_SO_COMPAT: edited[0] if so is None else so, STAGE_SO_COMPAT_X86: edited[1] if so_x86 is None else so_x86}
         s = dict(sums)
+        for abi, lib in (("arm", compat), ("x86", compat_x86)):
+            if lib is not None and abi not in unpinned:
+                s[compat_pin(base, abi)] = sha256(lib)
         for k, v in cur.items():
             if k in missing:
                 continue
@@ -748,22 +870,22 @@ def selftest_stage(stage, sums, notice, bionic, bionic_x86, alpha3=None, jb=None
         if pin and notice_bytes is not None and notice_bytes[:1] != b"#":  # "#..." = keep the real pin
             s[NOTICE_NAME] = sha256(nb)
         syms = (bionic, bionic_x86) if base == "4.4" else jb[base]
-        res = check_stage(d, s, npath, syms[0], syms[1], base, jbdex)
-        failed = {c for c in CHECKS_STAGE if not res[c][0]}
+        res = check_stage(d, s, npath, syms[0], syms[1], base, jbdex, compat, compat_x86)
+        failed = {c for c in stage_checks(res) if not res[c][0]}
         ok = failed == set(expect)
         print("selftest %s %-44s failed=%s%s" % ("ok  " if ok else "FAIL", name, ",".join(sorted(failed)) or "-",
                                                  "" if ok else "  (want exactly %s)" % (",".join(sorted(expect)) or "-")))
         if not ok:
             failures.append(name)
 
-    def dex_edit(fn):
+    def dex_edit(fn, jar=None):
         def edit(n, d):
             if n != "classes.dex":
                 return d
             b = bytearray(fn(bytearray(d)))
             struct.pack_into("<I", b, 8, dex_checksum(bytes(b)))
             return bytes(b)
-        return rewrite_zip(files[STAGE_DEXJAR], edit)
+        return rewrite_zip(files[STAGE_DEXJAR] if jar is None else jar, edit)
 
     def rename_string(old, new):
         def fn(b):
@@ -771,6 +893,14 @@ def selftest_stage(stage, sums, notice, bionic, bionic_x86, alpha3=None, jb=None
             b[i:i + len(old) + 2] = bytes([len(new)]) + new + b"\0" + b"\0" * (len(old) - len(new))
             return b
         return fn
+
+    import jb_needed  # noqa: E402  (same directory, on sys.path)
+    edited = (jb_needed.edit(files[STAGE_SO])[0], jb_needed.edit(files[STAGE_SO_X86])[0])
+
+    def fake_compat(abi, names, needed=(b"liblog.so", b"libc.so")):
+        """A synthetic libkktls_compat.so exporting names (defined GLOBAL functions, no imports)."""
+        return jb_needed._so(machine=EM_386 if abi == "x86" else EM_ARM, needed=needed, soname=COMPAT_NAME.encode(),
+                             syms=tuple(n.encode() for n in sorted(names)))
 
     so_undef = [n for n, bind in Elf32(files[STAGE_SO]).undefined_dynsyms() if bind == "GLOBAL"]
     victim = next(n for n in sorted(so_undef) if len(n) > 4 and so_undef.count(n) == 1 and
@@ -786,8 +916,36 @@ def selftest_stage(stage, sums, notice, bionic, bionic_x86, alpha3=None, jb=None
     try:
         case("pristine stage", (), pin=False)
         for b in sorted(jb or {}, reverse=True):
-            case("pristine stage, %s bionic" % b, (("so-symbols",) if JB_MISSING[(b, "arm")] else ()) +
-                 (("x86-so-symbols",) if JB_MISSING[(b, "x86")] else ()), pin=False, base=b)
+            case("pristine stage, %s bionic" % b, (("so-symbols", "compat") if JB_MISSING[(b, "arm")] else ()) +
+                 (("x86-so-symbols", "x86-compat") if JB_MISSING[(b, "x86")] else ()), pin=False, base=b)
+            libs = {abi: fake_compat(abi, JB_MISSING[(b, abi)]) if needs_compat(b, abi) else None for abi in ("arm", "x86")}
+            if not any(libs.values()):
+                case("%s: an edited .so and a compat lib given" % b, ("compat",), base=b,
+                     so=edited[0], compat=fake_compat("arm", ["getauxval"]))
+                continue
+            case("%s: jb-compat .so + compat libs (%s)" % (b, ",".join(a for a in libs if libs[a])), (), base=b,
+                 compat=libs["arm"], compat_x86=libs["x86"])
+            abi = "arm" if libs["arm"] else "x86"
+            p = "" if abi == "arm" else "x86-"
+            kw = {"compat": libs["arm"], "compat_x86": libs["x86"], "base": b}
+            one = sorted(JB_MISSING[(b, abi)])[0]
+
+            def with_lib(lib, abi=abi, kw=kw):
+                k = dict(kw)
+                k["compat" if abi == "arm" else "compat_x86"] = lib
+                return k
+            case("%s %s compat also exports memcpy (a libc function)" % (b, abi), (p + "compat",),
+                 **with_lib(fake_compat(abi, JB_MISSING[(b, abi)] | {"memcpy"})))
+            case("%s %s compat lacks %s" % (b, abi, one), (p + "compat", p + "so-symbols"),
+                 **with_lib(fake_compat(abi, JB_MISSING[(b, abi)] - {one})))
+            case("%s %s compat NEEDED libssl" % (b, abi), (p + "compat",),
+                 **with_lib(fake_compat(abi, JB_MISSING[(b, abi)], needed=(b"libssl.so", b"libc.so"))))
+            case("%s %s compat not the pinned bytes" % (b, abi), (p + "compat",), unpinned=(abi,), **kw)
+            case("%s %s compat of the other ABI" % (b, abi), (p + "compat",),
+                 **with_lib(fake_compat("x86" if abi == "arm" else "arm", JB_MISSING[(b, abi)])))
+            k = dict(kw)
+            k["so" if abi == "arm" else "so_x86"] = files[STAGE_SO if abi == "arm" else STAGE_SO_X86]
+            case("%s %s pristine .so with the compat lib" % (b, abi), (p + "so-elf", p + "so-needed"), **k)
             for abi, data, exports in (("arm", files[STAGE_SO], jb[b][0]), ("x86", files[STAGE_SO_X86], jb[b][1])):
                 got = {n for n, bind in Elf32(data).undefined_dynsyms() if bind == "GLOBAL"} - exports
                 ok = got == JB_MISSING[(b, abi)]
@@ -871,9 +1029,14 @@ def selftest_stage(stage, sums, notice, bionic, bionic_x86, alpha3=None, jb=None
                 failures.append("JB dex jar")
             else:
                 case("JB stage (real pins), 4.3 bionic", (), dexjar=jd, pin=False, base="4.3", jbdex=True)
+                case("JB stage, 4.3: the edited .so in the aar .so's place", ("so-elf", "so-needed"), dexjar=jd,
+                     base="4.3", jbdex=True, so=edited[0])
                 case("4.4 dex jar checked as the JB one", ("stage-sha256", "dex-classes"), pin=False, base="4.3",
                      jbdex=True)
                 case("JB dex jar checked as the 4.4 one", ("stage-sha256", "dex-classes"), dexjar=jd, pin=False)
+                case("JB dex jar with a dotted StandardCharsets string", ("dex-classes",), base="4.3", jbdex=True,
+                     dexjar=dex_edit(rename_string(b"Alg.Alias.CertificateFactory.X.509", JB_ABSENT_DOTTED.encode()),
+                                     jd))
         else:
             print("selftest skip JB dex jar cases (no --jb-dexjar FILE)")
     finally:
@@ -900,8 +1063,17 @@ def main():
     ap.add_argument("--jb", action="store_true",
                     help="--stage: the Jelly Bean stage of mkstage.py --jb (its dex jar pin %s)" % STAGE_DEXJAR_JB)
     ap.add_argument("--jb-dexjar", metavar="FILE", help="--selftest --stage: the real JB dex jar (mkstage.py --jb)")
+    ap.add_argument("--compat", metavar="FILE", help="--stage, JB base: the ARM libkktls_compat.so of that base's tree")
+    ap.add_argument("--compat-x86", metavar="FILE", help="--stage, JB base: the x86 libkktls_compat.so")
+    ap.add_argument("--jb-missing", metavar="BASE", choices=sorted(b for b in BASES if b != "4.4"),
+                    help="print '<abi> <symbols>' for each ABI of BASE that needs libkktls_compat.so, and exit")
     ap.add_argument("--bionic-exports", metavar="LIBDIR", help="print the bionic export list of LIBDIR and exit")
     a = ap.parse_args()
+    if a.jb_missing:
+        for abi in ("arm", "x86"):
+            if needs_compat(a.jb_missing, abi):
+                print("%s %s" % (ABI_NAMES[abi], " ".join(sorted(JB_MISSING[(a.jb_missing, abi)]))))
+        return 0
     if a.bionic_exports:
         sys.stdout.write(bionic_exports(a.bionic_exports, a.label))
         return 0
@@ -917,7 +1089,16 @@ def main():
                        for k in (STAGE_DEXJAR, STAGE_SO, STAGE_SO_X86)):
                 sys.exit("selftest needs the real stage in %s" % a.stage)
             return selftest_stage(a.stage, sums, a.notice, bionic, bionic_x86, a.alpha3, jb, a.jb_dexjar)
-        return report_stage(check_stage(a.stage, sums, a.notice, bionic, bionic_x86, a.base, a.jb))
+        libs = []
+        for f in (a.compat, a.compat_x86):
+            if f is None:
+                libs.append(None)
+                continue
+            if a.base == "4.4":
+                sys.exit("--compat/--compat-x86 go with a Jelly Bean --base")
+            with open(f, "rb") as fh:
+                libs.append(fh.read())
+        return report_stage(check_stage(a.stage, sums, a.notice, bionic, bionic_x86, a.base, a.jb, libs[0], libs[1]))
     if not a.aar:
         ap.error("AAR or --stage DIR is required")
     sums = read_sums(a.sums)

@@ -13,8 +13,16 @@
 #   conscrypt BASE            layer D for BASE (needs java lines and a libcore series: the hook): the `stage` step makes
 #                             the JB Conscrypt stage (conscrypt/mkstage.py --jb), the release files are
 #                             framework/kktls-conscrypt.jar (the pinned JB dex jar), framework/kktls-sslfilter.jar (built
-#                             in this tree) and lib/libkktls_conscrypt_jni.so (the pinned aar .so of the ABI); one
+#                             in this tree) and lib/libkktls_conscrypt_jni.so (the pinned aar .so of the ABI; with a
+#                             compat line, on each ABI that needs the compat library: the pinned jb_needed.py copy, and
+#                             lib/libkktls_compat.so built in this tree as a fourth file); one
 #                             kktls-conscrypt-BASE-<abi> zip per ABI, installed on the releases of the gate line
+#   compat BASE               the Conscrypt .so of layer D misses bionic symbols on BASE (check_prebuilt.py JB_MISSING,
+#                             --jb-missing: 4.2 ARM getauxval, 4.1 also six fortify functions on both ABIs): the build
+#                             step makes libkktls_compat.so (conscrypt/compat/, built in this tree) and its device test
+#                             kktls-compat-probe for those ABIs, the stage step (as for a conscrypt base) also stages
+#                             the jb_needed.py copies of the .so (DT_NEEDED libkktls_compat.so) and checks both; a
+#                             conscrypt BASE with missing symbols needs this line
 # Modules: libcrypto libssl (the release files lib/libcrypto.so lib/libssl.so) and the openssl command-line tool
 # (a test client only, not a release file), plus the base's java modules. Variant -user, as the 4.4 release build;
 # make runs with WITH_DEXPREOPT=false (the jars keep classes.dex).
@@ -33,6 +41,8 @@ target  4.2  full_x86-user  x86
 java    4.2  core         framework/core.jar
 java    4.2  libjavacore  lib/libjavacore.so
 gate    4.2  4.2 4.2.1 4.2.2
+conscrypt 4.2
+compat  4.2
 
 base    4.1  android-4.1.2_r2
 target  4.1  full-user      armeabi-v7a
@@ -40,6 +50,7 @@ target  4.1  full_x86-user  x86
 java    4.1  core         framework/core.jar
 java    4.1  libjavacore  lib/libjavacore.so
 gate    4.1  4.1.2
+compat  4.1
 
 project 4.3  build
 project 4.3  bionic

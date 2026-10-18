@@ -19,8 +19,10 @@
 KK_CTX=u:object_r:system_file:s0
 # the java zip replaces these boot jars; their .odex files are removed (and backed up) instead of being dex-checked
 KK_JAVA_JARS="core core-libart conscrypt okhttp"
-# layer D files (the conscrypt zip); restore removes them together with the markers
-KK_D_FILES="system/framework/kktls-conscrypt.jar system/framework/kktls-sslfilter.jar system/lib/libkktls_conscrypt_jni.so"
+# layer D files (the conscrypt zip; libkktls_compat.so only in the Jelly Bean zips whose base and ABI need it); restore
+# removes them together with the markers
+KK_D_FILES="system/framework/kktls-conscrypt.jar system/framework/kktls-sslfilter.jar system/lib/libkktls_conscrypt_jni.so
+  system/lib/libkktls_compat.so"
 KK_MARKER_DIR=system/etc/kktls
 # Build properties that only CyanogenMod-family and OEM firmwares set (prefix match on the key). Such firmwares ship
 # their own libcore/framework/OpenSSL changes (cm-11 has two ssl.h), which an AOSP binary cannot be checked against.

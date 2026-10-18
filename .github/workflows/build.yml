@@ -76,6 +76,7 @@ jobs:
           python3 -I conscrypt/apicheck.py --selftest
           python3 -I conscrypt/rename_jni.py --selftest
           python3 -I conscrypt/jb_charsets.py --selftest
+          python3 -I conscrypt/jb_needed.py --selftest
           python3 -I conscrypt/dexparse.py --selftest
           tools/fetch-openssl.sh --selftest
           tools/openssl-cve-test.sh --classify-test
@@ -84,6 +85,8 @@ jobs:
           tools/kktls-jb-openssl-build.sh --dry-run
       - name: sslfactory host tests
         run: conscrypt/sslfactory/test/run-host-tests.sh
+      - name: compat library host tests (getauxval, fortify)
+        run: conscrypt/compat/test/run-host-tests.sh
       - name: symbol helper tests
         run: symcheck/test.sh
       - name: util helper tests (setcon, has-entry, sha256)
