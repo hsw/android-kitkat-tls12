@@ -81,7 +81,8 @@ does not, as stock 4.2. The CVE reproducers run on each Jelly Bean recipe too (`
 The 4.3, 4.2 and 4.1 java zips give the Java layer of 4.3, 4.2 and 4.1.2 the defaults of 4.4 layer A (the same
 lists, so condition 5 applies to them too). On 4.1.1, which the 4.1 java zip refuses, Java apps keep the stock
 defaults: SSLv3 and RC4 enabled, and an `HttpsURLConnection` retry over SSLv3 without SNI after a failed handshake;
-there only the CA store and the native libraries change.
+there only the CA store and the native libraries change. The 4.3, 4.2 and 4.1 conscrypt zips add layer D on 4.3.x,
+4.2.x and 4.1.2 as on 4.4 (condition 8).
 
 ## Conditions
 
@@ -115,12 +116,15 @@ affected rows again.
 8. **Layer D is separate.** The standalone Conscrypt 2.6-alpha2 (`kktls-conscrypt.jar`, `libkktls_conscrypt_jni.so`,
    BoringSSL inside) is not part of the OpenSSL patches. It is installed only by its own zip and can be turned off with
    `persist.kktls.conscrypt=0`. Its security status is that of upstream Conscrypt 2.6-alpha2 and the BoringSSL commit
-   it was built from, not this table. 2.6-alpha2 is a pre-release; check upstream for its status.
+   it was built from, not this table. 2.6-alpha2 is a pre-release; check upstream for its status. On 4.2 ARM and
+   4.1.2 the layer D zip also carries `libkktls_compat.so`, this project's own code (`conscrypt/compat/`): the bionic
+   functions that the Conscrypt library needs and those versions lack (`getauxval`, and on 4.1 six fortify checks that
+   abort on overflow as bionic 4.2 does). Report problems in it here, as below.
 
 ## Reporting a vulnerability
 
-Report security problems in this project's patches, installer or build scripts privately through GitHub: the
-repository's **Security** tab, **Report a vulnerability**. Please do not open a public issue for them. This is a
+Report security problems in this project's patches, own code, installer or build scripts privately through GitHub:
+the repository's **Security** tab, **Report a vulnerability**. Please do not open a public issue for them. This is a
 spare-time project, so a reply may take a while.
 
 - A new OpenSSL advisory that may affect 1.0.1u: a public issue is fine once the advisory is public.
