@@ -12,9 +12,10 @@
  * setgroups, setgid, setuid, no PR_SET_DUMPABLE): supplementary group inet (3003), gid and uid UID. setuid() from root
  * leaves the process not dumpable (fs.suid_dumpable 0), so /proc/self/auxv belongs to root and open() fails with
  * EACCES, as in every app of a user build and in system_server. The probe prints the dumpable flag and the errno.
- * With --exec it then runs PROGRAM in that condition: exec() makes a process dumpable again when its real and effective
- * ids are equal, so the real gid becomes inet (3003) and only the effective gid is UID; the kernel then applies
- * fs.suid_dumpable at exec() and the program (e.g. app_process with a TLS probe) stays not dumpable. Test only.
+ * With --exec it then runs PROGRAM in that condition. exec() makes a process dumpable again, except when the program
+ * file is not readable for the caller (the kernel's would_dump(): fs.suid_dumpable applies), so PROGRAM must be an
+ * execute-only copy (mode 0711, owner root), e.g. of app_process with a TLS probe; unlike a set-id exec this leaves
+ * AT_SECURE clear, so the environment (LD_LIBRARY_PATH, which 4.2's System needs) is kept. Test only.
  *
  * Without --exec it dlopen()s the library and dlsym()s every function the library may export, prints which ones it has,
  * and for
@@ -128,12 +129,12 @@ static void read_line(const char *path, char *out, size_t size) {
     }
 }
 
-/* the zygote's order for an app without DEBUG_ENABLE_DEBUGGER; for --exec the real gid is inet (see the header) */
-static int drop(unsigned uid, int for_exec) {
+/* the zygote's order for an app without DEBUG_ENABLE_DEBUGGER */
+static int drop(unsigned uid) {
     gid_t groups[1] = {AID_INET};
     char sd[16];
     int fd, err;
-    if (setgroups(1, groups) != 0 || (for_exec ? setresgid(AID_INET, uid, uid) : setgid(uid)) != 0 || setuid(uid) != 0) {
+    if (setgroups(1, groups) != 0 || setgid(uid) != 0 || setuid(uid) != 0) {
         printf("probe drop to uid %u: %s (run as root)\n", uid, strerror(errno));
         return -1;
     }
@@ -167,7 +168,7 @@ int main(int argc, char **argv) {
         a += 2;
     }
     if (a + 1 < argc && strcmp(argv[a], "--exec") == 0) {
-        if (uid <= 0 || drop((unsigned) uid, 1) != 0 || failed) {
+        if (uid <= 0 || drop((unsigned) uid) != 0 || failed) {
             printf("PROBE FAIL\n");
             return 1;
         }
@@ -179,7 +180,7 @@ int main(int argc, char **argv) {
     if (a < argc) {
         path = argv[a];
     }
-    if (uid >= 0 && drop((unsigned) uid, 0) != 0) {
+    if (uid >= 0 && drop((unsigned) uid) != 0) {
         printf("PROBE FAIL\n");
         return 1;
     }
@@ -228,7 +229,7 @@ int main(int argc, char **argv) {
         child_abort("__vsnprintf_chk", (void *) vsn_p, 5);
     }
     if (op) {
-        int fd = ((open_fn) op)("/proc/self/auxv", O_RDONLY);
+        int fd = ((open_fn) op)("/proc/cpuinfo", O_RDONLY);  /* world-readable: also with --uid */
         verdict(fd >= 0, "__open_2 O_RDONLY opens");
         if (fd >= 0) {
             close(fd);
