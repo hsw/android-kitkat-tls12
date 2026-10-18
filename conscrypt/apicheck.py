@@ -3,7 +3,7 @@
 """apicheck.py: which platform classes and members does a Conscrypt classes.jar reference that the 4.4 runtime lacks?
 
     python3 -I apicheck.py JAR --lib CORE.jar [--lib FRAMEWORK.jar ...] [--dex DEX.jar] [--allow apicheck-allow.txt]
-                           [--baseline OLD_CLASSES.jar] [--quiet]
+                           [--baseline OLD_CLASSES.jar] [--api LEVEL] [--quiet]
     python3 -I apicheck.py --selftest
 
 JAR is the jar before d8 (the aar's classes.jar, or rename_jni.py's output). Every class, field and method reference of
@@ -32,10 +32,17 @@ REF is a class (javax/net/ssl/ExtendedSSLSession), a method (java/lang/Long.hash
 The --lib set for Conscrypt on Android 4.4: out/target/common/obj/JAVA_LIBRARIES/{core,framework,conscrypt}_intermediates/
 classes.jar of a built 4.4 tree (core = java.*, javax.*, dalvik.*; framework = android.*; conscrypt = the platform
 com.android.org.conscrypt the KitKat adapter extends). Stdlib only; the jars are read as data.
+
+--api LEVEL names the API level the --lib set is from and checks the dex against it: every D8 marker of the --dex jar
+("~~D8{...,"min-api":N,...}") must have N <= LEVEL, else a dex built for a newer API (whose backports d8 left out, e.g.
+java.util.Objects below 19) is checked against an older runtime; the mismatch is a WARN. For Jelly Bean (API 16, 17,
+18) the --lib set is {core,framework}_intermediates/classes.jar of a built tree of that base (there is no platform
+com.android.org.conscrypt before 4.4).
 Exit status: 0 = no WARN, 1 = at least one WARN, 2 = usage or unreadable input.
 """
 import argparse
 import io
+import json
 import os
 import struct
 import sys
@@ -404,7 +411,22 @@ def report(rows, stale, out=sys.stdout, quiet=False):
     return 1 if counts["WARN"] else 0
 
 
-def run(jar, libs, dex=None, allow=None, baseline=None, out=sys.stdout, quiet=False):
+def dex_min_apis(path):
+    """The min-api of every D8 marker string in the dex files of the jar (empty: no marker)."""
+    apis = []
+    with zipfile.ZipFile(path) as z:
+        for n in z.namelist():
+            if n.startswith("classes") and n.endswith(".dex"):
+                for st in dex_strings(z.read(n)):
+                    if st.startswith("~~D8{"):
+                        try:
+                            apis.append(int(json.loads(st[4:])["min-api"]))
+                        except (ValueError, KeyError, TypeError):
+                            apis.append(None)
+    return apis
+
+
+def run(jar, libs, dex=None, allow=None, baseline=None, out=sys.stdout, quiet=False, api=None):
     jar_classes = read_jar_classes(jar, True)
     lib_classes = {}
     for p in libs:
@@ -423,6 +445,17 @@ def run(jar, libs, dex=None, allow=None, baseline=None, out=sys.stdout, quiet=Fa
     print("jar: %d classes, highest major %d; pool MethodHandle/MethodType/Dynamic/InvokeDynamic entries: %d/%d/%d/%d"
           % (len(jar_classes), max(c.major for c in jar_classes.values()), hi[15], hi[16], hi[17], hi[18]), file=out)
     print("lib: %d classes from %s" % (len(lib_classes), ", ".join(libs)), file=out)
+    if api is not None and dex:
+        apis = dex_min_apis(dex)
+        bad = [a for a in apis if a is None or a > api]
+        if bad:
+            rows.insert(0, ("dex min-api %s" % ",".join("?" if a is None else str(a) for a in bad), "D8 marker",
+                            [dex], "WARN", "the dex was built for a newer API than %d (re-dex with --min-api %d)"
+                            % (api, api)))
+        print("api: %d; dex min-api %s" % (api, ",".join("?" if a is None else str(a) for a in apis) or
+                                           "unknown (no D8 marker)"), file=out)
+    elif api is not None:
+        print("api: %d" % api, file=out)
     return report(rows, stale, out, quiet)
 
 
@@ -483,9 +516,10 @@ def make_class(name, super_name="java/lang/Object", interfaces=(), fields=(), me
         b"".join(p.items) + body
 
 
-def make_dex(classes, methods):
-    """A dex file with just the id tables: classes = type names, methods = [(owner, name, '(params)ret')]."""
-    strings = set()
+def make_dex(classes, methods, extra_strings=()):
+    """A dex file with just the id tables: classes = type names, methods = [(owner, name, '(params)ret')];
+    extra_strings = more string_ids (a D8 marker)."""
+    strings = set(extra_strings)
     types = set("L%s;" % c for c in classes)
     protos = set()
     for o, n, desc in methods:
@@ -602,6 +636,12 @@ def selftest():
     dex_without = jar("d8.jar", [("classes.dex", make_dex(["org/conscrypt/C"],
                                                           [("org/conscrypt/C", "hash", "()I"),
                                                            ("java/lang/Long", "valueOf", "(J)Ljava/lang/Long;")]))])
+    def d8_jar(name, min_api):
+        marker = '~~D8{"backend":"dex","compilation-mode":"release","min-api":%d,"version":"9.2.4-dev"}' % min_api
+        return jar(name, [("classes.dex", make_dex(["org/conscrypt/C"], [("org/conscrypt/C", "hash", "()I")],
+                                                   [marker]))])
+
+    dex16, dex19 = d8_jar("d8-16.jar", 16), d8_jar("d8-19.jar", 19)
     dex_with = jar("d8-kept.jar", [("classes.dex", make_dex(["org/conscrypt/C"],
                                                             [("java/lang/Long", "hashCode", "(J)I")]))])
 
@@ -642,6 +682,14 @@ def selftest():
              ["hashCode(J)I  [missing member] unguarded or unreviewed (also in baseline)",
               "ExtendedSSLSession  [missing class] unguarded or unreviewed (new)"],
              baseline=jar("base.jar", [("org/conscrypt/C.class", cls_c)]))
+        case("--api 16, dex min-api 16", [("org/conscrypt/B.class", cls_b)], 0, ["api: 16; dex min-api 16"],
+             dex=dex16, api=16)
+        case("--api 18, dex min-api 16", [("org/conscrypt/B.class", cls_b)], 0, ["api: 18; dex min-api 16"],
+             dex=dex16, api=18)
+        case("--api 16, dex min-api 19 is WARN", [("org/conscrypt/B.class", cls_b)], 1,
+             ["WARN dex min-api 19", "re-dex with --min-api 16"], dex=dex19, api=16)
+        case("--api 19, dex without a D8 marker", [("org/conscrypt/C.class", cls_c)], 0,
+             ["api: 19; dex min-api unknown"], dex=dex_without, api=19)
         case("class at major 52 parses", [("org/conscrypt/C.class", make_class("org/conscrypt/C", methods=[
             missing_long], major=52))], 1, ["highest major 52"])
     finally:
@@ -660,6 +708,7 @@ def main():
     ap.add_argument("--allow")
     ap.add_argument("--baseline")
     ap.add_argument("--quiet", action="store_true", help="print only the WARN rows and the summary")
+    ap.add_argument("--api", type=int, help="API level of the --lib set; the --dex D8 min-api must not exceed it")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
     if a.selftest:
@@ -671,7 +720,7 @@ def main():
         if not os.path.isfile(p):
             print("apicheck: %s is missing" % p, file=sys.stderr)
             return 2
-    return run(a.jar, a.lib, a.dex, a.allow, a.baseline, quiet=a.quiet)
+    return run(a.jar, a.lib, a.dex, a.allow, a.baseline, quiet=a.quiet, api=a.api)
 
 
 if __name__ == "__main__":

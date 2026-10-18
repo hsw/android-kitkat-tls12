@@ -49,6 +49,10 @@ python3 -I conscrypt/check_prebuilt.py --stage STAGE/2.6-alpha2
 - `python3 -I conscrypt/apicheck.py --selftest`: the Java API the dex references, against what Android 4.4 provides
   (`apicheck-allow.txt` lists the reviewed exceptions).
 - `python3 -I conscrypt/rename_jni.py --selftest`, `python3 -I conscrypt/check_prebuilt.py --selftest AAR`.
+- Jelly Bean scoping: `check_prebuilt.py --stage DIR --base 4.3|4.2|4.1` checks the `.so` imports against the bionic of
+  our own AOSP 4.3/4.2.2/4.1.2 builds (`bionic4[123]-exports{,-x86}.txt`); `--selftest --stage` asserts what each base
+  lacks (4.2 ARM `getauxval`, 4.1 the fortify functions and, on ARM, `getauxval`). `apicheck.py --api 16|17|18` with
+  that base's `core` and `framework` jars checks a `d8 --min-api 16` dex.
 - `conscrypt/sslfactory/test/run-host-tests.sh`: the default factory and the SSLv3 filter on a host JVM with stubs
   (files present, absent, broken; the kill switch).
 
