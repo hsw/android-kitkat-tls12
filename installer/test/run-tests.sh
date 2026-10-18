@@ -138,7 +138,7 @@ mkin() {
     (cd "$IN/$t/helpers" && find . -type f ! -name SHA256SUMS | sed 's#^\./##' | sort | xargs sha256sum > SHA256SUMS)
     mkdir -p "$IN/$t/notice"
     for n in openssl.NOTICE libcore.NOTICE okhttp.LICENSE bionic-libc.NOTICE; do echo "fake $n of $t" > "$IN/$t/notice/$n"; done
-    (cd "$IN/$t/notice" && sha256sum ./* | sed 's# \./# #' > SHA256SUMS)
+    (cd "$IN/$t/notice" && sha256sum ./*.NOTICE ./*.LICENSE | sed 's# \./# #' > SHA256SUMS)
   done
   local b
   for b in 4.3 4.2 4.1; do
