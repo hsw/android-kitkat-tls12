@@ -72,6 +72,7 @@ jobs:
           python3 -I tools/clienthello_probe.py --selftest
           python3 -I tools/check_artifacts.py --selftest
           python3 -I tools/zipnorm.py --selftest
+          python3 -I tools/check_44_payload.py --selftest
           python3 -I conscrypt/apicheck.py --selftest
           python3 -I conscrypt/rename_jni.py --selftest
           python3 -I conscrypt/jb_charsets.py --selftest
@@ -363,6 +364,8 @@ jobs:
           tools/mkzips.sh --in "$in" --jb "$RUNNER_TEMP/jb" --release "$RELEASE" --cacerts cacerts/files \
             --conscrypt-notice conscrypt/NOTICE --out "$RUNNER_TEMP/zips"
           (cd "$RUNNER_TEMP/zips" && sha256sum -c --quiet SHA256SUMS && cat SHA256SUMS)
+      - name: 4.4 zips install the v4 files (only core.jar and core-libart.jar may differ)
+        run: python3 -I tools/check_44_payload.py "$RUNNER_TEMP/zips"
       - name: installer tests on the release output
         run: |
           installer/test/run-tests.sh --real "$RUNNER_TEMP/in" cacerts/files conscrypt/NOTICE \
