@@ -349,7 +349,9 @@ def dexjar_ids(path):
 
 # ------------------------------------------------------------------------------------------------------- allow list
 
-def read_allow(path):
+def read_allow(path, key=None):
+    """The lines of one allow file: (REF, SITE PREFIXES, REASON, KEY); KEY names the line in notes (default: its line
+    number; key(ln) for the second and later --allow files)."""
     out = []
     with open(path, encoding="utf-8") as f:
         for ln, line in enumerate(f, 1):
@@ -359,7 +361,17 @@ def read_allow(path):
             parts = [p.strip() for p in line.split(" | ")]
             if len(parts) != 3 or not all(parts):
                 raise SystemExit("%s:%d: want 'REF | SITES | REASON'" % (path, ln))
-            out.append((parts[0], [p.strip() for p in parts[1].split(",")], parts[2], ln))
+            out.append((parts[0], [p.strip() for p in parts[1].split(",")], parts[2], key(ln) if key else ln))
+    return out
+
+
+def read_allows(paths):
+    """Every line of the allow files in order (a str is one file); lines of a later file are keyed FILE:LINE."""
+    if isinstance(paths, str):
+        paths = [paths]
+    out = []
+    for i, path in enumerate(paths or []):
+        out += read_allow(path, None if i == 0 else (lambda ln, b=os.path.basename(path): "%s:%d" % (b, ln)))
     return out
 
 
@@ -404,7 +416,7 @@ def report(rows, stale, out=sys.stdout, quiet=False):
         for s in sites:
             print("           at %s" % s, file=out)
     for ref, _, _, ln in stale:
-        print("note     allow line %d (%s) matches no unresolved reference" % (ln, ref), file=out)
+        print("note     allow line %s (%s) matches no unresolved reference" % (ln, ref), file=out)
     print("APICHECK %s: %d unresolved references: %d WARN, %d allowed, %d removed by d8" %
           ("PASS" if not counts["WARN"] else "FAIL", len(rows), counts["WARN"], counts["allowed"], counts["d8"]),
           file=out)
@@ -437,7 +449,7 @@ def run(jar, libs, dex=None, allow=None, baseline=None, out=sys.stdout, quiet=Fa
     if baseline:
         base = set(unresolved(read_jar_classes(baseline, True), lib))
     dex_set = dexjar_ids(dex) if dex else None
-    rows, stale = classify(missing, dex_set, read_allow(allow) if allow else [], base)
+    rows, stale = classify(missing, dex_set, read_allows(allow) if allow else [], base)
     hi = {}
     for cf in jar_classes.values():
         for t in (15, 16, 17, 18):
@@ -633,6 +645,12 @@ def selftest():
     allow_part = os.path.join(td, "allow-part.txt")
     with open(allow_part, "w") as f:
         f.write("javax/net/ssl/X509ExtendedTrustManager | org/conscrypt/Platform.wrap | SDK_INT >= 24\n")
+    allow_d = os.path.join(td, "allow-jb.txt")
+    with open(allow_d, "w") as f:
+        f.write("# second list\njavax/net/ssl/ExtendedSSLSession | org/conscrypt/D | never loaded on 16\n")
+    allow_x = os.path.join(td, "allow-x.txt")
+    with open(allow_x, "w") as f:
+        f.write("javax/net/ssl/X509ExtendedTrustManager | org/conscrypt/Platform | SDK_INT >= 24\n")
     dex_without = jar("d8.jar", [("classes.dex", make_dex(["org/conscrypt/C"],
                                                           [("org/conscrypt/C", "hash", "()I"),
                                                            ("java/lang/Long", "valueOf", "(J)Ljava/lang/Long;")]))])
@@ -678,6 +696,11 @@ def selftest():
         case("allow list missing a site is WARN", [("org/conscrypt/Platform.class", cls_e)], 1,
              ["not covered", "at org/conscrypt/Platform.other()V"], ["at org/conscrypt/Platform.wrap()V"],
              allow=allow_part)
+        case("second allow list adds its lines", [("org/conscrypt/D.class", cls_d),
+                                                  ("org/conscrypt/Platform.class", cls_e)], 0, ["2 allowed"],
+             allow=[allow_x, allow_d])
+        case("second allow list: a stale line is FILE:LINE", [("org/conscrypt/Platform.class", cls_e)], 0,
+             ["note     allow line allow-jb.txt:2 (javax/net/ssl/ExtendedSSLSession)"], allow=[allow_x, allow_d])
         case("baseline marks old and new", [("org/conscrypt/C.class", cls_c), ("org/conscrypt/D.class", cls_d)], 1,
              ["hashCode(J)I  [missing member] unguarded or unreviewed (also in baseline)",
               "ExtendedSSLSession  [missing class] unguarded or unreviewed (new)"],
@@ -705,7 +728,8 @@ def main():
     ap.add_argument("jar", nargs="?")
     ap.add_argument("--lib", action="append", default=[])
     ap.add_argument("--dex")
-    ap.add_argument("--allow")
+    ap.add_argument("--allow", action="append", default=[],
+                    help="allow list (repeatable: the Jelly Bean list goes after the 4.4 one)")
     ap.add_argument("--baseline")
     ap.add_argument("--quiet", action="store_true", help="print only the WARN rows and the summary")
     ap.add_argument("--api", type=int, help="API level of the --lib set; the --dex D8 min-api must not exceed it")
@@ -716,11 +740,11 @@ def main():
     if not a.jar or not a.lib:
         ap.print_usage(sys.stderr)
         return 2
-    for p in [a.jar] + a.lib + [x for x in (a.dex, a.allow, a.baseline) if x]:
+    for p in [a.jar] + a.lib + a.allow + [x for x in (a.dex, a.baseline) if x]:
         if not os.path.isfile(p):
             print("apicheck: %s is missing" % p, file=sys.stderr)
             return 2
-    return run(a.jar, a.lib, a.dex, a.allow, a.baseline, quiet=a.quiet, api=a.api)
+    return run(a.jar, a.lib, a.dex, a.allow or None, a.baseline, quiet=a.quiet, api=a.api)
 
 
 if __name__ == "__main__":

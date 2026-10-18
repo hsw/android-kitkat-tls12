@@ -1,0 +1,10 @@
+# apicheck-allow-jb.txt: references of the Conscrypt 2.6-alpha2 classes.jar that the Android 4.1-4.3 runtime cannot
+# resolve on top of apicheck-allow.txt, and that are not reached there (apicheck.py --allow apicheck-allow.txt
+# --allow apicheck-allow-jb.txt --api 16|17|18 with the core and framework classes of that base). Same format.
+# Every line was reviewed against the source; a new Conscrypt pin re-runs apicheck and re-reviews this file.
+
+# KitKat adapter sockets extend 4.4's platform socket class, which Jelly Bean lacks. 2.6-alpha2's SSLContext returns
+# KitKatPlatformOpenSSLSocketAdapterFactory for SDK_INT < 22 (android Platform.java:639-644), but the hook
+# io.github.hsw.kktls.KktlsDefaultSSLSocketFactory (libcore) takes that adapter's inner OpenSSLSocketFactoryImpl
+# wherever com.android.org.conscrypt.OpenSSLSocketImpl does not exist, so no adapter socket is built on 4.1-4.3.
+com/android/org/conscrypt/OpenSSLSocketImpl | org/conscrypt/KitKatPlatformOpenSSLSocketImplAdapter | the hook takes the KitKat adapter's inner factory where this class does not exist (KktlsDefaultSSLSocketFactory.innerFactory)

@@ -12,20 +12,26 @@ Conscrypt is not shadowed), unless the system property persist.kktls.conscrypt i
 to load (logged once per process), it is the platform OpenSSLSocketFactoryImpl, the previous value: without the
 Conscrypt files nothing changes. Before its loader can open libkktls_conscrypt_jni.so, the factory checks the
 library's ELF header: every PT_LOAD segment must end within the file, else it is a load failure as above. The 4.4
-linker maps the segments without that check, so a truncated library would kill the process with SIGBUS. Only this
+linker maps the segments without that check, so a truncated library would kill the process with SIGBUS. On ARM the
+factory also needs NEON before that loader exists (AT_HWCAP of /proc/self/auxv, else the Features line of
+/proc/cpuinfo; neither readable counts as no NEON): the aar's armeabi-v7a library is built with NEON as its baseline,
+so on a CPU or kernel without NEON the load would kill the process with SIGILL. Without NEON it is a load failure as
+above. The same source is the hook of the Android 4.1-4.3 libcore series, where it falls back to
+org.apache.harmony.xnet.provider.jsse.OpenSSLSocketFactoryImpl and takes the inner factory of Conscrypt's KitKat
+adapter, whose sockets need 4.4's com.android.org.conscrypt.OpenSSLSocketImpl; on 4.4 both stay as before. Only this
 property changes: the security.provider order and ssl.ServerSocketFactory.provider stay as they are.
 ---
- .../kktls/KktlsDefaultSSLSocketFactory.java   | 494 ++++++++++++++++++
+ .../kktls/KktlsDefaultSSLSocketFactory.java   | 668 ++++++++++++++++++
  .../java/java/security/security.properties    |   7 +-
- 2 files changed, 500 insertions(+), 1 deletion(-)
+ 2 files changed, 674 insertions(+), 1 deletion(-)
  create mode 100644 luni/src/main/java/io/github/hsw/kktls/KktlsDefaultSSLSocketFactory.java
 
 diff --git a/luni/src/main/java/io/github/hsw/kktls/KktlsDefaultSSLSocketFactory.java b/luni/src/main/java/io/github/hsw/kktls/KktlsDefaultSSLSocketFactory.java
 new file mode 100644
-index 000000000..996c86bde
+index 000000000..d1da670cf
 --- /dev/null
 +++ b/luni/src/main/java/io/github/hsw/kktls/KktlsDefaultSSLSocketFactory.java
-@@ -0,0 +1,494 @@
+@@ -0,0 +1,668 @@
 +/*
 + * Copyright (C) 2026 The android-kitkat-tls12 authors
 + *
@@ -44,10 +50,14 @@ index 000000000..996c86bde
 +
 +package io.github.hsw.kktls;
 +
++import java.io.ByteArrayOutputStream;
 +import java.io.File;
++import java.io.FileInputStream;
 +import java.io.IOException;
++import java.io.InputStream;
 +import java.io.RandomAccessFile;
 +import java.lang.reflect.Constructor;
++import java.lang.reflect.Field;
 +import java.lang.reflect.InvocationTargetException;
 +import java.lang.reflect.Method;
 +import java.net.InetAddress;
@@ -62,9 +72,10 @@ index 000000000..996c86bde
 +import javax.net.ssl.SSLSocketFactory;
 +
 +/**
-+ * The default {@link SSLSocketFactory} of Android 4.4 with the android-kitkat-tls12 series: standalone Conscrypt
-+ * 2.6-alpha2 (BoringSSL, TLS 1.3; TLS 1.0/1.1 kept on, step 4) when layer D is installed and loads, else the platform
-+ * factory of layer A.
++ * The default {@link SSLSocketFactory} of Android 4.4 (and of Android 4.1-4.3, the Jelly Bean libcore series, with the
++ * differences listed after the steps) with the android-kitkat-tls12 series: standalone Conscrypt 2.6-alpha2
++ * (BoringSSL, TLS 1.3; TLS 1.0/1.1 kept on, step 4) when layer D is installed and loads, else the platform factory of
++ * layer A.
 + *
 + * <p>libcore's {@code security.properties} names this class as {@code ssl.SocketFactory.provider}, and
 + * {@code SSLSocketFactory.getDefault()} creates it with {@code Class.newInstance()} through the caller's class loader,
@@ -97,7 +108,10 @@ index 000000000..996c86bde
 + *     ({@link #checkLibrary}: a 32-bit little-endian ELF shared object for ARM or x86 whose every {@code PT_LOAD}
 + *     segment ends within the file; a failure is one as in step 5): the 4.4 linker maps the segments without that
 + *     check, so a truncated library (bad flash, interrupted copy) would kill the process with SIGBUS inside
-+ *     {@code System.loadLibrary}, where nothing can fall back. Then it creates its own
++ *     {@code System.loadLibrary}, where nothing can fall back. For an ARM library ({@code e_machine} 40) it then
++ *     checks that the CPU has NEON ({@link #checkNeon}, a failure as in step 5): the aar's armeabi-v7a library is
++ *     built with NEON as its baseline and dies with SIGILL at load on an ARMv7 CPU (or kernel) without it, before
++ *     any Java code could fall back. Then it creates its own
 + *     {@code dalvik.system.PathClassLoader(}{@value #CONSCRYPT_JAR}{@code :}{@value #FILTER_JAR}{@code , }{@value
 + *     #CONSCRYPT_LIBRARY_PATH}{@code , <this class's loader>)} (the boot class loader on the device, so the KitKat
 + *     adapter resolves {@code com.android.org.conscrypt.OpenSSLSocketImpl} from the boot class path, and Conscrypt's
@@ -117,15 +131,26 @@ index 000000000..996c86bde
 + *     ({@code init(null, null, null)}: key and trust managers come from the installed providers, so trust stays with
 + *     the platform TrustManagerImpl and the system CA store); the provider is not installed in {@code Security};</li>
 + * <li>installed, on <b>any</b> {@link Throwable} (a class missing from the jar, the {@code IOException} of the library
-+ *     check, {@code UnsatisfiedLinkError} from libkktls_conscrypt_jni.so, {@code ExceptionInInitializerError},
++ *     check, the {@code IOException} of the NEON check, {@code UnsatisfiedLinkError} from libkktls_conscrypt_jni.so, {@code ExceptionInInitializerError},
 + *     {@code NoSuchAlgorithmException}, {@code KeyManagementException}, ...) logs one warning per process
-+ *     (java.util.logging, tag {@value #LOG_TAG}) and uses {@code com.android.org.conscrypt.OpenSSLSocketFactoryImpl},
++ *     (java.util.logging, tag {@value #LOG_TAG}) and uses the platform factory {@value #PLATFORM_FACTORY_CLASS},
 + *     created exactly as the 4.4 {@code getDefault()} created it from the previous {@code ssl.SocketFactory.provider}
 + *     value: by name, public no-arg constructor. A failure to load Conscrypt is kept for the process (no retry, no second loader);</li>
 + * <li>if the platform factory fails too (any path), throws {@link IllegalStateException}, a RuntimeException, so
 + *     {@code getDefault()}'s own {@code catch (Exception)} falls back to {@code SSLContext.getDefault()}. No
 + *     {@code Error} ever leaves the constructor (getDefault() would not catch it).</li>
 + * </ol>
++ * On Android 4.1-4.3 (the same source in the Jelly Bean libcore series, {@code core.jar} only) two things differ, both
++ * decided by what the platform has, not by a version number:
++ * <ul>
++ * <li>the platform factory is {@value #PLATFORM_FACTORY_CLASS_JB} (the previous {@code ssl.SocketFactory.provider}
++ *     value there), used when {@value #PLATFORM_FACTORY_CLASS} does not exist;</li>
++ * <li>Conscrypt's {@code SSLContext} wraps its factory for {@code SDK_INT < 22} in {@value #KITKAT_ADAPTER_CLASS},
++ *     whose sockets extend 4.4's {@value #KITKAT_SOCKET_CLASS}. Where that class does not exist, every
++ *     {@code createSocket} of the adapter would throw {@code NoClassDefFoundError}, so the wrapper takes the adapter's
++ *     inner {@value #CONSCRYPT_FACTORY_CLASS} (the private field {@code delegate} of {@value #BASE_ADAPTER_CLASS},
++ *     read by reflection; any other shape is a failure as in step 5). On 4.4 the adapter is used as it is.</li>
++ * </ul>
 + * Every method of the 4.4 {@code SocketFactory}/{@code SSLSocketFactory} API is delegated, including the
 + * non-abstract {@code createSocket()}. Java 6 source with no compile-time dependency beyond {@code java.*} and
 + * {@code javax.*}: the same file is tested on a host JVM (the sslfactory host tests).
@@ -137,6 +162,15 @@ index 000000000..996c86bde
 +    static final String LOG_TAG = "KktlsSslFactory";
 +    static final String CONSCRYPT_CLASS = "org.conscrypt.Conscrypt";
 +    static final String PLATFORM_FACTORY_CLASS = "com.android.org.conscrypt.OpenSSLSocketFactoryImpl";
++    /** The platform factory of Android 4.1-4.3, where {@link #PLATFORM_FACTORY_CLASS} does not exist. */
++    static final String PLATFORM_FACTORY_CLASS_JB = "org.apache.harmony.xnet.provider.jsse.OpenSSLSocketFactoryImpl";
++    /** The superclass of the KitKat adapter's sockets; present on 4.4 only. */
++    static final String KITKAT_SOCKET_CLASS = "com.android.org.conscrypt.OpenSSLSocketImpl";
++    /** What Conscrypt 2.6-alpha2's {@code SSLContext.getSocketFactory()} returns for {@code SDK_INT < 22}. */
++    static final String KITKAT_ADAPTER_CLASS = "org.conscrypt.KitKatPlatformOpenSSLSocketAdapterFactory";
++    static final String BASE_ADAPTER_CLASS = "org.conscrypt.BaseOpenSSLSocketAdapterFactory";
++    /** The adapter's inner factory: plain Conscrypt sockets. */
++    static final String CONSCRYPT_FACTORY_CLASS = "org.conscrypt.OpenSSLSocketFactoryImpl";
 +    /** The kill switch: exactly "0" keeps layer D off; persistent (persist.*), set by root only (not in 4.4
 +     *  property_perms). */
 +    static final String GATE_PROPERTY = "persist.kktls.conscrypt";
@@ -159,6 +193,16 @@ index 000000000..996c86bde
 +    /** The JNI library that Conscrypt's {@code System.loadLibrary("kktls_conscrypt_jni")} opens from that directory. */
 +    static final String CONSCRYPT_LIBRARY = CONSCRYPT_LIBRARY_PATH + "/libkktls_conscrypt_jni.so";
 +    static final String PATH_CLASS_LOADER_CLASS = "dalvik.system.PathClassLoader";
++    /** procfs, for the NEON check. The host test compiles a copy with a temporary directory here. */
++    static final String PROC_ROOT = "/proc";
++    /** The process's ELF auxiliary vector: 32-bit (type, value) pairs in a 32-bit process, AT_NULL last. */
++    static final String AUXV = PROC_ROOT + "/self/auxv";
++    /** The fallback of the NEON check: the {@code Features} line. */
++    static final String CPUINFO = PROC_ROOT + "/cpuinfo";
++    static final int EM_ARM = 40;
++    static final int EM_386 = 3;
++    static final long AT_HWCAP = 16;
++    static final long HWCAP_NEON = 1L << 12;
 +    /** Conscrypt accepts only "true"/"false" (ignoring case) here and throws from every handshake otherwise. */
 +    static final String SNI_PROPERTY = "jsse.enableSNIExtension";
 +
@@ -298,7 +342,10 @@ index 000000000..996c86bde
 +
 +    private static Loaded loadConscrypt() throws Exception {
 +        // Before anything can dlopen the library: a truncated .so is a SIGBUS in the linker, not an exception.
-+        checkLibrary(CONSCRYPT_LIBRARY);
++        // An ARM library needs NEON: without it the linker's first NEON instruction is a SIGILL, not an exception.
++        if (checkLibrary(CONSCRYPT_LIBRARY) == EM_ARM) {
++            checkNeon(AUXV, CPUINFO);
++        }
 +        // One loader for Conscrypt and our SSLv3-filtering socket: both off the boot class path, both org.conscrypt, so
 +        // a wrapped socket's class still tells which stack made it. A missing/unloadable kktls-sslfilter then fails
 +        // here exactly like a broken Conscrypt: the usual layer-A fallback with one log line.
@@ -329,9 +376,9 @@ index 000000000..996c86bde
 +     * ARM or x86 with 1 to 2048 program headers inside the file, at least one {@code PT_LOAD}, and every
 +     * {@code PT_LOAD} ending within the file ({@code p_offset + p_filesz <= length}). Reads the 52-byte header and the
 +     * program headers once, with one 52-byte buffer. Catches truncation (what the linker turns into SIGBUS), not
-+     * arbitrary corruption, and not a file replaced between this check and the load.
++     * arbitrary corruption, and not a file replaced between this check and the load. Returns {@code e_machine}.
 +     */
-+    static void checkLibrary(String path) throws IOException {
++    static int checkLibrary(String path) throws IOException {
 +        RandomAccessFile f = new RandomAccessFile(path, "r");
 +        try {
 +            long size = f.length();
@@ -348,7 +395,7 @@ index 000000000..996c86bde
 +            }
 +            int type = u16(b, 16);
 +            int machine = u16(b, 18);
-+            if (type != 3 || (machine != 40 && machine != 3)) { // ET_DYN; EM_ARM, EM_386
++            if (type != 3 || (machine != EM_ARM && machine != EM_386)) { // ET_DYN
 +                throw elfError(path, "e_type " + type + ", e_machine " + machine + " (want 3, and 40 or 3)");
 +            }
 +            long phoff = u32(b, 28);
@@ -375,9 +422,101 @@ index 000000000..996c86bde
 +            if (loads == 0) {
 +                throw elfError(path, "no PT_LOAD segment");
 +            }
++            return machine;
 +        } finally {
 +            try {
 +                f.close();
++            } catch (IOException ignored) {
++                // read-only file; nothing to flush
++            }
++        }
++    }
++
++    /**
++     * Throws {@link IOException} unless the CPU has NEON: {@code AT_HWCAP} of the auxiliary vector {@code auxv} has
++     * {@code HWCAP_NEON} (1 << 12); when that file cannot be read or has no {@code AT_HWCAP}, the first
++     * {@code Features} line of {@code cpuinfo} has the word {@code neon}. Neither readable is a failure too: a wrong
++     * "yes" kills the process with SIGILL, a wrong "no" only keeps layer A.
++     */
++    static void checkNeon(String auxv, String cpuinfo) throws IOException {
++        long hwcap;
++        String auxvState;
++        try {
++            hwcap = auxvHwcap(readSmall(auxv));
++            auxvState = auxv + " has no AT_HWCAP";
++        } catch (IOException e) {
++            hwcap = -1;
++            auxvState = auxv + ": " + e;
++        }
++        if (hwcap >= 0) {
++            if ((hwcap & HWCAP_NEON) != 0) {
++                return;
++            }
++            throw new IOException("the CPU has no NEON (" + auxv + ": AT_HWCAP 0x" + Long.toHexString(hwcap)
++                    + "), which the ARM " + CONSCRYPT_LIBRARY + " needs");
++        }
++        String features;
++        try {
++            features = cpuFeatures(new String(readSmall(cpuinfo), "ISO-8859-1"));
++        } catch (IOException e) {
++            throw new IOException("cannot tell whether the CPU has NEON (" + auxvState + "; " + cpuinfo + ": " + e
++                    + "); the ARM " + CONSCRYPT_LIBRARY + " needs it");
++        }
++        if (features == null) {
++            throw new IOException("cannot tell whether the CPU has NEON (" + auxvState + "; " + cpuinfo
++                    + " has no Features line); the ARM " + CONSCRYPT_LIBRARY + " needs it");
++        }
++        for (String w : features.trim().split("[ \t]+")) {
++            if (w.equals("neon")) {
++                return;
++            }
++        }
++        throw new IOException("the CPU has no NEON (" + auxvState + "; " + cpuinfo + " Features:" + features
++                + "), which the ARM " + CONSCRYPT_LIBRARY + " needs");
++    }
++
++    /** {@code AT_HWCAP} of a 32-bit little-endian auxiliary vector, or -1 if it has none before AT_NULL or the end. */
++    static long auxvHwcap(byte[] v) {
++        for (int o = 0; o + 8 <= v.length; o += 8) {
++            long type = u32(v, o);
++            if (type == 0) { // AT_NULL
++                break;
++            }
++            if (type == AT_HWCAP) {
++                return u32(v, o + 4);
++            }
++        }
++        return -1;
++    }
++
++    /** What follows the ':' of the first {@code Features} line, or null if there is none. */
++    static String cpuFeatures(String cpuinfo) {
++        for (String line : cpuinfo.split("\n")) {
++            int colon = line.indexOf(':');
++            if (colon > 0 && line.substring(0, colon).trim().equals("Features")) {
++                return line.substring(colon + 1);
++            }
++        }
++        return null;
++    }
++
++    /** The whole of a small file (procfs reports length 0, so this reads to the end), at most 64 KiB. */
++    private static byte[] readSmall(String path) throws IOException {
++        InputStream in = new FileInputStream(path);
++        try {
++            ByteArrayOutputStream out = new ByteArrayOutputStream();
++            byte[] buf = new byte[4096];
++            int n;
++            while ((n = in.read(buf)) > 0) {
++                out.write(buf, 0, n);
++                if (out.size() > 65536) {
++                    throw new IOException(path + " is larger than 64 KiB");
++                }
++            }
++            return out.toByteArray();
++        } finally {
++            try {
++                in.close();
 +            } catch (IOException ignored) {
 +                // read-only file; nothing to flush
 +            }
@@ -403,16 +542,57 @@ index 000000000..996c86bde
 +        if (f == null) {
 +            throw new IllegalStateException(provider.getName() + " SSLContext TLS returned no socket factory");
 +        }
++        if (f.getClass().getName().equals(KITKAT_ADAPTER_CLASS) && !kitKatSocketClassExists()) {
++            return innerFactory(f);
++        }
 +        return f;
++    }
++
++    /** {@value #KITKAT_SOCKET_CLASS} exists (Android 4.4), looked up without initialising it. */
++    private static boolean kitKatSocketClassExists() {
++        try {
++            Class.forName(KITKAT_SOCKET_CLASS, false, KktlsDefaultSSLSocketFactory.class.getClassLoader());
++            return true;
++        } catch (ClassNotFoundException e) {
++            return false;
++        }
++    }
++
++    /**
++     * The inner {@value #CONSCRYPT_FACTORY_CLASS} of the KitKat adapter {@code adapter} (Android 4.1-4.3): the field
++     * {@code delegate} of its direct superclass {@value #BASE_ADAPTER_CLASS}. Any other shape throws.
++     */
++    private static SSLSocketFactory innerFactory(SSLSocketFactory adapter) throws Exception {
++        Class<?> base = adapter.getClass().getSuperclass();
++        if (base == null || !base.getName().equals(BASE_ADAPTER_CLASS)) {
++            throw new IllegalStateException(KITKAT_ADAPTER_CLASS + " does not extend " + BASE_ADAPTER_CLASS + " but "
++                    + base);
++        }
++        Field field = base.getDeclaredField("delegate");
++        field.setAccessible(true);
++        Object inner = field.get(adapter);
++        if (inner == null || !inner.getClass().getName().equals(CONSCRYPT_FACTORY_CLASS)) {
++            throw new IllegalStateException(BASE_ADAPTER_CLASS + ".delegate is "
++                    + (inner == null ? "null" : inner.getClass().getName()) + ", not a " + CONSCRYPT_FACTORY_CLASS);
++        }
++        return (SSLSocketFactory) inner;
 +    }
 +
 +    /** The platform factory (layer A); {@code context} says which path asked for it, for the exception message. */
 +    private static SSLSocketFactory newPlatformFactory(String context) {
++        String name = PLATFORM_FACTORY_CLASS;
 +        try {
-+            return (SSLSocketFactory) Class.forName(PLATFORM_FACTORY_CLASS).getConstructor().newInstance();
++            Class<?> c;
++            try {
++                c = Class.forName(name);
++            } catch (ClassNotFoundException e) {
++                name = PLATFORM_FACTORY_CLASS_JB; // Android 4.1-4.3
++                c = Class.forName(name);
++            }
++            return (SSLSocketFactory) c.getConstructor().newInstance();
 +        } catch (Throwable t) {
-+            throw new IllegalStateException("the platform factory " + PLATFORM_FACTORY_CLASS + " is not usable ("
-+                    + context + ")", unwrap(t));
++            throw new IllegalStateException("the platform factory " + name + " is not usable (" + context + ")",
++                    unwrap(t));
 +        }
 +    }
 +
@@ -426,7 +606,7 @@ index 000000000..996c86bde
 +        }
 +        try {
 +            Logger.getLogger(LOG_TAG).log(Level.WARNING, "Conscrypt is not usable; the default SSLSocketFactory is "
-+                    + PLATFORM_FACTORY_CLASS + " (layer A)", failure);
++                    + "the platform OpenSSLSocketFactoryImpl (layer A)", failure);
 +        } catch (Throwable ignored) {
 +            // logging must never break the default factory
 +        }
@@ -439,7 +619,7 @@ index 000000000..996c86bde
 +        try {
 +            Logger.getLogger(LOG_TAG).log(Level.WARNING, SNI_PROPERTY + " is \"" + value + "\", which Conscrypt rejects"
 +                    + " in every handshake (only true or false); the default SSLSocketFactory is "
-+                    + PLATFORM_FACTORY_CLASS + " (layer A, SNI stays on)");
++                    + "the platform OpenSSLSocketFactoryImpl (layer A, SNI stays on)");
 +        } catch (Throwable ignored) {
 +            // logging must never break the default factory
 +        }
