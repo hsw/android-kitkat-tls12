@@ -9,7 +9,9 @@
  * dlopen()s the library and dlsym()s every function the library may export, prints which ones it has, and for
  *   getauxval: AT_HWCAP (and its NEON bit), AT_HWCAP2, AT_PAGESZ: the values the Conscrypt library will see;
  *   each fortify function it has: one call within bounds (the result) and one beyond, in a child process, which must
- *              die with SIGABRT (bionic's FATAL "libc" line goes to the log).
+ *              die in abort() (bionic's FATAL "libc" line goes to the log). The Jelly Bean abort() writes to 0xdeadbaad
+ *              before it raises SIGABRT ("seg fault seems to produce better debuggerd results", libc/unistd/abort.c),
+ *              so the child dies with SIGSEGV there; SIGABRT is accepted too.
  * Output lines "probe ...", last line "PROBE PASS" or "PROBE FAIL"; exit status 0 only with PASS.
  */
 #include <dlfcn.h>
@@ -60,7 +62,7 @@ static int vsn(char *d, size_t supplied, size_t dest_len, const char *fmt, ...) 
     return r;
 }
 
-/* runs case_no in a child: 1 memcpy, 2 memmove, 3 memset, 4 strlen, 5 vsnprintf, 6 open; SIGABRT expected */
+/* runs case_no in a child: 1 memcpy, 2 memmove, 3 memset, 4 strlen, 5 vsnprintf, 6 open; abort() expected */
 static void child_abort(const char *what, void *fn, int case_no) {
     char d[8], s[16] = "0123456789abcde", label[128];
     int status;
@@ -77,8 +79,10 @@ static void child_abort(const char *what, void *fn, int case_no) {
         _exit(0);
     }
     waitpid(pid, &status, 0);
-    snprintf(label, sizeof(label), "%s beyond bounds: SIGABRT (status 0x%x)", what, status);
-    verdict(pid > 0 && WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT, label);
+    snprintf(label, sizeof(label), "%s beyond bounds: abort() (status 0x%x: %s)", what, status,
+             WIFSIGNALED(status) ? (WTERMSIG(status) == SIGSEGV ? "SIGSEGV, JB abort()" : WTERMSIG(status) == SIGABRT
+                                    ? "SIGABRT" : "other signal") : "no signal");
+    verdict(pid > 0 && WIFSIGNALED(status) && (WTERMSIG(status) == SIGABRT || WTERMSIG(status) == SIGSEGV), label);
 }
 
 int main(int argc, char **argv) {
