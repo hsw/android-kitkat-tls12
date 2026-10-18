@@ -230,8 +230,8 @@ int main(void) {
 
     /* the vector unreadable (a non-dumpable process): AT_HWCAP/AT_HWCAP2 from the first Features line of cpuinfo */
     {
-        /* the RC2's own (kernel 3.0.36+, tab before ':', trailing blank, two processor blocks before Features) */
-        static const char rc2[] = "Processor\t: ARMv7 Processor rev 1 (v7l)\nprocessor\t: 0\nBogoMIPS\t: 1823.40\n\n"
+        /* an RK3026 board (kernel 3.0.36+, tab before ':', trailing blank, two processor blocks before Features) */
+        static const char k30[] = "Processor\t: ARMv7 Processor rev 1 (v7l)\nprocessor\t: 0\nBogoMIPS\t: 1823.40\n\n"
                                   "processor\t: 1\nBogoMIPS\t: 1823.40\n\nFeatures\t: swp half thumb fastmult vfp edsp "
                                   "neon vfpv3 \nCPU implementer\t: 0x41\nCPU architecture: 7\nHardware\t: RK30board\n";
         /* the ranchu 3.10 emulator kernel (= its AT_HWCAP 0x002fb0d7) */
@@ -246,11 +246,11 @@ int main(void) {
         size_t n;
         int warned;
 
-        kk_test_cpuinfo = fake_text("cpuinfo-rc2", rc2);
-        check(fallback(16, &warned) == 0x30d7u && warned, "cpuinfo (RC2): AT_HWCAP 0x30d7 with NEON, errno kept, one warning");
+        kk_test_cpuinfo = fake_text("cpuinfo-k30", k30);
+        check(fallback(16, &warned) == 0x30d7u && warned, "cpuinfo (kernel 3.0): AT_HWCAP 0x30d7 with NEON, errno kept, one warning");
         check(strstr(last_log, "cannot be opened") && strstr(last_log, "getauxval(16) = 0x000030d7 from the Features line"),
               "cpuinfo: the warning names the cause and the value");
-        check(fallback(26, &warned) == 0 && warned, "cpuinfo (RC2): AT_HWCAP2 0 (no crypto words)");
+        check(fallback(26, &warned) == 0 && warned, "cpuinfo (kernel 3.0): AT_HWCAP2 0 (no crypto words)");
         check(fallback(6, &warned) == 0 && warned && strstr(last_log, "getauxval(6) returns 0") != NULL,
               "cpuinfo: another type (AT_PAGESZ) is 0, not a Features value");
         kk_test_cpuinfo = fake_text("cpuinfo-ranchu", ranchu);
@@ -283,7 +283,7 @@ int main(void) {
               "auxv and cpuinfo unreadable: 0, errno kept, the warning says both");
         kk_auxv_warned = 0;
         kk_test_auxv = fake("unterminated2", vec, 4);
-        kk_test_cpuinfo = fake_text("cpuinfo-rc2b", rc2);
+        kk_test_cpuinfo = fake_text("cpuinfo-k30b", k30);
         check(kk_getauxval(26) == 0 && strstr(last_log, "ends early (no AT_NULL): getauxval(26) = 0x00000000 from") != NULL,
               "auxv ends early: AT_HWCAP2 from cpuinfo too");
         /* the vector readable: cpuinfo is not consulted, also not for an absent AT_HWCAP2 */
