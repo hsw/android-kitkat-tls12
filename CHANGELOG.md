@@ -1,6 +1,6 @@
 # Changelog
 
-## v5 (unreleased)
+## v5
 
 Android 4.3, 4.2 and 4.1.2 (Jelly Bean): TLS 1.3 (layer D), ARM and x86. On every Android version the layer D default
 factory now checks for NEON before it loads the ARM Conscrypt library.
