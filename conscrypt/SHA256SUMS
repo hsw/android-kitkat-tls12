@@ -16,6 +16,6 @@ a6b771af7730f4375993517f132be094a229120cce57ade64ed30f8966bc1962  2.6-alpha2/jb/
 80e4ebf8e4d675445a3a839c67a62bbcd6fae4ff8a8a20fc395ab4745901414d  negative/conscrypt-android-2.6-alpha3.aar
 3a3839397f060854cf69a45052480c87b76d20770889ea183dca511c45e660eb  2.6-alpha2/jb-compat/libkktls_conscrypt_jni.so
 c90c03b7a895e324133b0809a357a60312eb64eaaf9c7851f71101b83158b9ba  2.6-alpha2/jb-compat/x86/libkktls_conscrypt_jni.so
-80f0e8dd9d8f26d195517e86c6abaedafa29755820abc5a6e445a6c4676468c6  jb-compat/4.1/libkktls_compat.so
+1929a5802c7a5500a3ca157170fe78cdf7027d2e29eb17de85a9c05531163e29  jb-compat/4.1/libkktls_compat.so
 f6ce2e8905e2a0868e4e2c2f9c6c2a975e7035ec4172801d7d1dcb7530597573  jb-compat/4.1/x86/libkktls_compat.so
-33b60e1fcbd02462ce5288b3369dd9940338a2e99edbbfc6df2a33ab0aff685f  jb-compat/4.2/libkktls_compat.so
+2c730be0728b067b804ada00d1f3c9d0dce1f5ea295d392bccc388ebac28fc7d  jb-compat/4.2/libkktls_compat.so

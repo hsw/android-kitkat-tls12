@@ -61,7 +61,9 @@ python3 -I conscrypt/check_prebuilt.py --stage STAGE/2.6-alpha2-jb --jb --base 4
 - 4.1 and 4.2 lack some bionic functions the `.so` imports (4.2 ARM `getauxval`; 4.1 ARM `getauxval` and
   `__memcpy_chk __memmove_chk __memset_chk __open_2 __strlen_chk __vsnprintf_chk`, 4.1 x86 those six). `compat/` builds
   `libkktls_compat.so` in the base's own AOSP tree with exactly the missing functions of that base and ABI
-  (`getauxval` reads `/proc/self/auxv`; the fortify functions check and abort as bionic 4.2 does), and `jb_needed.py`
+  (`getauxval` reads `/proc/self/auxv`, and where a non-dumpable process cannot open it, as in every app of a user build,
+  takes `AT_HWCAP`/`AT_HWCAP2` from the `Features` line of `/proc/cpuinfo`; the fortify functions check and abort as
+  bionic 4.2 does), and `jb_needed.py`
   turns the `.so`'s `DT_SONAME` entry into `DT_NEEDED libkktls_compat.so` (the JB linkers ignore `DT_SONAME`; `.dynamic`
   has no free entry). The new entry is the last one, and both JB linkers search `DT_NEEDED` in order, so libc and the
   other system libraries always come first. `mkstage.py --jb` writes the edited files to `jb-compat/` (one per ABI, for
@@ -81,7 +83,7 @@ python3 -I conscrypt/check_prebuilt.py --stage STAGE/2.6-alpha2-jb --jb --base 4
   (`apicheck-allow.txt` lists the reviewed exceptions).
 - `python3 -I conscrypt/rename_jni.py --selftest`, `python3 -I conscrypt/jb_charsets.py --selftest`,
   `python3 -I conscrypt/jb_needed.py --selftest`, `conscrypt/compat/test/run-host-tests.sh` (the compat functions on
-  fake auxv files and the host's own, the fortify aborts),
+  fake auxv and cpuinfo files and the host's own auxv, the fortify aborts),
   `python3 -I conscrypt/check_prebuilt.py --selftest AAR`, `check_prebuilt.py --selftest --stage DIR [--jb-dexjar FILE]`.
 - Jelly Bean scoping: `check_prebuilt.py --stage DIR --base 4.3|4.2|4.1` checks the `.so` imports against the bionic of
   our own AOSP 4.3/4.2.2/4.1.2 builds (`bionic4[123]-exports{,-x86}.txt`); `--selftest --stage` asserts what each base
