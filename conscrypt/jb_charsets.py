@@ -16,8 +16,9 @@ What it does:
      The constant pool is parsed, not byte-replaced (the entry's length changes, every reference is by index). Refuses
      (exit 1) unless that Utf8 is used by CONSTANT_Class entries only, every Fieldref on the class names a field the shim
      has (US_ASCII or UTF_8, descriptor Ljava/nio/charset/Charset;), no Methodref/InterfaceMethodref names the class,
-     no descriptor or signature names the type (Ljava/nio/charset/StandardCharsets;), at least one class uses it, and
-     neither the new name nor the shim member exists yet;
+     no descriptor or signature names the type (Ljava/nio/charset/StandardCharsets;), no Utf8 holds the dotted name
+     java.nio.charset.StandardCharsets (a reflective Class.forName would still reach the API 19 class), at least one
+     class uses it, and neither the new name nor the shim member exists yet;
   2. appends org/conscrypt/KktlsStandardCharsets.class, generated here (no javac: the bytes must not depend on a
      compiler), equivalent to
 
@@ -49,6 +50,7 @@ from rename_jni import RenameError, parse_cp, read_members, write_members, DATE 
 OLD = b"java/nio/charset/StandardCharsets"
 NEW = b"org/conscrypt/KktlsStandardCharsets"
 OLD_DESC = b"L" + OLD + b";"
+OLD_DOTTED = OLD.replace(b"/", b".")  # the binary name, as Class.forName takes it
 SHIM = NEW.decode() + ".class"
 CHARSET_DESC = b"Ljava/nio/charset/Charset;"
 FIELDS = ((b"US_ASCII", b"US-ASCII"), (b"UTF_8", b"UTF-8"))  # (field, charset name), in the shim's field order
@@ -105,6 +107,12 @@ def uses(data):
     desc = any(t == 1 and OLD_DESC in data[s + 3:e] for t, s, e in cp.values())
     new = any(t == 1 and data[s + 3:e] == NEW for t, s, e in cp.values())
     return hits, users, fields, methods, desc, new
+
+
+def dotted(data):
+    """Whether any Utf8 of the class contains OLD_DOTTED (a string literal for reflection, or part of one)."""
+    cp, _ = pool(data)
+    return any(t == 1 and OLD_DOTTED in data[s + 3:e] for t, s, e in cp.values())
 
 
 def rewrite_class(data):
@@ -181,6 +189,9 @@ def check_input(members):
             problems.append("%s already has the Utf8 %r (rewritten twice?)" % (name, NEW.decode()))
         if desc:
             problems.append("%s names the type %s in a descriptor or signature" % (name, OLD_DESC.decode()))
+        if dotted(data):
+            problems.append("%s has a Utf8 with %s (reflection would still load the API 19 class)"
+                            % (name, OLD_DOTTED.decode()))
         if not hits:
             continue
         users_found.append(name)
@@ -207,7 +218,7 @@ def check_output(members):
     for name, data in members:
         if name.endswith(".class"):
             hits, _, _, _, desc, _ = uses(data)
-            if hits or desc:
+            if hits or desc or dotted(data):
                 raise CharsetsError("output: %s still names %s" % (name, OLD.decode()))
 
 
@@ -281,6 +292,10 @@ def selftest():
          "calls 1 method"),
         ("name as a string literal", [("org/conscrypt/D.class", _class(fields=[ascii_ref], strings=[OLD]))],
          "want CONSTANT_Class (7) only"),
+        ("dotted name as a string literal", [("org/conscrypt/D.class", _class(fields=[ascii_ref], strings=[OLD_DOTTED]))],
+         "has a Utf8 with java.nio.charset.StandardCharsets"),
+        ("dotted name only (Class.forName)", base + [("org/conscrypt/D.class", _class(strings=[b"x" + OLD_DOTTED + b"$1"]))],
+         "has a Utf8 with java.nio.charset.StandardCharsets"),
         ("type in a descriptor", [("org/conscrypt/D.class", _class(fields=[ascii_ref], descs=[b"()" + OLD_DESC]))],
          "in a descriptor"),
         ("already rewritten", [("org/conscrypt/D.class", _class(fields=[ascii_ref, (NEW, b"UTF_8", CHARSET_DESC)]))],

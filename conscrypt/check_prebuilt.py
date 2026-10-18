@@ -40,7 +40,8 @@ android-4.3_r3, android-4.2.2_r1 and android-4.1.2_r2. Only the symbol lists cha
 4.3 nothing, 4.2 ARM getauxval, 4.1 the fortify functions (both ABIs) and getauxval (ARM).
 --jb checks the Jelly Bean stage of mkstage.py --jb instead (same file names): stage-sha256 takes the dex jar pin
 2.6-alpha2/jb/kktls-conscrypt.dex.jar, and dex-classes wants 426 classes, the jb_charsets.py shim
-org/conscrypt/KktlsStandardCharsets and no reference to java/nio/charset/StandardCharsets (API 19).
+org/conscrypt/KktlsStandardCharsets, no reference to java/nio/charset/StandardCharsets (API 19) and no string
+holding the dotted java.nio.charset.StandardCharsets (a reflective Class.forName).
 
 With the aar sha256 pinned, the structural checks below cannot fail on the pinned file; they are the vetting record that
 re-runs whenever the pin moves (a new Conscrypt release: new SHA256SUMS lines, mkstage.py, this checker), and the
@@ -111,6 +112,7 @@ STAGE_DEXJAR_JB = STAGE_VERSION + "/jb/kktls-conscrypt.dex.jar"
 STAGE_CLASS_COUNT_JB = 426  # the 425 above + org/conscrypt/KktlsStandardCharsets
 JB_SHIM_TYPE = "Lorg/conscrypt/KktlsStandardCharsets;"
 JB_ABSENT_TYPE = "Ljava/nio/charset/StandardCharsets;"  # API 19: must not be referenced by the JB dex
+JB_ABSENT_DOTTED = "java.nio.charset.StandardCharsets"  # nor named for reflection (Class.forName) in any string
 STAGE_PROPERTIES = {
     "org.conscrypt.boringssl.version": "f91f1447397c6719f9774dfb8e67329378e1f3d3",
     "org.conscrypt.version.major": "2",
@@ -469,6 +471,8 @@ def check_dexjar(jar, res, jb=False):
                 bad.append("no %s (jb_charsets.py did not run)" % JB_SHIM_TYPE)
             if jb and JB_ABSENT_TYPE in types:
                 bad.append("references %s (API 19)" % JB_ABSENT_TYPE)
+            if jb and any(JB_ABSENT_DOTTED in x for x in strings):
+                bad.append("a string holds %s (reflection would load the API 19 class)" % JB_ABSENT_DOTTED)
             res["dex-classes"] = (not bad, "; ".join(bad) or "%d class_defs, all under org/conscrypt/%s" % (
                 len(classes), ", no StandardCharsets" if jb else ""))
             has_new, has_old = "kktls_conscrypt_jni" in strings, "conscrypt_jni" in strings
@@ -756,14 +760,14 @@ def selftest_stage(stage, sums, notice, bionic, bionic_x86, alpha3=None, jb=None
         if not ok:
             failures.append(name)
 
-    def dex_edit(fn):
+    def dex_edit(fn, jar=None):
         def edit(n, d):
             if n != "classes.dex":
                 return d
             b = bytearray(fn(bytearray(d)))
             struct.pack_into("<I", b, 8, dex_checksum(bytes(b)))
             return bytes(b)
-        return rewrite_zip(files[STAGE_DEXJAR], edit)
+        return rewrite_zip(files[STAGE_DEXJAR] if jar is None else jar, edit)
 
     def rename_string(old, new):
         def fn(b):
@@ -874,6 +878,9 @@ def selftest_stage(stage, sums, notice, bionic, bionic_x86, alpha3=None, jb=None
                 case("4.4 dex jar checked as the JB one", ("stage-sha256", "dex-classes"), pin=False, base="4.3",
                      jbdex=True)
                 case("JB dex jar checked as the 4.4 one", ("stage-sha256", "dex-classes"), dexjar=jd, pin=False)
+                case("JB dex jar with a dotted StandardCharsets string", ("dex-classes",), base="4.3", jbdex=True,
+                     dexjar=dex_edit(rename_string(b"Alg.Alias.CertificateFactory.X.509", JB_ABSENT_DOTTED.encode()),
+                                     jd))
         else:
             print("selftest skip JB dex jar cases (no --jb-dexjar FILE)")
     finally:
