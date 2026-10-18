@@ -114,6 +114,10 @@ EOF
 
 # ---- synthetic release output -------------------------------------------------------------------------------------
 IN=$T/in
+jb_needs_compat() { # base abi: the Conscrypt .so of layer D needs libkktls_compat.so (check_prebuilt.py JB_MISSING:
+  # 4.2 ARM getauxval; 4.1 the fortify functions on both ABIs, and getauxval on ARM)
+  case $1/$2 in 4.2/armeabi-v7a|4.1/*) return 0 ;; *) return 1 ;; esac
+}
 mkin() {
   local t a d
   for t in android-4.4.2_r2 android-4.4.4_r2; do
@@ -148,15 +152,14 @@ mkin() {
       printf 'javacore %s %s\n' "$b" "$a" > "$d/lib/libjavacore.so"
       printf 'java core framework/core.jar\njava libjavacore lib/libjavacore.so\n' >> "$d/BUILD-INFO.txt"
       case $b in 4.3) echo 'gate 4.3 4.3.1' ;; 4.2) echo 'gate 4.2 4.2.1 4.2.2' ;; 4.1) echo 'gate 4.1.2' ;; esac >> "$d/BUILD-INFO.txt"
-      if [ "$b" != 4.1 ]; then # layer D (a `conscrypt` line of patches/jb/targets.txt)
-        printf 'jb conscrypt jni %s %s\n' "$b" "$a" > "$d/lib/libkktls_conscrypt_jni.so"
-        for j in kktls-conscrypt kktls-sslfilter; do cp "$T/fx/ours.jar" "$d/framework/$j.jar"; done
-        printf 'conscrypt %s\n' framework/kktls-conscrypt.jar framework/kktls-sslfilter.jar lib/libkktls_conscrypt_jni.so \
-          >> "$d/BUILD-INFO.txt"
-        if [ "$b/$a" = 4.2/armeabi-v7a ]; then # the compat library (a `compat` line; 4.2 x86 needs none)
-          printf 'jb compat %s %s\n' "$b" "$a" > "$d/lib/libkktls_compat.so"
-          echo 'conscrypt lib/libkktls_compat.so' >> "$d/BUILD-INFO.txt"
-        fi
+      # layer D (a `conscrypt` line of patches/jb/targets.txt): every JB base
+      printf 'jb conscrypt jni %s %s\n' "$b" "$a" > "$d/lib/libkktls_conscrypt_jni.so"
+      for j in kktls-conscrypt kktls-sslfilter; do cp "$T/fx/ours.jar" "$d/framework/$j.jar"; done
+      printf 'conscrypt %s\n' framework/kktls-conscrypt.jar framework/kktls-sslfilter.jar lib/libkktls_conscrypt_jni.so \
+        >> "$d/BUILD-INFO.txt"
+      if jb_needs_compat "$b" "$a"; then # the compat library (a `compat` line)
+        printf 'jb compat %s %s\n' "$b" "$a" > "$d/lib/libkktls_compat.so"
+        echo 'conscrypt lib/libkktls_compat.so' >> "$d/BUILD-INFO.txt"
       fi
       (cd "$d" && find . -type f ! -name SHA256SUMS ! -name BUILD-INFO.txt | sed 's#^\./##' | sort | xargs sha256sum > SHA256SUMS)
     done
@@ -180,7 +183,7 @@ MKA=(--in "$IN" --release v9 --cacerts "$T/cacerts" --conscrypt-notice "$T/cnoti
 "$MK" "${MKA[@]}" --out "$T/z2" --jb "$T/jb" > "$T/mk2.log"
 "$MK" "${MKA[@]}" --out "$T/z44" > "$T/mk44.log"
 Z=$T/z1
-check "mkzips writes 26 zips (10 + 3 JB bases x 2 ABIs x openssl and java + 4.3 and 4.2 conscrypt x 2 ABIs)" [ "$(wc -l < "$Z/SHA256SUMS")" = 26 ]
+check "mkzips writes 28 zips (10 + 3 JB bases x 2 ABIs x openssl, java and conscrypt)" [ "$(wc -l < "$Z/SHA256SUMS")" = 28 ]
 check "mkzips without --jb writes the 10 4.4 zips" [ "$(wc -l < "$T/z44/SHA256SUMS")" = 10 ]
 check "the 4.4 zips do not depend on --jb" sh -c "grep -v -- '-4\.[123]-' '$Z/SHA256SUMS' | cmp -s - '$T/z44/SHA256SUMS'"
 check "zips are byte-identical across two runs" cmp -s "$T/z1/SHA256SUMS" "$T/z2/SHA256SUMS"
@@ -218,13 +221,13 @@ for jg in "4.3|4.3 4.3.1|4.3" "4.2|4.2 4.2.1 4.2.2|4.2" "4.1|4.1.2|4.1.2"; do  #
     check "java $b $a: NOTICE has libcore and fdlibm of the base, the 4.4 bionic, no okhttp" sh -c "unzip -p '$zj' NOTICE > '$T/n' && grep -q 'fake libcore.NOTICE of android-${b}_r9' '$T/n' && grep -q 'fake fdlibm.NOTICE of android-${b}_r9' '$T/n' && grep -q 'built from AOSP android-${b}_r9 libcore' '$T/n' && grep -q 'fake bionic-libc.NOTICE of android-4.4.2_r2' '$T/n' && ! grep -qi okhttp '$T/n'"
   done
 done
-for jg in "4.3|4.3|4.3 4.3.1" "4.2|4.2|4.2 4.2.1 4.2.2"; do  # base|zip.conf android|gate
+for jg in "4.3|4.3|4.3 4.3.1" "4.2|4.2|4.2 4.2.1 4.2.2" "4.1|4.1.2|4.1.2"; do  # base|zip.conf android|gate
   IFS='|' read -r b an g <<< "$jg"
   for a in armeabi-v7a x86; do
     zd=$Z/kktls-conscrypt-$b-$a-v9.zip
     want='system/framework/kktls-conscrypt.jar system/framework/kktls-sslfilter.jar system/lib/libkktls_conscrypt_jni.so '
     what="the three layer D files of the base"
-    if [ "$b/$a" = 4.2/armeabi-v7a ]; then  # unzip lists the entries sorted: compat before conscrypt
+    if jb_needs_compat "$b" "$a"; then  # unzip lists the entries sorted: compat before conscrypt
       want='system/framework/kktls-conscrypt.jar system/framework/kktls-sslfilter.jar system/lib/libkktls_compat.so system/lib/libkktls_conscrypt_jni.so '
       what="the three layer D files and libkktls_compat.so of the base"
     fi
@@ -232,14 +235,14 @@ for jg in "4.3|4.3|4.3 4.3.1" "4.2|4.2|4.2 4.2.1 4.2.2"; do  # base|zip.conf and
     check "conscrypt $b $a: payload is $what" sh -c "[ \"\$(unzip -Z1 '$zd' | grep ^system/ | tr '\n' ' ')\" = '$want' ] && unzip -p '$zd' system/lib/libkktls_conscrypt_jni.so | grep -qx 'jb conscrypt jni $b $a'"
     check "conscrypt $b $a: BUILD-INFO of the base, helpers of the 4.4 base tag" sh -c "unzip -p '$zd' kktls/BUILD-INFO.txt | grep -qx 'conscrypt lib/libkktls_conscrypt_jni.so' && unzip -p '$zd' kktls/bin/$a/kktls-util | cmp -s - '$IN/android-4.4.2_r2/helpers/$a/kktls-util'"
     check "conscrypt $b $a: NOTICE has Conscrypt and the 4.4 bionic" sh -c "unzip -p '$zd' NOTICE > '$T/n' && grep -q 'fake conscrypt notice' '$T/n' && grep -q 'fake bionic-libc.NOTICE of android-4.4.2_r2' '$T/n'"
-    if [ "$b/$a" = 4.2/armeabi-v7a ]; then
+    if jb_needs_compat "$b" "$a"; then
       check "conscrypt $b $a: the compat library is the base's, NOTICE names it" sh -c "unzip -p '$zd' system/lib/libkktls_compat.so | grep -qx 'jb compat $b $a' && unzip -p '$zd' NOTICE | grep -q 'lib/libkktls_compat.so is own code under the Apache License 2.0, built against the AOSP android-${b}_r9'"
     else
       check "conscrypt $b $a: NOTICE does not name the compat library" sh -c "! unzip -p '$zd' NOTICE | grep -q libkktls_compat"
     fi
   done
 done
-check "no conscrypt zip for 4.1 (no conscrypt line)" sh -c "! ls '$Z' | grep -q 'conscrypt-4\.1-'"
+check "a conscrypt zip for every JB base and ABI" sh -c "[ \"\$(ls '$Z' | grep 'conscrypt-4\.[123]-' | tr '\n' ' ')\" = 'kktls-conscrypt-4.1-armeabi-v7a-v9.zip kktls-conscrypt-4.1-x86-v9.zip kktls-conscrypt-4.2-armeabi-v7a-v9.zip kktls-conscrypt-4.2-x86-v9.zip kktls-conscrypt-4.3-armeabi-v7a-v9.zip kktls-conscrypt-4.3-x86-v9.zip ' ]"
 check "the 4.4 conscrypt zips keep their names" sh -c "ls '$Z' | grep -qx kktls-conscrypt-x86-v9.zip && ls '$Z' | grep -qx kktls-conscrypt-armeabi-v7a-v9.zip"
 check "java 4.4.2 zip NOTICE unchanged by the JB branch (okhttp, the 4.4 libcore)" sh -c "unzip -p '$Z/kktls-java-4.4.2-x86-v9.zip' NOTICE | grep -q 'framework/okhttp.jar from' && unzip -p '$Z/kktls-java-4.4.2-x86-v9.zip' NOTICE | grep -q 'fake libcore.NOTICE of android-4.4.2_r2'"
 # the gate line maps to zip.conf android: one point release exactly, the full AOSP set of a base as 4.N, else refused
@@ -260,7 +263,7 @@ jbx_java() { # base gate-arm [gate-x86]: give jbx/<base> java files and gate lin
 }
 mkx() { "$MK" "${MKA[@]}" --out "$T/zx" --jb "$T/jbx" > "$T/mkx.log" 2>&1; }
 jbx_java 4.2 4.2.2; jbx_java 4.1 "4.1.2 4.1 4.1.1"
-check "mkzips: gate 4.2.2 -> android=4.2.2, gate of all 4.1 releases -> android=4.1" sh -c "'$MK' --in '$IN' --release v9 --cacerts '$T/cacerts' --conscrypt-notice '$T/cnotice' --out '$T/zx' --jb '$T/jbx' > /dev/null && unzip -p '$T/zx/kktls-java-4.2-armeabi-v7a-v9.zip' kktls/zip.conf | grep -qx android=4.2.2 && unzip -p '$T/zx/kktls-java-4.1-armeabi-v7a-v9.zip' kktls/zip.conf | grep -qx android=4.1 && [ \"\$(wc -l < '$T/zx/SHA256SUMS')\" = 26 ]"
+check "mkzips: gate 4.2.2 -> android=4.2.2, gate of all 4.1 releases -> android=4.1" sh -c "'$MK' --in '$IN' --release v9 --cacerts '$T/cacerts' --conscrypt-notice '$T/cnotice' --out '$T/zx' --jb '$T/jbx' > /dev/null && unzip -p '$T/zx/kktls-java-4.2-armeabi-v7a-v9.zip' kktls/zip.conf | grep -qx android=4.2.2 && unzip -p '$T/zx/kktls-java-4.1-armeabi-v7a-v9.zip' kktls/zip.conf | grep -qx android=4.1 && [ \"\$(wc -l < '$T/zx/SHA256SUMS')\" = 28 ]"
 for g in "4.2" "4.2.1 4.2.2" "4.2.2 4.3" "4.2.x" ""; do
   jbx_java 4.2 "$g"
   if mkx; then bad "mkzips accepts the 4.2 gate '$g'"; else ok; fi
@@ -527,19 +530,19 @@ jb_java_cases 4.1 "4.4.2 4.3.1 4.2.2 4.2 4.1 4.1.1 4.1.3 4.1.20 4.10 5.0" "4.1.2
 jbroot 4.1.1; refused "java 4.1 zip on 4.1.1 (another libcore JNI)" "$R0" "$Z/kktls-java-4.1-armeabi-v7a-v9.zip"
 check "java 4.1 zip on 4.1.1: the refusal names 4.1.2" grep -qF "Android '4.1.1' is not 4.1.2" "$T/out"
 
-# Jelly Bean conscrypt zips (4.3, 4.2): layer D over the java zip of the same release, on the releases of the java gate
-# only; the 4.2 ARM zip has libkktls_compat.so as a fourth file
+# Jelly Bean conscrypt zips (4.3, 4.2, 4.1): layer D over the java zip of the same release, on the releases of the java
+# gate only; the 4.2 ARM zip and both 4.1 zips have libkktls_compat.so as a fourth file
 jbjava() { # release [key=value...]: jbroot + the kktls java marker of release v9
   jbroot "$@"; echo v9 > "$R0/system/etc/kktls/java.version"; chmod 0644 "$R0/system/etc/kktls/java.version"
 }
-jb_conscrypt_cases() { # base "refused releases" "gate releases" cm-version
-  local b=$1 v n DA DX MD files
+jb_conscrypt_cases() { # base "refused releases (last: 5.0)" "gate releases" cm-version [refusal text]
+  local b=$1 v n DA DX MD files rt=${5:-"is not $1.x"}
   DA=$Z/kktls-conscrypt-$b-armeabi-v7a-v9.zip DX=$Z/kktls-conscrypt-$b-x86-v9.zip
   files="system/framework/kktls-conscrypt.jar system/framework/kktls-sslfilter.jar system/lib/libkktls_conscrypt_jni.so"
-  [ "$b" != 4.2 ] || files="$files system/lib/libkktls_compat.so"
+  ! jb_needs_compat "$b" armeabi-v7a || files="$files system/lib/libkktls_compat.so"
   n=$(echo $files | wc -w)
   for v in $2; do jbjava "$v"; refused "conscrypt $b zip on $v" "$R0" "$DA"; done
-  check "conscrypt $b zip on 5.0: the refusal says 'is not $b.x'" grep -qF "Android '5.0' is not $b.x" "$T/out"
+  check "conscrypt $b zip on 5.0: the refusal says '$rt'" grep -qF "Android '5.0' $rt" "$T/out"
   jbjava "${3%% *}"; refused "4.4 conscrypt zip on a JB $b (wrong base)" "$R0" "$Z/kktls-conscrypt-armeabi-v7a-v9.zip"
   check "4.4 conscrypt zip on $b: the refusal says 'is not 4.4.x'" grep -qF "Android '${3%% *}' is not 4.4.x" "$T/out"
   jbroot "${3%% *}"; refused "conscrypt $b zip without the java marker (no java zip)" "$R0" "$DA"
@@ -556,13 +559,13 @@ jb_conscrypt_cases() { # base "refused releases" "gate releases" cm-version
     : > "$LOG"
     installs "conscrypt $b zip on JB $v" "$R0" "$DA"
     check "conscrypt $b on $v: the $n layer D files of the base" sh -c "grep -qx 'jb conscrypt jni $b armeabi-v7a' '$R0/system/lib/libkktls_conscrypt_jni.so' && cmp -s '$R0/system/framework/kktls-conscrypt.jar' '$T/fx/ours.jar' && cmp -s '$R0/system/framework/kktls-sslfilter.jar' '$T/fx/ours.jar'"
-    if [ "$b" = 4.2 ]; then
+    if jb_needs_compat "$b" armeabi-v7a; then
       check "conscrypt $b on $v: libkktls_compat.so of the base" grep -qx "jb compat $b armeabi-v7a" "$R0/system/lib/libkktls_compat.so"
     else
       check "conscrypt $b on $v: no libkktls_compat.so" [ ! -e "$R0/system/lib/libkktls_compat.so" ]
     fi
     check "conscrypt $b on $v: marker" [ "$(cat "$R0/system/etc/kktls/conscrypt.version")" = v9 ]
-    if [ "$b" != 4.3 ]; then  # an AOSP 4.2 kernel without SELinux: nothing labelled
+    if [ "$b" != 4.3 ]; then  # an AOSP 4.1/4.2 kernel without SELinux: nothing labelled
       check "conscrypt $b on $v: no SELinux, nothing labelled" sh -c "grep -q 'files are not labelled' '$T/out' && [ \"\$(grep -c 'kktls-new\$' '$LOG')\" = 0 ]"
     else
       check "conscrypt $b on $v: $n files + marker labelled" [ "$(grep -c "conscrypt.version.kktls-new\$\|kktls-conscrypt.jar.kktls-new\$\|kktls-sslfilter.jar.kktls-new\$\|libkktls_conscrypt_jni.so.kktls-new\$\|libkktls_compat.so.kktls-new\$" "$LOG")" = $((n + 1)) ]
@@ -576,12 +579,20 @@ jb_conscrypt_cases() { # base "refused releases" "gate releases" cm-version
   installs "x86 openssl $b zip on x86 JB ${3%% *} (layer D chain)" "$R0" "$Z/kktls-openssl-$b-x86-v9.zip"
   installs "x86 java $b zip on x86 JB ${3%% *} (layer D chain)" "$R0" "$Z/kktls-java-$b-x86-v9.zip"
   installs "x86 conscrypt $b zip on x86 JB ${3%% *}" "$R0" "$DX"
-  check "x86 conscrypt $b: the x86 .so, no compat library" sh -c "grep -qx 'jb conscrypt jni $b x86' '$R0/system/lib/libkktls_conscrypt_jni.so' && [ ! -e '$R0/system/lib/libkktls_compat.so' ]"
+  if jb_needs_compat "$b" x86; then
+    check "x86 conscrypt $b: the x86 .so and the x86 compat library" sh -c "grep -qx 'jb conscrypt jni $b x86' '$R0/system/lib/libkktls_conscrypt_jni.so' && grep -qx 'jb compat $b x86' '$R0/system/lib/libkktls_compat.so'"
+  else
+    check "x86 conscrypt $b: the x86 .so, no compat library" sh -c "grep -qx 'jb conscrypt jni $b x86' '$R0/system/lib/libkktls_conscrypt_jni.so' && [ ! -e '$R0/system/lib/libkktls_compat.so' ]"
+  fi
   installs "restore after x86 conscrypt $b" "$R0" "$R"
   check "x86 conscrypt $b: /system identical after restore" [ "$ORIG" = "$(snap "$R0" system)" ]
 }
 jb_conscrypt_cases 4.3 "4.4.2 4.2.2 4.2 4.1.2 4.30 5.0" "4.3 4.3.1" 10.2
 jb_conscrypt_cases 4.2 "4.4.2 4.3 4.3.1 4.1.2 4.20 4.21 5.0" "4.2 4.2.1 4.2.2" 10.1
+jb_conscrypt_cases 4.1 "4.4.2 4.3.1 4.2.2 4.2 4.1 4.1.1 4.1.3 4.1.20 4.10 5.0" "4.1.2" 10.0 \
+  "is not 4.1.2 (this zip is built from AOSP 4.1.2)"
+jbjava 4.1.1; refused "conscrypt 4.1 zip on 4.1.1 (with a java marker)" "$R0" "$Z/kktls-conscrypt-4.1-armeabi-v7a-v9.zip"
+check "conscrypt 4.1 zip on 4.1.1: the refusal names 4.1.2" grep -qF "Android '4.1.1' is not 4.1.2" "$T/out"
 # restore when the backups are gone: the layer D files (KK_D_FILES, with the compat library) go all the same
 mkroot "$R0" ro.build.version.release=4.2.2 ro.product.cpu.abi=armeabi-v7a jb=1; ORIG=$(snap "$R0" system)
 installs "openssl 4.2 zip on JB 4.2.2 (lost backups)" "$R0" "$Z/kktls-openssl-4.2-armeabi-v7a-v9.zip"
