@@ -1,24 +1,32 @@
-# Layer D: standalone Conscrypt 2.6-alpha2 for Android 4.4
+# Layer D: standalone Conscrypt 2.6-alpha2 for Android 4.1.2 to 4.4
 
 Layer D adds TLS 1.3 (and TLS 1.0–1.2 with ChaCha20-Poly1305 and X25519) to the default `SSLSocketFactory` of an
-Android 4.4 system that already has layer A. It is the published `org.conscrypt:conscrypt-android:2.6-alpha2` artefact
-(Maven Central; BoringSSL inside), turned into KitKat system modules:
+Android 4.4, 4.3, 4.2 or 4.1.2 system that already has layer A (the java zip of the same release). It is the published
+`org.conscrypt:conscrypt-android:2.6-alpha2` artefact (Maven Central; BoringSSL inside), turned into system modules:
 
 | Module | Installed as | From |
 |---|---|---|
-| `kktls-conscrypt` | `/system/framework/kktls-conscrypt.jar` | the aar's `classes.jar`, JNI library name changed, dexed by d8 |
-| `libkktls_conscrypt_jni` | `/system/lib/libkktls_conscrypt_jni.so` | the aar's `armeabi-v7a` or `x86` JNI library, byte-identical |
+| `kktls-conscrypt` | `/system/framework/kktls-conscrypt.jar` | the aar's `classes.jar`, JNI library name changed, dexed by d8 (Jelly Bean: `StandardCharsets` replaced, `--min-api 16`) |
+| `libkktls_conscrypt_jni` | `/system/lib/libkktls_conscrypt_jni.so` | the aar's `armeabi-v7a` or `x86` JNI library, byte-identical (4.2 ARM and 4.1: one `.dynamic` entry edited, see below) |
 | `kktls-sslfilter` | `/system/framework/kktls-sslfilter.jar` | `sslfilter/`: drops SSLv3 and the weak suites on Conscrypt sockets |
+| `libkktls_compat` | `/system/lib/libkktls_compat.so` (4.2 ARM, 4.1 ARM and x86 only) | `compat/`: the bionic functions the JNI library imports and that base lacks |
 
 None of them is on the boot class path and nothing changes in the ramdisk. The default factory
-`io.github.hsw.kktls.KktlsDefaultSSLSocketFactory` is part of `core.jar` (libcore patch 0025). On first use it loads the
+`io.github.hsw.kktls.KktlsDefaultSSLSocketFactory` is part of `core.jar` (libcore patch 0025 on 4.4, also in
+`core-libart.jar`; patch 0033 of each `patches/jb/<ver>/libcore/` series, the same source). On first use it loads the
 two jars and the `.so` with its own class loader when `kktls-conscrypt.jar` exists, and falls back to the platform
-factory when the files are absent or fail to load. The system property `persist.kktls.conscrypt=0` turns layer D off.
-See the top-level README for the scope and the behaviour changes.
+factory when the files are absent or fail to load. Before that it checks the ELF headers of the `.so` (and of
+`libkktls_compat.so` where it exists) and, for the ARM library, that the CPU has NEON (`AT_HWCAP` from
+`/proc/self/auxv`, else the `Features` line of `/proc/cpuinfo`): the aar's ARM library is built with NEON as its
+baseline and would die with SIGILL in the linker. On Jelly Bean it takes the inner
+`org.conscrypt.OpenSSLSocketFactoryImpl` of the adapter that Conscrypt's `SSLContext` returns below API 22 (the
+adapter's sockets extend a 4.4-only class), and its platform factory is harmony's `OpenSSLSocketFactoryImpl`. The system
+property `persist.kktls.conscrypt=0` turns layer D off. See the top-level README for the scope and the behaviour
+changes.
 
 ## Why the JNI library is renamed
 
-The 4.4 dynamic linker identifies a library by its basename. An app that bundles its own Conscrypt loads
+The 4.1 to 4.4 dynamic linkers identify a library by its basename. An app that bundles its own Conscrypt loads
 `libconscrypt_jni.so`; if ours had the same name, the app would get our already loaded copy, and its `JNI_OnLoad` would
 bind to the wrong class loader's classes. `rename_jni.py` changes the library name inside the jar's `NativeCrypto`
 class, so the system copy loads `libkktls_conscrypt_jni.so` and both can coexist.
@@ -85,12 +93,15 @@ python3 -I conscrypt/check_prebuilt.py --stage STAGE/2.6-alpha2-jb --jb --base 4
   `python3 -I conscrypt/jb_needed.py --selftest`, `conscrypt/compat/test/run-host-tests.sh` (the compat functions on
   fake auxv and cpuinfo files and the host's own auxv, the fortify aborts),
   `python3 -I conscrypt/check_prebuilt.py --selftest AAR`, `check_prebuilt.py --selftest --stage DIR [--jb-dexjar FILE]`.
-- Jelly Bean scoping: `check_prebuilt.py --stage DIR --base 4.3|4.2|4.1` checks the `.so` imports against the bionic of
+- Jelly Bean: `check_prebuilt.py --stage DIR --base 4.3|4.2|4.1` checks the `.so` imports against the bionic of
   our own AOSP 4.3/4.2.2/4.1.2 builds (`bionic4[123]-exports{,-x86}.txt`); `--selftest --stage` asserts what each base
   lacks (4.2 ARM `getauxval`, 4.1 the fortify functions and, on ARM, `getauxval`). `apicheck.py --api 16|17|18` with
-  that base's `core` and `framework` jars checks a `d8 --min-api 16` dex.
+  that base's `core` and `framework` jars checks a `d8 --min-api 16` dex (`apicheck-allow-jb.txt` lists the reviewed
+  Jelly Bean exceptions).
 - `conscrypt/sslfactory/test/run-host-tests.sh`: the default factory and the SSLv3 filter on a host JVM with stubs
-  (files present, absent, broken; the kill switch).
+  (files present, absent, broken; the kill switch; NEON from fake auxv and cpuinfo files; the Jelly Bean platform
+  factory and inner factory). It first checks that the 4.4 and Jelly Bean libcore patches carry this source byte for
+  byte.
 
 ## Licences
 

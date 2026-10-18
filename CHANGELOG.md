@@ -1,5 +1,58 @@
 # Changelog
 
+## v5 (unreleased)
+
+Android 4.3, 4.2 and 4.1.2 (Jelly Bean): TLS 1.3 (layer D), ARM and x86. On every Android version the layer D default
+factory now checks for NEON before it loads the ARM Conscrypt library.
+
+### New
+
+- `kktls-conscrypt-4.3-<abi>-<rel>.zip`, `kktls-conscrypt-4.2-<abi>-<rel>.zip`, `kktls-conscrypt-4.1-<abi>-<rel>.zip`
+  (`armeabi-v7a`, `x86`): layer D on Jelly Bean, the same Conscrypt 2.6-alpha2 as on 4.4. Each installs on the releases
+  of its java zip (4.3.x, 4.2.x, 4.1.2) after the java zip of the same release; the restore zip removes it. The default
+  factory comes with the java zip (libcore patch 0033 of each Jelly Bean series, the source of 4.4's 0025). On Jelly
+  Bean it uses Conscrypt's inner `org.conscrypt.OpenSSLSocketFactoryImpl`, because the adapter that Conscrypt returns
+  below API 22 makes sockets of a 4.4-only class; without the layer D files, or when they fail to load, it falls back to
+  the platform factory `org.apache.harmony.xnet.provider.jsse.OpenSSLSocketFactoryImpl` (layer A, as in v4). The kill
+  switch `persist.kktls.conscrypt=0` works as on 4.4.
+- The Jelly Bean `kktls-conscrypt.jar`: `conscrypt/jb_charsets.py` replaces `java.nio.charset.StandardCharsets` (API 19,
+  read on the ALPN, keying-material, PSK and scrypt paths) with an own class, then `d8 --min-api 16`
+  (`conscrypt/mkstage.py --jb`). One pinned dex jar for all three versions.
+- `libkktls_compat.so` (`conscrypt/compat/`), a fourth layer D file in the 4.2 ARM, 4.1 ARM and 4.1 x86 zips: the bionic
+  functions that the Conscrypt library imports and these versions lack (`getauxval`; on 4.1 also `__memcpy_chk`,
+  `__memmove_chk`, `__memset_chk`, `__open_2`, `__strlen_chk`, `__vsnprintf_chk`), built in the AOSP tree of each
+  version. `getauxval` reads `/proc/self/auxv`, and in a process that cannot open it (not dumpable: every app of a user
+  build) takes `AT_HWCAP`/`AT_HWCAP2` from the `Features` line of `/proc/cpuinfo`. `conscrypt/jb_needed.py` turns the
+  library's `DT_SONAME` entry into `DT_NEEDED libkktls_compat.so` (pinned output); 4.3 and 4.2 x86 use the aar library
+  unchanged.
+- Checks: `conscrypt/check_prebuilt.py --jb --base <ver> [--compat FILE]` against the bionic exports of our own 4.1.2,
+  4.2.2 and 4.3 builds (`conscrypt/bionic4[123]-exports{,-x86}.txt`); `conscrypt/apicheck.py --api 16|17|18`
+  (`apicheck-allow-jb.txt`); host tests of the compat library (`conscrypt/compat/test/`) and of the Jelly Bean cases of
+  the default factory; `tools/check_44_payload.py`, run in CI, compares the `/system` files of the 4.4 zips with v4.
+- `tools/kktls-jb-openssl-build.sh`: `conscrypt` and `compat` lines in `patches/jb/targets.txt` and a `stage` step;
+  `tools/mkzips.sh --jb` packs the Jelly Bean conscrypt zips.
+
+### Changed
+
+- The 4.4 java zips: `core.jar` and `core-libart.jar` carry the new default factory (libcore 0025). For an ARM library
+  it checks for NEON (`AT_HWCAP` from `/proc/self/auxv`, else the `Features` line of `/proc/cpuinfo`) before loading
+  Conscrypt; without NEON it uses the platform factory and logs once. It checks the ELF headers of
+  `libkktls_compat.so` too when that file exists. A failure to make the Conscrypt factory after the provider loaded is
+  now kept for the process like a load failure: no new TLS context and no new log line on later constructions. Every
+  other file of the 4.4 zips installs the same bytes as v4.
+- The Jelly Bean java zips: `core.jar` carries the default factory (0033). Without the layer D files it is the platform
+  factory, as in v4.
+- `installer/checks.sh`: `KK_D_FILES` lists `system/lib/libkktls_compat.so`, so the restore removes it with the other
+  layer D files, also when the conscrypt zip's own backup is gone. Every zip carries this file; on 4.4 the extra path
+  finds nothing.
+
+### Fixed
+
+- SIGILL on ARMv7 CPUs without NEON with layer D installed (4.4, since v1): the aar's ARM Conscrypt library is built
+  with NEON as its baseline and killed every process that used the default `SSLSocketFactory`, inside the linker,
+  before the Java fallback could run. Such a CPU now stays on layer A. Checked on Jelly Bean ARM emulator kernels
+  without NEON (the same source as 4.4) and in host tests.
+
 ## v4
 
 Android 4.3, 4.2 and 4.1.2: the x86 builds of the Java TLS layer (layer A) join the release. TLS 1.3 stays 4.4

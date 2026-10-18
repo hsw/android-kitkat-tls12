@@ -9,9 +9,10 @@
 #   KK_ROOT   prefix of the device tree ("" on a device; a fake root in the tests)
 #   KK_DIR    the unpacked zip: KK_DIR/kktls/zip.conf, KK_DIR/kktls/bin/<abi>/, KK_DIR/system/... (the payload)
 # zip.conf (written by mkzips.sh): kind=openssl|cacerts|java|conscrypt|restore, release=<tag>, abi=armeabi-v7a|x86|any,
-#   android=4.4.2|4.4.4 (java: the exact ro.build.version.release it was built from), 4.N (any 4.N.x: the openssl zip
-#   built for that Android version, 4.1 to 4.4) or a range 4.1-4.4 (any 4.1.x to 4.4.x: cacerts and restore, which carry
-#   no code built against one release)
+#   android= one exact ro.build.version.release (4.4.2, 4.4.4: the 4.4 java zips; 4.1.2: the 4.1 java and conscrypt
+#   zips), 4.N (any 4.N.x: the openssl zips of 4.1 to 4.4, the 4.4 conscrypt zip, the 4.3 and 4.2 java and conscrypt
+#   zips) or a range 4.1-4.4 (any 4.1.x to 4.4.x: cacerts and restore, which carry no code built against one release);
+#   a conscrypt zip also needs the java marker of its own release
 #
 # Properties come from KK_ROOT/system/build.prop, never from getprop: in recovery getprop answers for the recovery's
 # own default.prop, not for the system that is being changed.
