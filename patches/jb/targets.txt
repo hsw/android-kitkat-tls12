@@ -50,6 +50,7 @@ target  4.1  full_x86-user  x86
 java    4.1  core         framework/core.jar
 java    4.1  libjavacore  lib/libjavacore.so
 gate    4.1  4.1.2
+conscrypt 4.1
 compat  4.1
 
 project 4.3  build
