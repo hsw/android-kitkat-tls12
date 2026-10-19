@@ -13,7 +13,9 @@ A zip or file missing on either side, or another sha256, fails; only the files i
 as "allowed"). Installer scripts, notices and BUILD-INFO are not compared: they name the release and the build.
 
 ALLOWED: framework/core.jar and core-libart.jar of the java-4.4.x zips (the default SSLSocketFactory hook in libcore,
-patch 0025: the NEON guard, 2026-10-18). Every other 4.4 file must stay byte-identical. Stdlib only.
+patch 0025: the NEON guard, 2026-10-18), and lib/libcrypto.so of the 4.4 armeabi-v7a openssl zip (v6: armcap.c and
+armv4cpuid.S turn on the NEON GHASH and SHA-512 paths; its x86 twin and libssl.so stay as in v4). Every other 4.4 file
+must stay byte-identical. Stdlib only.
 """
 import hashlib
 import io
@@ -29,6 +31,7 @@ JB = re.compile(r"-4\.[0-3]-")
 ALLOWED = {
     (re.compile(r"kktls-java-4\.4\.[0-9]+-(armeabi-v7a|x86)$"), "system/framework/core.jar"),
     (re.compile(r"kktls-java-4\.4\.[0-9]+-(armeabi-v7a|x86)$"), "system/framework/core-libart.jar"),
+    (re.compile(r"kktls-openssl-4\.4-armeabi-v7a$"), "system/lib/libcrypto.so"),
 }
 
 
@@ -109,7 +112,9 @@ def selftest():
 
     v4 = {"kktls-java-4.4.2-x86": {"system/framework/core.jar": "a", "system/framework/okhttp.jar": "b"},
           "kktls-conscrypt-x86": {"system/lib/libkktls_conscrypt_jni.so": "c"}, "kktls-restore": {},
-          "kktls-java-4.3-x86": {"system/framework/core.jar": "jb"}}
+          "kktls-java-4.3-x86": {"system/framework/core.jar": "jb"},
+          "kktls-openssl-4.4-armeabi-v7a": {"system/lib/libssl.so": "s", "system/lib/libcrypto.so": "k"},
+          "kktls-openssl-4.4-x86": {"system/lib/libssl.so": "s", "system/lib/libcrypto.so": "k"}}
     try:
         mk(os.path.join(td, "v4"), "v4", v4)
         buf = io.StringIO()
@@ -136,7 +141,15 @@ def selftest():
         case("a file less", dict(v4, **{"kktls-conscrypt-x86": {}}), False)
         case("a file more", dict(v4, **{"kktls-restore": {"system/x": "x"}}), False)
         case("a zip less", {k: v for k, v in v4.items() if k != "kktls-restore"}, False)
-        case("a zip more", dict(v4, **{"kktls-openssl-4.4-x86": {}}), False)
+        case("a zip more", dict(v4, **{"kktls-cacerts": {}}), False)
+        case("allowed arm libcrypto.so change", dict(v4, **{"kktls-openssl-4.4-armeabi-v7a": {
+            "system/lib/libssl.so": "s", "system/lib/libcrypto.so": "K"}}), True)
+        case("arm libssl.so change", dict(v4, **{"kktls-openssl-4.4-armeabi-v7a": {
+            "system/lib/libssl.so": "S", "system/lib/libcrypto.so": "K"}}), False)
+        case("x86 libcrypto.so change", dict(v4, **{"kktls-openssl-4.4-x86": {
+            "system/lib/libssl.so": "s", "system/lib/libcrypto.so": "K"}}), False)
+        case("arm libcrypto.so missing", dict(v4, **{"kktls-openssl-4.4-armeabi-v7a": {"system/lib/libssl.so": "s"}}),
+             False)
         for label, good in cases:
             print("selftest %s %s" % ("ok  " if good else "FAIL", label))
             ok &= good
