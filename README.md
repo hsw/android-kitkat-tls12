@@ -357,8 +357,9 @@ uses neither.
 
 - `tools/openssl-cve-test.sh`: builds OpenSSL in Docker for host, x86, ARM and MIPS, with and without assembler, and
   runs reproducers for the backported CVEs (a FAIL on unpatched 1.0.1u, a PASS with the patches); `--jb-base <ver>`
-  for a Jelly Bean series. With assembler (`--asm`) it also runs the upstream AES, AES-GCM and SHA-512 known-answer
-  tests; on ARM `OPENSSL_armcap=0` selects the scalar paths instead of NEON.
+  for a Jelly Bean series. With assembler (`--asm`) it also runs the upstream AES, AES-GCM, SHA-512 and EC (prime and
+  binary curves) known-answer tests; on ARM it checks that the NEON paths ran, and `OPENSSL_armcap=0` selects the
+  scalar paths instead.
 - `tools/openssl-abi-check.sh`: exported symbols, their users and public struct layouts against the stock OpenSSL.
 - `tools/check_tls_lists.py`: protocol and cipher suite lists in the Java patches.
 - `tools/tls-probe.sh`: a probe app for a device or emulator (`dump`, `hello`, `matrix` against badssl.com and
