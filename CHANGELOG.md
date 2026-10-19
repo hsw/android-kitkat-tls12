@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## v6
+
+Android 4.4 ARM: OpenSSL uses NEON for AES-GCM, SHA-384/512 and binary-curve EC. The probe and test tools work on
+Jelly Bean and on the SDK 4.4.2 emulator image, and CI retries fetches from android.googlesource.com.
 
 ### Changed
 
