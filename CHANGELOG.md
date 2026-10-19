@@ -4,13 +4,16 @@
 
 ### Changed
 
-- `kktls-openssl-4.4-armeabi-v7a-<rel>.zip`: `libcrypto.so` uses the NEON code of OpenSSL 1.0.1u for GHASH (AES-GCM)
-  and SHA-512. Before, the 4.4 ARM build had no CPU capability setup: `OPENSSL_cpuid_setup` was an empty stub,
-  `OPENSSL_armcap_P` stayed 0, and `ghash-armv4` and `sha512-armv4` never took their NEON paths. Now `crypto/armcap.c`
-  sets `ARMV7_NEON` from `getauxval(AT_HWCAP)` when the library loads (no SIGILL probe), and `OPENSSL_armcap=0` in a
-  process's environment turns it off. Upstream 1.0.1u with this setup on the RK3026 e-reader (Cortex-A9, 912 MHz),
-  NEON against `OPENSSL_armcap=0`, 8 KiB blocks: AES-128-GCM 18.8 against 16.9 MB/s (+11%), SHA-512 33.7 against
-  18.8 MB/s (+79%). AES-CBC, SHA-256, RSA and ECDH have no NEON code in 1.0.1u and stay as they were.
+- `kktls-openssl-4.4-armeabi-v7a-<rel>.zip`: `libcrypto.so` uses the NEON code of OpenSSL 1.0.1u for GHASH (AES-GCM),
+  SHA-384/512 and GF(2^m) multiplication (binary-curve EC). Before, the 4.4 ARM build had no CPU capability setup:
+  `OPENSSL_cpuid_setup` was an empty stub, `OPENSSL_armcap_P` stayed 0, and `ghash-armv4`, `sha512-armv4` and
+  `armv4-gf2m` never took their NEON paths. Now `crypto/armcap.c` sets `ARMV7_NEON` from `getauxval(AT_HWCAP)` when
+  the library loads (no SIGILL probe). `OPENSSL_armcap=0` turns it off in the environment of the process that first
+  loads the library: for apps that is the zygote (its `libjavacore.so` needs `libcrypto.so`), for a shell command the
+  command itself. Speed, measured with a static upstream 1.0.1u NDK build (upstream's own `armcap.c`, SIGILL probe;
+  the same NEON code) on the RK3026 e-reader (Cortex-A9, 912 MHz), NEON against `OPENSSL_armcap=0`, 8 KiB blocks:
+  AES-128-GCM 18.8 against 16.9 MB/s (+11%), SHA-512 33.7 against 18.8 MB/s (+79%). AES-CBC, SHA-256, RSA and
+  prime-curve ECDH have no NEON code in 1.0.1u and stay as they were.
   `OPENSSL_armcap_P` stays exported, as in the stock 4.4 library. This is the only file of the release that changes:
   every other file of the 4.4 zips and every file of the Jelly Bean zips installs the same bytes as v5 (the Jelly Bean
   ARM `libcrypto.so` keeps the scalar paths).
@@ -34,8 +37,14 @@
   in `kktls-apply-series.sh`. The helper is `tools/lib/retry.sh`, and `kktls-apply-series.sh` has an inline copy of it.
   `tools/lib/retry.sh --selftest` runs in CI.
 - `tools/probe/armcap_probe.c`: prints `OPENSSL_armcap_P` of the device's `libcrypto.so` (`dlopen`/`dlsym`; 1 = NEON
-  on), the NDK build line is in the file. `tools/check_44_payload.py` allows the 4.4 ARM `libcrypto.so` to differ from
-  the v4 baseline; the x86 one and both `libssl.so` must still match.
+  on), the NDK build line is in the file; CI compiles it with the host gcc (a compile check only).
+  `tools/check_44_payload.py` allows the 4.4 ARM `libcrypto.so` to differ from the v4 baseline; the x86 one and both
+  `libssl.so` must still match.
+- `tools/openssl-cve-test.sh --asm`: builds arm's `armcap.c` and `armv4cpuid.S` (the only static `.S` it accepts; any
+  other `.S` of the arch list needs its `gen_asm` line), links every binary with `-u OPENSSL_cpuid_setup` and runs the
+  upstream known-answer tests `evp_test`, `sha512t`, `gcm128t` and `ectest` (binary curves: GF(2^m)). On arm32 it
+  checks `OPENSSL_armcap_P`: 1 (NEON) by default, `OPENSSL_armcap & 1` when that is set; `KKTLS_CVE_ARMCAP_EXPECT=0`
+  is for a runner whose CPU has no NEON. CI runs the arm32 asm job once more with `OPENSSL_armcap=0`.
 
 ## v5
 
