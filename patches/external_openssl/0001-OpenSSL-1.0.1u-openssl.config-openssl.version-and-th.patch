@@ -23,12 +23,13 @@ of the disabled algorithms) removed, the new test sources added (as AOSP 5.1
 did for constant_time_test.c, heartbeat_test.c, ssl_utst.c).
 
 openssl.config arm: armcap.c and armv4cpuid.S built, OPENSSL_CPUID_OBJ
-defined, mem_clr.c excluded, so the NEON paths of ghash-armv4 and
-sha512-armv4 run (kktls_armcap_neon.patch: NEON from AT_HWCAP).
+defined, mem_clr.c excluded, so the NEON paths of ghash-armv4,
+sha512-armv4 and armv4-gf2m run (kktls_armcap_neon.patch: NEON from
+AT_HWCAP).
 ---
  openssl.config                       |  209 ++-
  openssl.version                      |    2 +-
- patches/README                       |  314 +++++
+ patches/README                       |  321 +++++
  patches/alpn.patch                   |  970 +++++++-------
  patches/channelid.patch              | 1846 ++++++++++++++------------
  patches/cve-2016-8610.patch          |  120 ++
@@ -71,7 +72,7 @@ sha512-armv4 run (kktls_armcap_neon.patch: NEON from AT_HWCAP).
  patches/progs.patch                  |   87 +-
  patches/rc4_md5_harden.patch         |   19 +
  patches/tls12_digests.patch          |  647 +++++----
- 45 files changed, 5377 insertions(+), 2564 deletions(-)
+ 45 files changed, 5384 insertions(+), 2564 deletions(-)
  create mode 100644 patches/cve-2016-8610.patch
  create mode 100644 patches/cve-2017-3735.patch
  create mode 100644 patches/cve-2017-3737.patch
@@ -422,7 +423,7 @@ index b4e8cab..da494e4 100644
 -OPENSSL_VERSION=1.0.1e
 +OPENSSL_VERSION=1.0.1u
 diff --git a/patches/README b/patches/README
-index 0859abe..4572340 100644
+index 0859abe..fdd79c7 100644
 --- a/patches/README
 +++ b/patches/README
 @@ -1,3 +1,56 @@
@@ -482,7 +483,7 @@ index 0859abe..4572340 100644
  progs.patch:
  
  Fixup sources under the apps/ directory that are not built under the android environment.
-@@ -37,3 +90,264 @@ alpn.patch
+@@ -37,3 +90,271 @@ alpn.patch
  This change adds support for ALPN in OpenSSL. ALPN is the IETF
  blessed version of NPN and we'll be supporting both ALPN and NPN for
  some time yet.
@@ -497,12 +498,19 @@ index 0859abe..4572340 100644
 +
 +kktls: the arm build now carries armcap.c and armv4cpuid.S (openssl.config:
 +OPENSSL_CPUID_OBJ, mem_clr.c replaced by the asm OPENSSL_cleanse), so the
-+NEON paths of ghash-armv4 and sha512-armv4 run when the CPU has NEON. The
-+NEON check reads getauxval(AT_HWCAP) (Android 4.3+) instead of running NEON
-+and mrrc instructions under a SIGILL handler; ARMV7_TICK is never set, and
-+the OPENSSL_armcap environment override is masked to ARMV7_NEON (1 = NEON,
-+0 = scalar). The stock exports stay: OPENSSL_armcap_P is not hidden, and
-+armcap.c defines cleanse_ctr (from mem_clr.c before).
++NEON paths of ghash-armv4 (GHASH of AES-GCM), sha512-armv4 (SHA-384/512)
++and armv4-gf2m (GF(2^m) multiplication of the binary-curve EC code) run when
++the CPU has NEON. The NEON check reads getauxval(AT_HWCAP) (Android 4.3+)
++instead of running NEON and mrrc instructions under a SIGILL handler;
++ARMV7_TICK is never set, and the OPENSSL_armcap environment override is
++masked to ARMV7_NEON (1 = NEON, 0 = scalar). The stock exports stay:
++OPENSSL_armcap_P is not hidden, and armcap.c defines cleanse_ctr (from
++mem_clr.c before). Platform builds only: an unbundled build
++(TARGET_BUILD_APPS, LOCAL_SDK_VERSION := 9 in Crypto.mk) does not compile
++armcap.c, as NDK API 9 has no <sys/auxv.h>. A static link of
++libcrypto_static may leave armcap.o and its constructor out unless the
++program references OPENSSL_cpuid_setup (e.g. -Wl,-u,OPENSSL_cpuid_setup);
++OPENSSL_armcap_P then stays 0 (the scalar paths).
 +
 +cve-2022-0778.patch
 +
