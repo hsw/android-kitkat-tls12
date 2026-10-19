@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Tools
+
+- `tools/probe/Tls12Probe.java`: on Android 4.1-4.3 the platform sockets
+  (`org.apache.harmony.xnet.provider.jsse.OpenSSL*` from the boot class path) count as "platform", and `both` takes
+  `libssl.so` as the platform library there (`NativeCrypto` lives in `libjavacore.so`, which every process maps). Before,
+  `setters … context` and `both` reported FAIL on Jelly Bean although the stack behaved as expected. `Tls12Probe
+  selftest` has the Jelly Bean cases. The 4.4 rules are unchanged.
+
 ## v5
 
 Android 4.3, 4.2 and 4.1.2 (Jelly Bean): TLS 1.3 (layer D), ARM and x86. On every Android version the layer D default
