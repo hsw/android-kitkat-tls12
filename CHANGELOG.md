@@ -5,8 +5,10 @@
 ### Tools
 
 - `tools/probe/Tls12Probe.java`: on Android 4.1-4.3 the platform sockets
-  (`org.apache.harmony.xnet.provider.jsse.OpenSSL*` from the boot class path) count as "platform", and `both` takes
-  `libssl.so` as the platform library there (`NativeCrypto` lives in `libjavacore.so`, which every process maps). Before,
+  (`org.apache.harmony.xnet.provider.jsse.OpenSSL*` from the boot class path) count as "platform". There `both` checks
+  only that the Conscrypt library is mapped: `NativeCrypto` lives in `libjavacore.so`, which links `libssl.so` and
+  `libcrypto.so` and which every Dalvik process maps from the zygote, so no mapping shows that the platform stack ran.
+  The Jelly Bean evidence for the platform stack is the platform step's socket class and its handshake. Before,
   `setters … context` and `both` reported FAIL on Jelly Bean although the stack behaved as expected. `Tls12Probe
   selftest` has the Jelly Bean cases. The 4.4 rules are unchanged.
 - `tools/tls-probe.sh`: `gate` and `mem` find the zygote and `system_server` pids from `adb shell ps` instead of

@@ -28,10 +28,12 @@
  *                             is the wrapper over Conscrypt ("[conscrypt: "), the default step's socket is an
  *                             org.conscrypt class from the wrapper's loader of kktls-conscrypt.jar, the platform step's a
  *                             platform class of the boot class path (socketOrigin: com.android.org.conscrypt on 4.4,
- *                             org.apache.harmony.xnet.provider.jsse.OpenSSL* on 4.1-4.3), and both libraries are mapped
- *                             (the platform's: libjavacrypto.so on 4.4, libssl.so on 4.1-4.3, where NativeCrypto lives
- *                             in libjavacore.so; review 3, codex 5: a wrapper that fell back after loading its library
- *                             gave two platform handshakes and OK)
+ *                             org.apache.harmony.xnet.provider.jsse.OpenSSL* on 4.1-4.3), and the libraries are mapped
+ *                             (Conscrypt's, and on 4.4 the platform's libjavacrypto.so; on 4.1-4.3 NativeCrypto lives in
+ *                             libjavacore.so, which links libssl/libcrypto and every Dalvik process maps from the zygote,
+ *                             so there the maps say nothing about the platform stack and its evidence is the platform
+ *                             step's class and handshake alone; review 3, codex 5: a wrapper that fell back after
+ *                             loading its library gave two platform handshakes and OK)
  *   fallback <name> <host> <port>  pid, the default factory's toString(), three more wrapper instances (the log-once
  *                             check is done by the caller in logcat), one handshake through getDefault() (port 0: none)
  *   shadow <name> <host> <port>  an app that bundles org.conscrypt: this jar carries a stub
@@ -365,11 +367,13 @@ public class Tls12Probe {
     }
 
     /**
-     * Both stacks' libraries in maps: the Conscrypt library and the platform's, libjavacrypto.so on 4.4; on 4.1-4.3
-     * (jb) NativeCrypto lives in libjavacore.so, which every Dalvik process maps, so the evidence there is libssl.so.
+     * Both stacks' libraries in maps: the Conscrypt library, and on 4.4 the platform's libjavacrypto.so. On 4.1-4.3
+     * (jb) NativeCrypto lives in libjavacore.so, which links libssl.so and libcrypto.so and which every Dalvik process
+     * maps from the zygote, so no mapping there proves the platform stack ran; the platform evidence on Jelly Bean is
+     * the platform step's socket class (socketOrigin "platform") and its handshake, checked in bothVerdict.
      */
     static boolean bothMapped(String maps, boolean jb) {
-        return maps.indexOf("/" + SYSTEM_JNI) >= 0 && maps.indexOf(jb ? "/libssl.so" : "libjavacrypto.so") >= 0;
+        return maps.indexOf("/" + SYSTEM_JNI) >= 0 && (jb || maps.indexOf("libjavacrypto.so") >= 0);
     }
 
     private static void csock(String name, String host, int port, String source, String protos) {
@@ -1099,7 +1103,8 @@ public class Tls12Probe {
                 + " /system/lib/libssl.so]";
         String cons = "io.github.hsw.kktls.KktlsDefaultSSLSocketFactory@1 [conscrypt: x]";
         String fell = "io.github.hsw.kktls.KktlsDefaultSSLSocketFactory@1 [platform: Conscrypt is not usable]";
-        // 4.1-4.3 (jb): NativeCrypto is in libjavacore.so (mapped by every Dalvik process), the platform's libssl.so
+        // 4.1-4.3 (jb): NativeCrypto is in libjavacore.so, which links libssl/libcrypto and every Dalvik process maps,
+        // so only the Conscrypt library is checked there
         String jbMaps = "[/system/lib/libcrypto.so, /system/lib/libjavacore.so, /system/lib/libkktls_conscrypt_jni.so,"
                 + " /system/lib/libssl.so]";
         Object[][] verdicts = {
@@ -1117,8 +1122,6 @@ public class Tls12Probe {
             {"JB both stacks", true, cons, "conscrypt", "platform", jbMaps, true, true},
             {"JB wrapper fell back (two platform handshakes)", true, fell, "platform", "platform", jbMaps, true, false},
             {"JB platform step not from the platform", true, cons, "conscrypt", "other", jbMaps, true, false},
-            {"JB libssl.so not mapped", true, cons, "conscrypt", "platform", "[/system/lib/libcrypto.so,"
-                    + " /system/lib/libjavacore.so, /system/lib/libkktls_conscrypt_jni.so]", true, false},
             {"JB Conscrypt library not mapped", true, cons, "conscrypt", "platform", "[/system/lib/libcrypto.so,"
                     + " /system/lib/libjavacore.so, /system/lib/libssl.so]", true, false},
         };
