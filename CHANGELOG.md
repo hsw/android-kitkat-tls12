@@ -12,6 +12,12 @@
 - `tools/tls-probe.sh`: `gate` and `mem` find the zygote and `system_server` pids from `adb shell ps` instead of
   `pidof`, which the SDK 4.4.2 emulator image does not have. There, `gate` read `/proc//maps` and reported FAIL
   although every gate row passed. A process that `ps` does not list is now a tool error (exit 2).
+- Fetches from android.googlesource.com are retried with backoff (3 tries, 60 s and then 180 s apart), because an HTTP
+  503 from there failed whole release and CVE harness jobs. This covers the `sync` step of `kktls-release-build.sh` and
+  `kktls-jb-openssl-build.sh` (a later try runs `repo init` again only when the first one did not finish), the
+  `external/openssl` fetches of `openssl-cve-test.sh`, `mkimport.sh` and `mkimport-tree-check.sh`, and the 4.4.2 fetch
+  in `kktls-apply-series.sh`. The helper is `tools/lib/retry.sh`, and `kktls-apply-series.sh` has an inline copy of it.
+  `tools/lib/retry.sh --selftest` runs in CI.
 
 ## v5
 

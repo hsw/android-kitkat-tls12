@@ -19,6 +19,17 @@ case $TAG in android-4.4.2_r2|android-4.4.4_r2) ;; *) echo "kktls-apply-series: 
 cd "$SRC"
 g() { git -C "$1" -c core.hooksPath=/dev/null "${@:2}"; }
 am() { g "$1" am --keep-cr "${@:2}"; }
+# retry TRIES CMD...: inline twin of tools/lib/retry.sh (this script runs in the sync container, and its P need not
+# hold tools/; keep both in step): up to TRIES tries, backoff KKTLS_RETRY_SLEEP (default 60) s * 3^(try-1), last rc
+retry() {
+  local tries=$1 n=1 rc delay=${KKTLS_RETRY_SLEEP:-60}; shift
+  while :; do
+    if "$@"; then return 0; else rc=$?; fi
+    if [ $n -ge "$tries" ]; then echo "retry: try $n/$tries of '$*' failed (rc $rc); giving up" >&2; return $rc; fi
+    echo "retry: try $n/$tries of '$*' failed (rc $rc); next try in ${delay} s" >&2
+    sleep "$delay"; delay=$((delay * 3)); n=$((n + 1))
+  done
+}
 
 # build/: the OpenJDK 6 patch is a plain diff (left uncommitted). A release build applies it before the series, for the
 # pristine stock-library build; it counts as clean when exactly that patch is applied (reverse-applies cleanly).
@@ -42,7 +53,7 @@ done
 [ $jdk_done = 1 ] || g build apply "$JDK"
 if [ "$TAG" != android-4.4.4_r2 ]; then
   # 4.4.0-4.4.3: external/openssl lacks dd1da36 (Early CCS fix), the only openssl change of KitKat
-  g external/openssl fetch -q --depth=2 aosp refs/tags/android-4.4.4_r2
+  retry 3 g external/openssl fetch -q --depth=2 aosp refs/tags/android-4.4.4_r2
   g external/openssl format-patch -q -1 --stdout FETCH_HEAD > /tmp/dd1da36.patch
   am external/openssl /tmp/dd1da36.patch
 fi

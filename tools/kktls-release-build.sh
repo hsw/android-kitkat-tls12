@@ -98,6 +98,7 @@ if [ "${1:-}" = --inner-make ]; then
   echo "INNER rc=$rc wall=$(( $(date +%s) - t0 ))"
   exit 0
 fi
+. "$HERE/lib/retry.sh" || die "tools/lib/retry.sh missing" 3   # retry (the sync step)
 
 # ---------------------------------------------------------------- options
 WORK=./kktls-release-work; TARGETS=""; SEL_TAGS=""; SEL_ABIS=""; CPUS=4; JOBS=4; IMAGE=""; SYNC_IMAGE=""
@@ -248,8 +249,10 @@ do_sync() {
   local t=$1 d=$WORK/$1
   mkdir -p "$d/src" "$d/logs" "$d/ccache"
   echo "[$t] sync"
+  # up to 3 tries with backoff (tools/lib/retry.sh: googlesource answers HTTP 503 at times); a later try runs repo
+  # init again only while the tree has no manifest (an init that failed half-way), repo sync resumes
   # shellcheck disable=SC2086
-  run_sync "$d" "[ -d .repo ] || repo init -u $MIRROR -b $t --depth=1 --repo-rev=$REPO_REV </dev/null
+  retry 3 run_sync "$d" "[ -f .repo/manifest.xml ] || repo init -u $MIRROR -b $t --depth=1 --repo-rev=$REPO_REV </dev/null
     repo sync -c -j8 --no-tags --no-clone-bundle --retry-fetches=3 $(echo $PROJECTS) </dev/null" \
     > "$d/logs/sync.log" 2>&1 || { tail -n 20 "$d/logs/sync.log" >&2; return 1; }
   # every project at its pinned commit (git runs where the synced trees may be touched: the sync image or here)

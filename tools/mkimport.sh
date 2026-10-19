@@ -3,7 +3,7 @@
 # own `import_openssl.sh import openssl-1.0.1u.tar.gz`, in the build container. For OpenSSL backports: amend 0001 in a
 # git checkout of the recipe, rerun this, amend 0002 with the result, regenerate the series.
 #
-#   mkimport.sh RECIPE_DIR        nothing but this directory, fetch-openssl.sh, git, curl and docker are needed
+#   mkimport.sh RECIPE_DIR        nothing but this directory, fetch-openssl.sh, lib/retry.sh, git, curl and docker are needed
 #
 # RECIPE_DIR   holds openssl.config, openssl.version, patches/*.patch and patches/README, i.e. an external/openssl tree at
 #              OPENSSL_BASE with series 0001 applied. Only these files are read from it.
@@ -33,6 +33,7 @@
 set -euo pipefail
 TOOLS=$(cd "$(dirname "$0")" && pwd -P)
 . "$TOOLS/fetch-openssl.sh"                             # OPENSSL_TAR_NAME, TAR_SHA256, fetch_tarball
+. "$TOOLS/lib/retry.sh"                                 # retry (the fetch of BASE)
 BASE=${OPENSSL_BASE:-dd1da36b0baa39942f0aef42c4712ef0ad628a83}  # default: android-4.4.4_r2.0.1 external/openssl (AOSP-TREE)
 [[ $BASE =~ ^[0-9a-f]{40}$ ]] || { echo "mkimport: OPENSSL_BASE must be a 40-hex commit" >&2; exit 2; }
 AOSP_OPENSSL_URL=${AOSP_OPENSSL_URL:-https://android.googlesource.com/platform/external/openssl}
@@ -55,7 +56,7 @@ RECIPE=$(cd "$RECIPE" && pwd -P)                      # absolute: the copy below
 if [ -z "$TARBALL" ]; then TARBALL=$(fetch_tarball "$OPENSSL_TAR_URL" "$TAR_SHA256" "$W/dl" "$OPENSSL_TAR_NAME") || die "no tarball"; fi
 if [ ! -e "$I" ]; then                                 # shallow checkout of BASE (googlesource serves a sha want)
   git init -q "$I"
-  git -C "$I" fetch -q --depth=1 "$AOSP_OPENSSL_URL" "$BASE" || { rm -rf "$I"; die "cannot fetch $BASE from $AOSP_OPENSSL_URL"; }
+  retry 3 git -C "$I" fetch -q --depth=1 "$AOSP_OPENSSL_URL" "$BASE" || { rm -rf "$I"; die "cannot fetch $BASE from $AOSP_OPENSSL_URL"; }
   git -C "$I" -c advice.detachedHead=false checkout -q FETCH_HEAD
 fi
 under_w "$TARBALL"; TARBALL=$(realpath -m "$TARBALL")
