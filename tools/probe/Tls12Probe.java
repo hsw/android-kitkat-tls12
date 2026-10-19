@@ -27,9 +27,13 @@
  *                             RESULT OK only with positive evidence of both stacks (bothVerdict): the default factory
  *                             is the wrapper over Conscrypt ("[conscrypt: "), the default step's socket is an
  *                             org.conscrypt class from the wrapper's loader of kktls-conscrypt.jar, the platform step's a
- *                             com.android.org.conscrypt class of the boot class path, and both libraries are mapped
- *                             (review 3, codex 5: a wrapper that fell back after loading its library gave two platform
- *                             handshakes and OK)
+ *                             platform class of the boot class path (socketOrigin: com.android.org.conscrypt on 4.4,
+ *                             org.apache.harmony.xnet.provider.jsse.OpenSSL* on 4.1-4.3), and the libraries are mapped
+ *                             (Conscrypt's, and on 4.4 the platform's libjavacrypto.so; on 4.1-4.3 NativeCrypto lives in
+ *                             libjavacore.so, which links libssl/libcrypto and every Dalvik process maps from the zygote,
+ *                             so there the maps say nothing about the platform stack and its evidence is the platform
+ *                             step's class and handshake alone; review 3, codex 5: a wrapper that fell back after
+ *                             loading its library gave two platform handshakes and OK)
  *   fallback <name> <host> <port>  pid, the default factory's toString(), three more wrapper instances (the log-once
  *                             check is done by the caller in logcat), one handshake through getDefault() (port 0: none)
  *   shadow <name> <host> <port>  an app that bundles org.conscrypt: this jar carries a stub
@@ -73,11 +77,11 @@
  *                             2.5.3 (gate on, default) throws IllegalArgumentException for any RC4 name (no filtering),
  *                             drops TLS 1.3 suite names, silently drops "SSLv3" (alone: no protocol left, the
  *                             handshake fails "No enabled protocols") and keeps the TLS versions of the mixed lists
- *                             (TLSv1.2 handshakes); the platform (layer A) accepts RC4 and SSLv3 as opt-ins
- *                             (libcore/0026) and refuses the TLS 1.3 name; to a server without SSLv3 its {SSLv3} and
- *                             also its {SSLv3, TLSv1.2} handshake fail (OpenSSL 1.0.1 s23_clnt.c keeps the enabled
- *                             versions contiguous: TLSv1 off with SSLv3 on caps the hello at SSLv3), {SSLv3, TLSv1,
- *                             TLSv1.1, TLSv1.2} gives TLSv1.2.
+ *                             (TLSv1.2 handshakes); the platform (layer A; 4.4 and the 4.1-4.3 harmony stack alike)
+ *                             accepts RC4 and SSLv3 as opt-ins (libcore/0026) and refuses the TLS 1.3 name; to a server
+ *                             without SSLv3 its {SSLv3} and also its {SSLv3, TLSv1.2} handshake fail (OpenSSL 1.0.1
+ *                             s23_clnt.c keeps the enabled versions contiguous: TLSv1 off with SSLv3 on caps the hello
+ *                             at SSLv3), {SSLv3, TLSv1, TLSv1.1, TLSv1.2} gives TLSv1.2.
  *                             RESULT OK stack=<stack> only when every case is as expected for that stack
  * Self-check (no network, runs on the host JVM too, see tools/tls-probe.sh selftest):
  *   selftest                  classify() on synthetic cause chains, socketOrigin(), bothVerdict() and settersCaseOk()
@@ -335,14 +339,18 @@ public class Tls12Probe {
 
     /**
      * Where a socket's classes come from: "conscrypt" (an org.conscrypt class from the wrapper's own loader of
-     * kktls-conscrypt.jar, which is not on the boot class path), "platform" (a com.android.org.conscrypt class from the boot
-     * class path, the 4.4 OpenSSL stack) or "other".
+     * kktls-conscrypt.jar, which is not on the boot class path), "platform" (from the boot class path: a
+     * com.android.org.conscrypt class, the 4.4 OpenSSL stack, or an org.apache.harmony.xnet.provider.jsse.OpenSSL* class,
+     * the 4.1-4.3 one; not harmony's pure-Java SSLSocketImpl) or "other".
      */
     static String socketOrigin(String className, String loader, boolean bootLoader) {
         if (className.startsWith("org.conscrypt.") && !bootLoader && loader.indexOf("kktls-conscrypt.jar") >= 0) {
             return "conscrypt";
         }
         if (className.startsWith("com.android.org.conscrypt.") && bootLoader) {
+            return "platform";
+        }
+        if (className.startsWith("org.apache.harmony.xnet.provider.jsse.OpenSSL") && bootLoader) {
             return "platform";
         }
         return "other";
@@ -353,10 +361,19 @@ public class Tls12Probe {
      * from Conscrypt and the platform step's from the platform (socketOrigin), and both stacks' libraries mapped.
      */
     static boolean bothVerdict(boolean stepsOk, String defaultFactory, String conscryptFrom, String platformFrom,
-            String maps) {
+            String maps, boolean jb) {
         return stepsOk && defaultFactory.indexOf("[conscrypt: ") >= 0 && conscryptFrom.equals("conscrypt")
-                && platformFrom.equals("platform") && maps.indexOf("/" + SYSTEM_JNI) >= 0
-                && maps.indexOf("libjavacrypto.so") >= 0;
+                && platformFrom.equals("platform") && bothMapped(maps, jb);
+    }
+
+    /**
+     * Both stacks' libraries in maps: the Conscrypt library, and on 4.4 the platform's libjavacrypto.so. On 4.1-4.3
+     * (jb) NativeCrypto lives in libjavacore.so, which links libssl.so and libcrypto.so and which every Dalvik process
+     * maps from the zygote, so no mapping there proves the platform stack ran; the platform evidence on Jelly Bean is
+     * the platform step's socket class (socketOrigin "platform") and its handshake, checked in bothVerdict.
+     */
+    static boolean bothMapped(String maps, boolean jb) {
+        return maps.indexOf("/" + SYSTEM_JNI) >= 0 && (jb || maps.indexOf("libjavacrypto.so") >= 0);
     }
 
     private static void csock(String name, String host, int port, String source, String protos) {
@@ -373,8 +390,9 @@ public class Tls12Probe {
 
     /**
      * Both TLS stacks in one process: a handshake through SSLCertificateSocketFactory (platform: libjavacrypto +
-     * libssl 1.0.1u) and one through SSLSocketFactory.getDefault() (Conscrypt: libkktls_conscrypt_jni.so, BoringSSL),
-     * in the given order; the Conscrypt step may be restricted to some protocols ("-" = its defaults).
+     * libssl 1.0.1u; on 4.1-4.3 libjavacore + libssl) and one through SSLSocketFactory.getDefault() (Conscrypt:
+     * libkktls_conscrypt_jni.so, BoringSSL), in the given order; the Conscrypt step may be restricted to some protocols
+     * ("-" = its defaults).
      */
     private static void both(String name, String phost, int pport, String chost, int cport, String cprotos,
             boolean platformFirst) {
@@ -407,11 +425,13 @@ public class Tls12Probe {
             def = "n/a " + describe(t);
         }
         String m = mapped(SYSTEM_JNI, "libjavacrypto.so", "libssl.so", "libcrypto.so");
-        boolean both = m.indexOf("/" + SYSTEM_JNI) >= 0 && m.indexOf("libjavacrypto.so") >= 0;
+        // the String field: d8 --min-api 19 folds "Build.VERSION.SDK_INT < 19" to false (found on 4.3)
+        boolean jb = Integer.parseInt(android.os.Build.VERSION.SDK) < 19;
+        boolean both = bothMapped(m, jb);
         boolean conscrypt = def.indexOf("[conscrypt: ") >= 0;
         System.out.println("DEFAULT " + name + " " + def);
         System.out.println("MAPS " + name + " " + m);
-        System.out.println("RESULT " + name + (bothVerdict(ok, def, conscryptFrom, platformFrom, m) ? " OK"
+        System.out.println("RESULT " + name + (bothVerdict(ok, def, conscryptFrom, platformFrom, m, jb) ? " OK"
                 : " FAIL class=other") + " order=" + (platformFirst ? "platform" : "conscrypt")
                 + "-first both-stacks-mapped=" + both + " default-is-conscrypt=" + conscrypt + " conscrypt-step-from="
                 + conscryptFrom + " platform-step-from=" + platformFrom);
@@ -1064,6 +1084,13 @@ public class Tls12Probe {
             {"an app's own Conscrypt socket", "org.conscrypt.KitKatPlatformOpenSSLSocketImplAdapter", app, false, "other"},
             {"a platform class name from another loader", "com.android.org.conscrypt.OpenSSLSocketImpl", sysLoader, false,
                     "other"},
+            {"JB platform socket", "org.apache.harmony.xnet.provider.jsse.OpenSSLSocketImpl", boot, true, "platform"},
+            {"JB platform socket wrapper", "org.apache.harmony.xnet.provider.jsse.OpenSSLSocketImplWrapper", boot, true,
+                    "platform"},
+            {"a JB platform class name from an app's loader", "org.apache.harmony.xnet.provider.jsse.OpenSSLSocketImpl",
+                    app, false, "other"},
+            {"harmony's pure-Java SSLSocketImpl", "org.apache.harmony.xnet.provider.jsse.SSLSocketImpl", boot, true,
+                    "other"},
         };
         for (Object[] c : origins) {
             String got = socketOrigin((String) c[1], (String) c[2], ((Boolean) c[3]).booleanValue());
@@ -1076,25 +1103,35 @@ public class Tls12Probe {
                 + " /system/lib/libssl.so]";
         String cons = "io.github.hsw.kktls.KktlsDefaultSSLSocketFactory@1 [conscrypt: x]";
         String fell = "io.github.hsw.kktls.KktlsDefaultSSLSocketFactory@1 [platform: Conscrypt is not usable]";
+        // 4.1-4.3 (jb): NativeCrypto is in libjavacore.so, which links libssl/libcrypto and every Dalvik process maps,
+        // so only the Conscrypt library is checked there
+        String jbMaps = "[/system/lib/libcrypto.so, /system/lib/libjavacore.so, /system/lib/libkktls_conscrypt_jni.so,"
+                + " /system/lib/libssl.so]";
         Object[][] verdicts = {
-            {"both stacks", true, cons, "conscrypt", "platform", maps, true},
+            {"both stacks", true, cons, "conscrypt", "platform", maps, false, true},
             {"wrapper fell back after loading its library (two platform handshakes)", true, fell, "platform",
-                    "platform", maps, false},
+                    "platform", maps, false, false},
             {"default factory says Conscrypt, its socket is the platform's", true, cons, "platform", "platform", maps,
-                    false},
-            {"default step from an app's Conscrypt", true, cons, "other", "platform", maps, false},
-            {"platform step not from the platform", true, cons, "conscrypt", "conscrypt", maps, false},
-            {"a step failed", false, cons, "conscrypt", "none", maps, false},
+                    false, false},
+            {"default step from an app's Conscrypt", true, cons, "other", "platform", maps, false, false},
+            {"platform step not from the platform", true, cons, "conscrypt", "conscrypt", maps, false, false},
+            {"a step failed", false, cons, "conscrypt", "none", maps, false, false},
             {"Conscrypt library not mapped", true, cons, "conscrypt", "platform",
-                    "[/system/lib/libjavacrypto.so]", false},
+                    "[/system/lib/libjavacrypto.so]", false, false},
+            {"4.4: libssl.so without libjavacrypto.so", true, cons, "conscrypt", "platform", jbMaps, false, false},
+            {"JB both stacks", true, cons, "conscrypt", "platform", jbMaps, true, true},
+            {"JB wrapper fell back (two platform handshakes)", true, fell, "platform", "platform", jbMaps, true, false},
+            {"JB platform step not from the platform", true, cons, "conscrypt", "other", jbMaps, true, false},
+            {"JB Conscrypt library not mapped", true, cons, "conscrypt", "platform", "[/system/lib/libcrypto.so,"
+                    + " /system/lib/libjavacore.so, /system/lib/libssl.so]", true, false},
         };
         for (Object[] c : verdicts) {
             boolean got = bothVerdict(((Boolean) c[1]).booleanValue(), (String) c[2], (String) c[3], (String) c[4],
-                    (String) c[5]);
-            boolean ok = got == ((Boolean) c[6]).booleanValue();
+                    (String) c[5], ((Boolean) c[6]).booleanValue());
+            boolean ok = got == ((Boolean) c[7]).booleanValue();
             bad += ok ? 0 : 1;
             System.out.println("selftest " + (ok ? "ok   " : "FAIL ") + "bothVerdict " + c[0] + ": " + got
-                    + (ok ? "" : ", want " + c[6]));
+                    + (ok ? "" : ", want " + c[7]));
         }
         // setters (post-EOL plan Task 9): the expected outcome per stack; the other stack's outcome must not pass
         String iae = "throws java.lang.IllegalArgumentException: cipherSuite " + RC4 + " is not supported.";

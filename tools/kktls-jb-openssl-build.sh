@@ -106,6 +106,7 @@ if [ "${1:-}" = --inner-make ]; then
   echo "INNER rc=$rc wall=$(( $(date +%s) - t0 ))"
   exit 0
 fi
+. "$HERE/lib/retry.sh" || die "tools/lib/retry.sh missing" 3   # retry (the sync step)
 
 WORK=./kktls-jb-work; SEL_BASES=""; SEL_ABIS=""; CPUS=4; JOBS=4; IMAGE=""; SYNC_IMAGE=""; RUNNER=docker; REUSE_STOCK=0; DRY=0; CMDS=()
 AAR=""; D8=${D8:-${ANDROID_HOME:-$HOME/Android/sdk}/build-tools/37.0.0/d8}
@@ -282,7 +283,9 @@ do_sync() {
   local b=$1 t=$2 d=$WORK/$2 p want have bad=0 got projects
   projects=$(projects_of "$b" | tr '\n' ' ')
   mkdir -p "$d/src" "$d/logs" "$d/ccache"
-  run_sync "$d" "[ -d .repo ] || repo init -u $MIRROR -b $t --depth=1 --repo-rev=$REPO_REV </dev/null
+  # up to 3 tries with backoff (tools/lib/retry.sh: googlesource answers HTTP 503 at times); a later try runs repo
+  # init again only while the tree has no manifest (an init that failed half-way), repo sync resumes
+  retry 3 run_sync "$d" "[ -f .repo/manifest.xml ] || repo init -u $MIRROR -b $t --depth=1 --repo-rev=$REPO_REV </dev/null
     repo sync -c -j8 --no-tags --no-clone-bundle --retry-fetches=3 $projects </dev/null" \
     > "$d/logs/sync.log" 2>&1 || { tail -n 20 "$d/logs/sync.log" >&2; return 1; }
   got=$(run_sync "$d" "for p in $projects; do printf '%s %s\\n' \$p \$(git -C \$p -c core.hooksPath=/dev/null rev-parse -q --verify 'HEAD^{commit}' || echo none); done")

@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+### Tools
+
+- `tools/probe/Tls12Probe.java`: on Android 4.1-4.3 the platform sockets
+  (`org.apache.harmony.xnet.provider.jsse.OpenSSL*` from the boot class path) count as "platform". There `both` checks
+  only that the Conscrypt library is mapped: `NativeCrypto` lives in `libjavacore.so`, which links `libssl.so` and
+  `libcrypto.so` and which every Dalvik process maps from the zygote, so no mapping shows that the platform stack ran.
+  The Jelly Bean evidence for the platform stack is the platform step's socket class and its handshake. Before,
+  `setters … context` and `both` reported FAIL on Jelly Bean although the stack behaved as expected. `Tls12Probe
+  selftest` has the Jelly Bean cases. The 4.4 rules are unchanged.
+- `tools/tls-probe.sh`: `gate` and `mem` find the zygote and `system_server` pids from `adb shell ps` instead of
+  `pidof`, which the SDK 4.4.2 emulator image does not have. There, `gate` read `/proc//maps` and reported FAIL
+  although every gate row passed. A process that `ps` does not list is now a tool error (exit 2).
+- Fetches from android.googlesource.com are retried with backoff (3 tries, 60 s and then 180 s apart), because an HTTP
+  503 from there failed whole release and CVE harness jobs. This covers the `sync` step of `kktls-release-build.sh` and
+  `kktls-jb-openssl-build.sh` (a later try runs `repo init` again only when the first one did not finish), the
+  `external/openssl` fetches of `openssl-cve-test.sh`, `mkimport.sh` and `mkimport-tree-check.sh`, and the 4.4.2 fetch
+  in `kktls-apply-series.sh`. The helper is `tools/lib/retry.sh`, and `kktls-apply-series.sh` has an inline copy of it.
+  `tools/lib/retry.sh --selftest` runs in CI.
+
 ## v5
 
 Android 4.3, 4.2 and 4.1.2 (Jelly Bean): TLS 1.3 (layer D), ARM and x86. On every Android version the layer D default

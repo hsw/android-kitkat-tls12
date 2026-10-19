@@ -79,6 +79,7 @@ jobs:
           python3 -I conscrypt/jb_needed.py --selftest
           python3 -I conscrypt/dexparse.py --selftest
           tools/fetch-openssl.sh --selftest
+          tools/lib/retry.sh --selftest
           tools/openssl-cve-test.sh --classify-test
           tools/tls-probe.sh selftest
           tools/kktls-release-build.sh --dry-run

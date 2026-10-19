@@ -173,6 +173,20 @@ probe() {  # SERIAL ARGS...: one probe invocation, CR stripped
 
 push_jar() { "$ADB" -s "$1" push "$2" "$DEV_JAR" >/dev/null 2>&1 || die "push to $1 failed"; }
 
+pid_of() {  # SERIAL NAME: the pid of the first process whose ps NAME is exactly NAME, from one `adb shell ps` (the
+  # toolbox of the SDK 4.4.2 image has no pidof). The PID column comes from the header; toolbox rows carry a state
+  # column the header lacks before NAME, so NAME is the last field. No such process is 1 with a message: callers use
+  # `pid=$(pid_of ...) || exit 2` (a tool error, not a FAIL) and put the pid into the device command
+  local p
+  p=$("$ADB" -s "$1" shell ps < /dev/null | tr -d '\r' | awk -v n="$2" '
+    !c { for (i = 1; i <= NF; i++) if ($i == "PID") c = i; next }
+    $NF == n { print $c; exit }')
+  case $p in
+    '' | *[!0-9]*) echo "tls-probe.sh: no process '$2' in 'adb shell ps' of $1" >&2; return 1 ;;
+  esac
+  printf '%s\n' "$p"
+}
+
 pack_dex() {  # DIR OUT: DIR/classes.dex as the only member of the jar OUT; any failing step is a tool error (exit 2), so
   # "built" is never printed over a missing or stale OUT (review 3, codex 3)
   [ -s "$1/classes.dex" ] || die "d8 wrote no classes.dex in $1"
@@ -570,8 +584,9 @@ kktls_lines() {  # SERIAL PID: every KktlsSslFactory logcat line of that pid
 }
 
 cmd_gate() {  # SERIAL JAR HOST PORT: the gate persist.kktls.conscrypt (Task 11b), each value in a new process
-  local s=$1 host=$3 port=$4 orig row v want flip out pid n bad=0 zy
+  local s=$1 host=$3 port=$4 orig row v want flip out pid n bad=0 zy zpid
   d_installed "$s" || die "gate: $D_JAR is not installed on $s (the kill switch acts only on an installed layer D)"
+  zpid=$(pid_of "$s" zygote) || exit 2
   push_jar "$s" "$2"
   orig=$(get_gate "$s")
   echo "== $GATE before the run: '$orig'"
@@ -598,8 +613,8 @@ cmd_gate() {  # SERIAL JAR HOST PORT: the gate persist.kktls.conscrypt (Task 11b
       printf '%s\n' "$out" | grep -q '^DEX .*kktls-conscrypt' || { echo "gate-$row: no kktls-conscrypt dex mapped"; bad=1; }
       [ -z "$flip" ] || printf '%s\n' "$out" | grep -q '^AFTER-SETPROP .*new-instance KktlsDefaultSSLSocketFactory\[conscrypt: ' ||
         { echo "gate-$row: a setprop $flip changed this process's gate"; bad=1; }
-      zy=$("$ADB" -s "$s" shell 'grep -c -e conscrypt_jni -e kktls-conscrypt /proc/$(pidof zygote)/maps' < /dev/null | tr -d '\r')
-      echo "gate-$row: zygote maps a Conscrypt library or kktls-conscrypt $zy time(s) (want 0)"
+      zy=$("$ADB" -s "$s" shell "grep -c -e conscrypt_jni -e kktls-conscrypt /proc/$zpid/maps" < /dev/null | tr -d '\r')
+      echo "gate-$row: zygote (pid $zpid) maps a Conscrypt library or kktls-conscrypt $zy time(s) (want 0)"
       [ "$zy" = 0 ] || bad=1
     else
       printf '%s\n' "$out" | grep -q '^DEFAULT .*\[gate-off: com.android.org.conscrypt.OpenSSLSocketFactoryImpl\]' ||
@@ -715,10 +730,12 @@ cmd_shadow() {  # SERIAL JAR HOST PORT (PORT 0: no handshake); either gate state
     echo "shadow: PASS (the app's own org.conscrypt wins; none on the boot class path)" || { echo "shadow: FAIL"; return 1; }
 }
 cmd_mem() {  # SERIAL JAR MODE (url:URL | load | local:HOST:PORT:PROTOS); 1 if the TLS use was not OK (its PSS means nothing)
-  local s=$1 out
+  local s=$1 out sspid zpid
+  sspid=$(pid_of "$s" system_server) || exit 2
+  zpid=$(pid_of "$s" zygote) || exit 2
   push_jar "$s" "$2"
   out=$(probe "$s" "mem mem $3"); printf '%s\n' "$out" | grep -E '^(PID|PSS|RESULT) '
-  "$ADB" -s "$s" shell 'for p in $(pidof system_server) $(pidof zygote); do
+  "$ADB" -s "$s" shell "for p in $sspid $zpid; do"'
       echo "pid $p $(cat /proc/$p/cmdline | tr "\0" " "): Pss $(awk "/^Pss:/{s+=\$2} END{print s}" /proc/$p/smaps) kB"; done
     dumpsys meminfo | grep -E "Total PSS|Total RAM|Free RAM|Used RAM|Lost RAM|system \(pid|system_server|com.android.phone \("
     du -s /data/dalvik-cache; ls -l /data/dalvik-cache | grep -E "kktls-|@core.jar|@conscrypt.jar"
@@ -935,8 +952,9 @@ setters_verdict() {  # WANT_DEFAULT_STACK DEFAULT_OUT CONTEXT_OUT: 1 (with the r
 # shellcheck disable=SC2016  # the stub's own script: its $ expand when the stub runs, not here
 STUB_ADB='#!/bin/bash
 # stub adb of tls-probe.sh selftest: -s SERIAL push|install|shell ...; a probe prints what its row name (second word)
-# asks for; am instrument prints one passing test of the class it was given (parsed as the device shell parses the
-# command line adb joins: quotes removed, $NAME expanded), logs "RAN-CLASS <class>" to STUB_LOG and exits STUB_RC
+# asks for; ps prints the file STUB_PS; am instrument prints one passing test of the class it was given (parsed as the
+# device shell parses the command line adb joins: quotes removed, $NAME expanded), logs "RAN-CLASS <class>" to STUB_LOG
+# and exits STUB_RC
 shift 2
 case $1 in
   install) echo Success ;;
@@ -963,6 +981,7 @@ case $1 in
           other-*) echo "RESULT someone-else OK" ;;
         esac ;;
       getprop*) echo "${STUB_GATE:-}" ;;
+      ps) [ -z "${STUB_PS:-}" ] || cat "$STUB_PS" ;;
       "ls /system/framework/kktls-conscrypt.jar"*) [ -z "${STUB_D:-}" ] || echo yes ;;
     esac ;;
 esac
@@ -998,6 +1017,18 @@ Test results for InstrumentationCtsTestRunner=.E.F.
 FAILURES!!!
 Tests run: 3,  Failures: 1,  Errors: 1
 INSTRUMENTATION_CODE: -1'
+
+# `adb shell ps` of the SDK 4.4.2 ARM image (rows cut; the selftest adds the CRs that adb gives), plus a made-up app
+# whose name ends in zygote; toolbox prints the state column (S) without a header
+PS_FIXTURE='USER     PID   PPID  VSIZE  RSS     WCHAN    PC         NAME
+root      1     0     644    500   c00df1fc 0001a098 S /init
+root      2     0     0      0     c003c4d8 00000000 S kthreadd
+root      472   1     576    260   c00df1fc 0001a098 S /sbin/ueventd
+system    667   1     1000   176   c027e9dc b6f5a41c S /system/bin/servicemanager
+root      673   1     494756 39940 ffffffff b6edb568 S zygote
+system    1070  673   565472 41412 ffffffff b6edc5cc S system_server
+u0_a7     1161  673   531660 54376 ffffffff b6edc5cc S com.android.systemui
+u0_a99    1300  673   508444 22424 ffffffff b6edc5cc S com.example.zygote'
 
 cts_wrapped() {  # ROOT [MIDDLE]: canned `am instrument` output of one ClientHello test that failed inside
   # ForEachRunner.runNamed (4.4's stack= is the printStackTrace text: wrapper, its "at" lines, then each cause)
@@ -1199,6 +1230,22 @@ RESULT fallback-control OK no handshake" 0
     "RESULT setters-default FAIL class=other bad=rc4 stack=conscrypt cases=6" "$st_p"
   case_rc "setters: the SSLContext run died (no RESULT)" 1 setters_verdict conscrypt "$st_c" "SETTER setters-context rc4 ok x"
   case_rc "setters: the fifth argument must be 'local'" 2 env ADB="$t/adb" bash "$0" setters S "$t/jar" h 443 remote
+  # pid_of (no pidof on the SDK 4.4.2 image): exact NAME match; ps-nozygote = the fixture without the zygote row
+  printf '%s\n' "$PS_FIXTURE" | sed 's/$/\r/' > "$t/ps"
+  grep -v ' zygote.$' "$t/ps" > "$t/ps-nozygote"
+  pidis() { [ "$(STUB_PS=$1 pid_of S "$2")" = "$3" ]; }
+  case_rc "pid_of: zygote" 0 pidis "$t/ps" zygote 673
+  case_rc "pid_of: system_server" 0 pidis "$t/ps" system_server 1070
+  case_rc "pid_of: com.example.zygote is not zygote" 0 pidis "$t/ps-nozygote" zygote ""
+  pidcaller() { (pid=$(STUB_PS=$1 pid_of S "$2") || exit 2; echo "$pid"); }
+  case_rc "pid_of: a missing process is a tool error" 2 pidcaller "$t/ps-nozygote" zygote
+  case_rc "pid_of: no ps output is a tool error" 2 pidcaller /dev/null zygote
+  gate_nozygote() {  # exit 2, the message, and no gate read or set before it
+    env ADB="$t/adb" STUB_D=1 STUB_PS="$t/ps-nozygote" bash "$0" gate S "$t/jar" h 443 > "$t/gate-out" 2>&1
+    [ $? = 2 ] && grep -q "no process 'zygote'" "$t/gate-out" && ! grep -q 'before the run' "$t/gate-out"
+  }
+  case_rc "gate: no zygote is a tool error before the gate is touched" 0 gate_nozygote
+  case_rc "mem: no zygote is a tool error" 2 env ADB="$t/adb" STUB_PS="$t/ps-nozygote" bash "$0" mem S "$t/jar" load
   if [ -n "${1:-}" ]; then
     for j in framework ext; do [ -f "$1/$j.jar" ] || die "$1/$j.jar missing"; done
     mkdir -p "$t/classes"

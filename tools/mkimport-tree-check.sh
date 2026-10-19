@@ -21,6 +21,7 @@ SERIES=$TOOLS/../external_openssl; [ -d "$SERIES" ] || SERIES=$TOOLS/../patches/
 BASE=dd1da36b0baa39942f0aef42c4712ef0ad628a83
 AOSP_OPENSSL_URL=${AOSP_OPENSSL_URL:-https://android.googlesource.com/platform/external/openssl}
 die() { echo "mkimport-tree-check: $*" >&2; exit 2; }
+. "$TOOLS/lib/retry.sh" || die "tools/lib/retry.sh missing"   # retry (the fetch of BASE)
 [ "${1:-}" = --series ] && { [ $# -ge 2 ] || die "--series needs a directory"; SERIES=$2; shift 2; }
 [ $# = 1 ] || die "usage: mkimport-tree-check.sh [--series DIR] WORK"
 case $1 in -*) die "unknown option $1" ;; esac
@@ -34,7 +35,7 @@ gitc() { git -c user.name=mkimport-tree-check -c user.email=mkimport-tree-check@
 
 echo "== series $SERIES"; sha256sum "$p1" "$p2"
 gitc init -q "$WORK/recipe"
-gitc -C "$WORK/recipe" fetch -q --depth=1 "$AOSP_OPENSSL_URL" "$BASE" || die "cannot fetch $BASE"
+retry 3 gitc -C "$WORK/recipe" fetch -q --depth=1 "$AOSP_OPENSSL_URL" "$BASE" || die "cannot fetch $BASE"
 gitc -C "$WORK/recipe" checkout -q FETCH_HEAD
 gitc -C "$WORK/recipe" am -q "$p1" || die "0001 does not apply on $BASE"
 cp -a "$WORK/recipe" "$WORK/ref"
