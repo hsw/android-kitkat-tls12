@@ -9,6 +9,9 @@
   `libssl.so` as the platform library there (`NativeCrypto` lives in `libjavacore.so`, which every process maps). Before,
   `setters … context` and `both` reported FAIL on Jelly Bean although the stack behaved as expected. `Tls12Probe
   selftest` has the Jelly Bean cases. The 4.4 rules are unchanged.
+- `tools/tls-probe.sh`: `gate` and `mem` find the zygote and `system_server` pids from `adb shell ps` instead of
+  `pidof`, which the SDK 4.4.2 emulator image does not have. There, `gate` read `/proc//maps` and reported FAIL
+  although every gate row passed. A process that `ps` does not list is now a tool error (exit 2).
 
 ## v5
 
