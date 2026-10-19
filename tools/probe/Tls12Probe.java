@@ -421,7 +421,8 @@ public class Tls12Probe {
             def = "n/a " + describe(t);
         }
         String m = mapped(SYSTEM_JNI, "libjavacrypto.so", "libssl.so", "libcrypto.so");
-        boolean jb = android.os.Build.VERSION.SDK_INT < 19;
+        // the String field: d8 --min-api 19 folds "Build.VERSION.SDK_INT < 19" to false (found on 4.3)
+        boolean jb = Integer.parseInt(android.os.Build.VERSION.SDK) < 19;
         boolean both = bothMapped(m, jb);
         boolean conscrypt = def.indexOf("[conscrypt: ") >= 0;
         System.out.println("DEFAULT " + name + " " + def);
