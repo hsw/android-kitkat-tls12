@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Changed
+
+- `kktls-openssl-4.4-armeabi-v7a-<rel>.zip`: `libcrypto.so` uses the NEON code of OpenSSL 1.0.1u for GHASH (AES-GCM)
+  and SHA-512. Before, the 4.4 ARM build had no CPU capability setup: `OPENSSL_cpuid_setup` was an empty stub,
+  `OPENSSL_armcap_P` stayed 0, and `ghash-armv4` and `sha512-armv4` never took their NEON paths. Now `crypto/armcap.c`
+  sets `ARMV7_NEON` from `getauxval(AT_HWCAP)` when the library loads (no SIGILL probe), and `OPENSSL_armcap=0` in a
+  process's environment turns it off. Upstream 1.0.1u with this setup on the RK3026 e-reader (Cortex-A9, 912 MHz),
+  NEON against `OPENSSL_armcap=0`, 8 KiB blocks: AES-128-GCM 18.8 against 16.9 MB/s (+11%), SHA-512 33.7 against
+  18.8 MB/s (+79%). AES-CBC, SHA-256, RSA and ECDH have no NEON code in 1.0.1u and stay as they were.
+  `OPENSSL_armcap_P` stays exported, as in the stock 4.4 library. This is the only file of the release that changes:
+  every other file of the 4.4 zips and every file of the Jelly Bean zips installs the same bytes as v5 (the Jelly Bean
+  ARM `libcrypto.so` keeps the scalar paths).
+
 ### Tools
 
 - `tools/probe/Tls12Probe.java`: on Android 4.1-4.3 the platform sockets
@@ -20,6 +33,9 @@
   `external/openssl` fetches of `openssl-cve-test.sh`, `mkimport.sh` and `mkimport-tree-check.sh`, and the 4.4.2 fetch
   in `kktls-apply-series.sh`. The helper is `tools/lib/retry.sh`, and `kktls-apply-series.sh` has an inline copy of it.
   `tools/lib/retry.sh --selftest` runs in CI.
+- `tools/probe/armcap_probe.c`: prints `OPENSSL_armcap_P` of the device's `libcrypto.so` (`dlopen`/`dlsym`; 1 = NEON
+  on), the NDK build line is in the file. `tools/check_44_payload.py` allows the 4.4 ARM `libcrypto.so` to differ from
+  the v4 baseline; the x86 one and both `libssl.so` must still match.
 
 ## v5
 
