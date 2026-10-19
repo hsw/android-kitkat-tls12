@@ -33,7 +33,7 @@ OpenSSL 1.0.1u is past its end of life. Read [SECURITY.md](SECURITY.md) before y
 
 | Part | What it changes | Files on the device |
 |---|---|---|
-| **Layer A: OpenSSL** | OpenSSL 1.0.1u with post-EOL security backports, replacing 1.0.1e | `/system/lib/libssl.so`, `libcrypto.so` |
+| **Layer A: OpenSSL** | OpenSSL 1.0.1u with post-EOL security backports, replacing 1.0.1e. On 4.4 ARM `libcrypto` turns on the NEON code of GHASH (AES-GCM), SHA-384/512 and GF(2^m) (binary-curve EC) when the CPU has NEON (`getauxval(AT_HWCAP)`), the scalar code otherwise; the Jelly Bean ARM builds keep the scalar code | `/system/lib/libssl.so`, `libcrypto.so` |
 | **Layer A: Java TLS** | libcore, Conscrypt-in-libcore and okhttp backports: TLS 1.1/1.2 enabled by default, 13 default suites (ECDHE first, AES-GCM, no RC4/3DES/DES/EXPORT/MD5/DHE/static ECDH), SNI on every client path, `TLS_FALLBACK_SCSV` fallback over TLSv1 instead of SSLv3, stricter wildcard matching, intermediate CA cache fixes. On 4.3, 4.2 and 4.1.2 the same changes in libcore alone (its TLS provider and its HTTPS client `libcore.net.http`; Jelly Bean has no okhttp) | 4.4: `/system/framework/{core,core-libart,conscrypt,okhttp}.jar`, `/system/lib/libjavacrypto.so`; 4.1.2 to 4.3: `/system/framework/core.jar`, `/system/lib/libjavacore.so` |
 | **Layer D: TLS 1.3** | Standalone Conscrypt 2.6-alpha2 (BoringSSL inside) behind the default `SSLSocketFactory`: TLS 1.0–1.3, ChaCha20-Poly1305, X25519, no SSLv3 | `/system/framework/kktls-conscrypt.jar`, `kktls-sslfilter.jar`, `/system/lib/libkktls_conscrypt_jni.so`; also `/system/lib/libkktls_compat.so` on 4.2 ARM and 4.1.2 (ARM and x86) |
 | **CA store** | The Mozilla root store (121 roots as of 2026-09) in the Android 4.x format, replacing the 2013 directory wholesale | `/system/etc/security/cacerts/` |
@@ -248,16 +248,18 @@ tools/install-adb.sh [-s SERIAL] --restore kktls-restore-v2.zip
 | AOSP `android-4.3_r3`, `android-4.2.2_r1` and `android-4.1.2_r2` `full_x86-eng` builds without dexpreopt (KVM), openssl + CA store + java x86 zips of that version | emulator, `install-adb.sh`, cold boot | the same as on ARM for each version: install, boot and restore (the four files and the CA store directory back byte for byte); no crash reports in logcat; every client factory `TLSv1, TLSv1.1, TLSv1.2`; matrix of 25 TLS test servers as wanted except `wrong.host`; ClientHello with SNI and the 13 suites on the four client paths and the TLSv1 retry with `TLS_FALLBACK_SCSV`; local TLS-1.2-only and SNI-only servers succeed on all four paths; the fallback tests and `DefaultHostnameVerifierTest` pass. The 4.1 x86 build carries the 4.2 fix of `FontRenderer::cacheBitmap` in `libhwui` (stock `android-4.1.2_r2` crashes every hardware-accelerated app on x86, these zips or not) |
 | Jelly Bean 4.3, 4.2 and 4.1 java builds, ARM and x86 | the stock `libjavacore.so` of the same tree and of the SDK images | no export removed, the same `NEEDED`; Java `native` declarations match the JNI table |
 | Android SDK system image 4.4.2 ARM with a kernel that reports NEON, openssl + CA store + java-4.4.2 + conscrypt zips with the NEON guard in `core.jar` | emulator, `install-adb.sh` | TLS 1.3 with layer D through the KitKat adapter as before; matrix of 25 TLS test servers as wanted; kill switch `0` gives layer A with no Conscrypt library mapped; no crash |
+| The same image, the openssl zip with the NEON-enabled 4.4 ARM `libcrypto.so` | emulator, `tools/probe/armcap_probe` | `OPENSSL_armcap_P` 0 on the stock library, 1 on ours, 0 with `OPENSSL_armcap=0`; the TLS server matrix as wanted on layer A (with the kill switch `0`: AES-GCM and SHA-384 suites on the NEON code) and with layer D; no SIGILL, no crash |
 | AOSP `android-4.3_r3`, `android-4.2.2_r1` and `android-4.1.2_r2` `full-eng` ARM builds (with a kernel that reports NEON: the Jelly Bean SDK ARM kernels do not) and `full_x86-eng` builds (KVM), all without dexpreopt; openssl + CA store + java + conscrypt zips of that version | emulator, `install-adb.sh` | install and restore (the layer A files and the CA store back byte for byte, the layer D files gone); the default factory uses `org.conscrypt.OpenSSLSocketFactoryImpl`; TLS 1.3 (`TLS_CHACHA20_POLY1305_SHA256`) through `getDefault()`, `HttpsURLConnection` and Apache HTTP to a TLS-1.3-only server, and to a server whose only group is X25519 and only suite ChaCha20-Poly1305; ChaCha20 suites, `supported_versions` and an X25519 `key_share` in every ClientHello of the default factory; SSLv3 filtered and weak suites throwing on the default factory's sockets; `SSLContext.getDefault()`, `SSLContext.getInstance(...)`, `SSLCertificateSocketFactory` and server sockets stay on layer A; matrix of 25 TLS test servers as wanted except `wrong.host` as with the java zip; the kill switch `0` and absent layer D files give layer A (TLS 1.2, no Conscrypt library mapped); a process that is not dumpable (as every app of a user build) gets TLS 1.3 too, through the compat library's `/proc/cpuinfo` fallback where it has one; no crash from layer D. 4.2 ARM, 4.1 ARM and 4.1 x86 with `libkktls_compat.so` |
 | The same 4.3, 4.2 and 4.1 ARM builds with the SDK API 18, 17 and 16 ARM kernels (no NEON) and all four zips | emulator | the default factory stays on layer A (TLS 1.2, no Conscrypt library mapped), every probe process exits normally, no tombstone |
 | The recovery path (`update-binary`), 4.4.4 x86 java zip | host tests against fake `/system` trees, plus a real SDK 4.4.2 `/system` | pass |
 
-**Not tested yet:** a real TWRP or CWM recovery (only host tests run `update-binary`); 4.4.4 on x86 in an emulator;
-ART (all runs used Dalvik); real hardware other than the device below; Android 4.4.0, 4.4.1 and 4.4.3; Jelly Bean
-on real hardware; the Jelly Bean java zips on a system with `.odex` files whose jars keep `classes.dex` (host tests
-only); the layer D NEON check on a real ARM CPU without NEON (only emulator kernels that hide it); the 4.4 x86 java
-zips with the NEON-guarded `core.jar` (the same hook source ran on 4.4 ARM and Jelly Bean x86); an app that bundles
-Conscrypt next to layer D on Jelly Bean. Reports welcome.
+**Not tested yet:** a real TWRP or CWM recovery (only host tests run `update-binary`); 4.4.4 on x86 in an emulator; ART
+(all runs used Dalvik); real hardware other than the device below; Android 4.4.0, 4.4.1 and 4.4.3; Jelly Bean on real
+hardware; the Jelly Bean java zips on a system with `.odex` files whose jars keep `classes.dex` (host tests only); the
+layer D NEON check on a real ARM CPU without NEON (only emulator kernels that hide it); the 4.4 ARM `libcrypto` on a CPU
+without NEON (its scalar code ran in the CVE harness with `OPENSSL_armcap=0`); the 4.4 x86 java zips with the
+NEON-guarded `core.jar` (the same hook source ran on 4.4 ARM and Jelly Bean x86); an app that bundles Conscrypt next to
+layer D on Jelly Bean. Reports welcome.
 
 ## Build from source
 
@@ -357,11 +359,16 @@ uses neither.
 
 - `tools/openssl-cve-test.sh`: builds OpenSSL in Docker for host, x86, ARM and MIPS, with and without assembler, and
   runs reproducers for the backported CVEs (a FAIL on unpatched 1.0.1u, a PASS with the patches); `--jb-base <ver>`
-  for a Jelly Bean series.
+  for a Jelly Bean series. With assembler (`--asm`) it also runs the upstream AES, AES-GCM, SHA-512 and EC (prime and
+  binary curves) known-answer tests; on ARM it checks that the NEON paths ran, and `OPENSSL_armcap=0` selects the
+  scalar paths instead.
 - `tools/openssl-abi-check.sh`: exported symbols, their users and public struct layouts against the stock OpenSSL.
 - `tools/check_tls_lists.py`: protocol and cipher suite lists in the Java patches.
 - `tools/tls-probe.sh`: a probe app for a device or emulator (`dump`, `hello`, `matrix` against badssl.com and
-  Let's Encrypt hosts).
+  Let's Encrypt hosts; `gate`, `mem` and the other layer D checks; the full list is in the script's header). It reads
+  the zygote and `system_server` pids from `ps`, so it needs no `pidof` on the device.
+- `tools/probe/armcap_probe.c`: prints `OPENSSL_armcap_P` of the device's `libcrypto.so` (1 = the NEON code runs,
+  0 = scalar). The NDK build line is in the file; push the binary to `/data/local/tmp` and run it from `adb shell`.
 - `installer/test/run-tests.sh` and `symcheck/test.sh`: the installer and the symbol helper on fake `/system` trees.
 - `conscrypt/sslfactory/test/run-host-tests.sh`: the layer D default factory and the SSLv3 filter on a host JVM (files
   present, absent or broken, the kill switch, NEON from fake auxv and cpuinfo files, the Jelly Bean inner factory);

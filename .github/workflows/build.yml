@@ -84,6 +84,8 @@ jobs:
           tools/tls-probe.sh selftest
           tools/kktls-release-build.sh --dry-run
           tools/kktls-jb-openssl-build.sh --dry-run
+      - name: armcap_probe compiles (host gcc; the device build line is in the file)
+        run: gcc -std=c99 -O2 -Wall -Wextra -Werror -o "$RUNNER_TEMP/armcap_probe" tools/probe/armcap_probe.c -ldl
       - name: sslfactory host tests
         run: conscrypt/sslfactory/test/run-host-tests.sh
       - name: compat library host tests (getauxval, fortify)
@@ -368,7 +370,7 @@ jobs:
           tools/mkzips.sh --in "$in" --jb "$RUNNER_TEMP/jb" --release "$RELEASE" --cacerts cacerts/files \
             --conscrypt-notice conscrypt/NOTICE --out "$RUNNER_TEMP/zips"
           (cd "$RUNNER_TEMP/zips" && sha256sum -c --quiet SHA256SUMS && cat SHA256SUMS)
-      - name: 4.4 zips install the v4 files (only core.jar and core-libart.jar may differ)
+      - name: 4.4 zips install the v4 files (only the files check_44_payload.py allows may differ)
         run: python3 -I tools/check_44_payload.py "$RUNNER_TEMP/zips"
       - name: installer tests on the release output
         run: |

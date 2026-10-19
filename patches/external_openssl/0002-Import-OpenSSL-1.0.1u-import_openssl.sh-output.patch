@@ -13,7 +13,7 @@ sha256 4312b4ca1215b6f2c97007503d80db80d5157f76f8f7d3febbe6b4c56ff26739
 (8657 ABB2 60F0 56B1 E519  0839 D9C4 D26D 0E60 4491).
 ---
  Apps-config.mk                   |    2 +-
- Crypto-config.mk                 |    2 +-
+ Crypto-config.mk                 |    6 +-
  NOTICE                           |    2 +-
  Ssl-config.mk                    |    2 +-
  android.testssl/testssl          |   55 +-
@@ -103,6 +103,8 @@ sha256 4312b4ca1215b6f2c97007503d80db80d5157f76f8f7d3febbe6b4c56ff26739
  crypto/aes/asm/vpaes-x86_64.S    |    2 +-
  crypto/aes/asm/vpaes-x86_64.pl   |    2 +-
  crypto/arm_arch.h                |   72 +-
+ crypto/armcap.c                  |   60 +
+ crypto/armv4cpuid.S              |    1 -
  crypto/asn1/a_bitstr.c           |  364 +-
  crypto/asn1/a_bool.c             |   97 +-
  crypto/asn1/a_bytes.c            |  522 +-
@@ -982,8 +984,9 @@ sha256 4312b4ca1215b6f2c97007503d80db80d5157f76f8f7d3febbe6b4c56ff26739
  ssl/t1_srvr.c                    |   50 +-
  ssl/tls1.h                       |  984 ++--
  ssl/tls_srp.c                    |  857 ++--
- 970 files changed, 262751 insertions(+), 260589 deletions(-)
+ 972 files changed, 262815 insertions(+), 260590 deletions(-)
  mode change 100644 => 100755 crypto/aes/asm/aes-586.pl
+ create mode 100644 crypto/armcap.c
  delete mode 100644 crypto/bn/asm/mips3.s
  mode change 100755 => 100644 crypto/bn/bn_const.c
  create mode 100644 crypto/constant_time_locl.h
@@ -1036,7 +1039,7 @@ index 2ee8026..ec2e3b7 100644
  # Before including this file, the local Android.mk must define the following
  # variables:
 diff --git a/Crypto-config.mk b/Crypto-config.mk
-index d74a791..1dca116 100644
+index d74a791..c181778 100644
 --- a/Crypto-config.mk
 +++ b/Crypto-config.mk
 @@ -1,6 +1,6 @@
@@ -1047,6 +1050,30 @@ index d74a791..1dca116 100644
  #
  # Before including this file, the local Android.mk must define the following
  # variables:
+@@ -546,12 +546,15 @@ arm_c_flags := \
+   -DGHASH_ASM \
+   -DOPENSSL_BN_ASM_GF2m \
+   -DOPENSSL_BN_ASM_MONT \
++  -DOPENSSL_CPUID_OBJ \
+   -DSHA1_ASM \
+   -DSHA256_ASM \
+   -DSHA512_ASM \
+ 
+ arm_src_files := \
+   crypto/aes/asm/aes-armv4.S \
++  crypto/armcap.c \
++  crypto/armv4cpuid.S \
+   crypto/bn/asm/armv4-gf2m.S \
+   crypto/bn/asm/armv4-mont.S \
+   crypto/modes/asm/ghash-armv4.S \
+@@ -561,6 +564,7 @@ arm_src_files := \
+ 
+ arm_exclude_files := \
+   crypto/aes/aes_core.c \
++  crypto/mem_clr.c \
+ 
+ x86_c_flags := \
+   -DAES_ASM \
 diff --git a/NOTICE b/NOTICE
 index e47d101..fb03713 100644
 --- a/NOTICE
@@ -76006,6 +76033,81 @@ index 5a83107..b654371 100644
 +# endif
  
  #endif
+diff --git a/crypto/armcap.c b/crypto/armcap.c
+new file mode 100644
+index 0000000..d9b50ed
+--- /dev/null
++++ b/crypto/armcap.c
+@@ -0,0 +1,60 @@
++#include <stdlib.h>
++#include <sys/auxv.h>
++#include <crypto.h>
++
++#include "arm_arch.h"
++
++/* the kernel's NEON hwcap bit (asm/hwcap.h; bionic's and glibc's sys/auxv.h do not define it) */
++#ifndef HWCAP_NEON
++# define HWCAP_NEON (1 << 12)
++#endif
++
++unsigned int OPENSSL_armcap_P;
++
++/*
++ * kktls: the stock Android 4.4 libcrypto exports cleanse_ctr (from mem_clr.c,
++ * which this build replaces with armv4cpuid.S); kept so no stock export goes.
++ */
++unsigned char cleanse_ctr = 0;
++
++/*
++ * Following subroutines could have been inlined, but it's not all
++ * ARM compilers support inline assembler...
++ */
++unsigned int _armv7_tick(void);
++
++unsigned int OPENSSL_rdtsc(void)
++{
++    if (OPENSSL_armcap_P & ARMV7_TICK)
++        return _armv7_tick();
++    else
++        return 0;
++}
++
++/*
++ * kktls: NEON from the kernel's AT_HWCAP (getauxval, Android 4.3+) instead of
++ * running a NEON and an mrrc instruction under a SIGILL handler in every
++ * process that loads libcrypto. ARMV7_TICK is never set (OPENSSL_rdtsc
++ * returns 0), and the OPENSSL_armcap override is masked to ARMV7_NEON.
++ */
++#if defined(__GNUC__) && __GNUC__>=2
++void OPENSSL_cpuid_setup(void) __attribute__ ((constructor));
++#endif
++void OPENSSL_cpuid_setup(void)
++{
++    char *e;
++    static int trigger = 0;
++
++    if (trigger)
++        return;
++    trigger = 1;
++
++    if ((e = getenv("OPENSSL_armcap"))) {
++        OPENSSL_armcap_P = strtoul(e, NULL, 0) & ARMV7_NEON;
++        return;
++    }
++
++    OPENSSL_armcap_P = 0;
++    if (getauxval(AT_HWCAP) & HWCAP_NEON)
++        OPENSSL_armcap_P |= ARMV7_NEON;
++}
+diff --git a/crypto/armv4cpuid.S b/crypto/armv4cpuid.S
+index 2d618de..4d9ae63 100644
+--- a/crypto/armv4cpuid.S
++++ b/crypto/armv4cpuid.S
+@@ -151,4 +151,3 @@ atomic_add_spinlock:
+ #endif
+ 
+ .comm	OPENSSL_armcap_P,4,4
+-.hidden	OPENSSL_armcap_P
 diff --git a/crypto/asn1/a_bitstr.c b/crypto/asn1/a_bitstr.c
 index 3417996..f906188 100644
 --- a/crypto/asn1/a_bitstr.c

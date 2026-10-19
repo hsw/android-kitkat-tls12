@@ -21,10 +21,15 @@ lists those suites as supported and setEnabledCipherSuites() would throw);
 UNNEEDED_SOURCES: entries that 1.0.1u no longer has (perl, the include links
 of the disabled algorithms) removed, the new test sources added (as AOSP 5.1
 did for constant_time_test.c, heartbeat_test.c, ssl_utst.c).
+
+openssl.config arm: armcap.c and armv4cpuid.S built, OPENSSL_CPUID_OBJ
+defined, mem_clr.c excluded, so the NEON paths of ghash-armv4,
+sha512-armv4 and armv4-gf2m run (kktls_armcap_neon.patch: NEON from
+AT_HWCAP).
 ---
- openssl.config                       |  198 ++-
+ openssl.config                       |  209 ++-
  openssl.version                      |    2 +-
- patches/README                       |  302 +++++
+ patches/README                       |  321 +++++
  patches/alpn.patch                   |  970 +++++++-------
  patches/channelid.patch              | 1846 ++++++++++++++------------
  patches/cve-2016-8610.patch          |  120 ++
@@ -59,6 +64,7 @@ did for constant_time_test.c, heartbeat_test.c, ssl_utst.c).
  patches/handshake_cutthrough.patch   |  438 +++---
  patches/jsse.patch                   |  784 +++++------
  patches/kktls_alpn_empty.patch       |   25 +
+ patches/kktls_armcap_neon.patch      |  119 ++
  patches/kktls_cert_chain.patch       |   60 +
  patches/kktls_channelid_key.patch    |   82 ++
  patches/kktls_channelid_state.patch  |   69 +
@@ -66,7 +72,7 @@ did for constant_time_test.c, heartbeat_test.c, ssl_utst.c).
  patches/progs.patch                  |   87 +-
  patches/rc4_md5_harden.patch         |   19 +
  patches/tls12_digests.patch          |  647 +++++----
- 44 files changed, 5236 insertions(+), 2563 deletions(-)
+ 45 files changed, 5384 insertions(+), 2564 deletions(-)
  create mode 100644 patches/cve-2016-8610.patch
  create mode 100644 patches/cve-2017-3735.patch
  create mode 100644 patches/cve-2017-3737.patch
@@ -95,6 +101,7 @@ did for constant_time_test.c, heartbeat_test.c, ssl_utst.c).
  create mode 100644 patches/cve-2026-45447.patch
  delete mode 100644 patches/early_ccs.patch
  create mode 100644 patches/kktls_alpn_empty.patch
+ create mode 100644 patches/kktls_armcap_neon.patch
  create mode 100644 patches/kktls_cert_chain.patch
  create mode 100644 patches/kktls_channelid_key.patch
  create mode 100644 patches/kktls_channelid_state.patch
@@ -102,7 +109,7 @@ did for constant_time_test.c, heartbeat_test.c, ssl_utst.c).
  create mode 100644 patches/rc4_md5_harden.patch
 
 diff --git a/openssl.config b/openssl.config
-index acc2a6e..fda8d4a 100644
+index acc2a6e..70afd22 100644
 --- a/openssl.config
 +++ b/openssl.config
 @@ -1,6 +1,7 @@
@@ -121,7 +128,15 @@ index acc2a6e..fda8d4a 100644
  shlib \
  test \
  times \
-@@ -113,6 +113,7 @@ crypto/buffer/Makefile \
+@@ -91,7 +91,6 @@ config \
+ crypto/LPdir_vms.c \
+ crypto/Makefile \
+ crypto/aes/Makefile \
+-crypto/armcap.c \
+ crypto/asn1/Makefile \
+ crypto/bf/INSTALL \
+ crypto/bf/Makefile \
+@@ -113,6 +112,7 @@ crypto/buffer/Makefile \
  crypto/cmac/Makefile \
  crypto/comp/Makefile \
  crypto/conf/Makefile \
@@ -129,7 +144,7 @@ index acc2a6e..fda8d4a 100644
  crypto/crypto-lib.com \
  crypto/des/Makefile \
  crypto/des/des-lib.com \
-@@ -135,6 +136,7 @@ crypto/engine/eng_rdrand.c \
+@@ -135,6 +135,7 @@ crypto/engine/eng_rdrand.c \
  crypto/engine/eng_rsax.c \
  crypto/err/Makefile \
  crypto/evp/Makefile \
@@ -137,7 +152,7 @@ index acc2a6e..fda8d4a 100644
  crypto/evp/evp_fips.c \
  crypto/evp/m_md2.c \
  crypto/evp/m_sha.c \
-@@ -190,22 +192,19 @@ crypto/txt_db/Makefile \
+@@ -190,22 +191,19 @@ crypto/txt_db/Makefile \
  crypto/ui/Makefile \
  crypto/vms_rms.h
  crypto/x509/Makefile \
@@ -164,12 +179,38 @@ index acc2a6e..fda8d4a 100644
  " 
  
  NEEDED_SOURCES="\
-@@ -993,14 +992,44 @@ eng_dyn_dirs.patch \
+@@ -231,6 +229,7 @@ AES_ASM \
+ SHA1_ASM \
+ SHA256_ASM \
+ SHA512_ASM \
++OPENSSL_CPUID_OBJ \
+ "
+ 
+ OPENSSL_CRYPTO_DEFINES_mips="\
+@@ -788,6 +787,8 @@ crypto/x509v3/v3err.c \
+ 
+ OPENSSL_CRYPTO_SOURCES_arm="\
+ crypto/aes/asm/aes-armv4.S \
++crypto/armcap.c \
++crypto/armv4cpuid.S \
+ crypto/bn/asm/armv4-gf2m.S \
+ crypto/bn/asm/armv4-mont.S \
+ crypto/modes/asm/ghash-armv4.S \
+@@ -798,6 +799,7 @@ crypto/sha/asm/sha512-armv4.S \
+ 
+ OPENSSL_CRYPTO_SOURCES_EXCLUDES_arm="\
+ crypto/aes/aes_core.c \
++crypto/mem_clr.c \
+ "
+ 
+ OPENSSL_CRYPTO_SOURCES_mips="\
+@@ -993,14 +995,45 @@ eng_dyn_dirs.patch \
  fix_clang_build.patch \
  tls12_digests.patch \
  alpn.patch \
 -early_ccs.patch \
 +rc4_md5_harden.patch \
++kktls_armcap_neon.patch \
 +cve-2022-0778.patch \
 +cve-2023-2650.patch \
 +cve-2026-35189.patch \
@@ -211,7 +252,7 @@ index acc2a6e..fda8d4a 100644
  "
  
  OPENSSL_PATCHES_handshake_cutthrough_SOURCES="\
-@@ -1069,11 +1098,154 @@ ssl/t1_lib.c \
+@@ -1069,11 +1102,159 @@ ssl/t1_lib.c \
  ssl/tls1.h \
  "
  
@@ -219,6 +260,11 @@ index acc2a6e..fda8d4a 100644
 -ssl/s3_clnt.c \
 +OPENSSL_PATCHES_rc4_md5_harden_SOURCES="\
 +crypto/evp/e_rc4_hmac_md5.c \
++"
++
++OPENSSL_PATCHES_kktls_armcap_neon_SOURCES="\
++crypto/armcap.c \
++crypto/armv4cpuid.S \
 +"
 +
 +OPENSSL_PATCHES_cve_2022_0778_SOURCES="\
@@ -377,10 +423,10 @@ index b4e8cab..da494e4 100644
 -OPENSSL_VERSION=1.0.1e
 +OPENSSL_VERSION=1.0.1u
 diff --git a/patches/README b/patches/README
-index 0859abe..f886bd0 100644
+index 0859abe..fdd79c7 100644
 --- a/patches/README
 +++ b/patches/README
-@@ -1,3 +1,55 @@
+@@ -1,3 +1,56 @@
 +android-kitkat-tls12 (Android 4.4 port), 2026-10-09:
 +
 +This tree is OpenSSL 1.0.1u (openssl.version) imported with import_openssl.sh.
@@ -426,6 +472,7 @@ index 0859abe..f886bd0 100644
 +Added: kktls_cert_chain.patch (per-key certificate chain freed and duplicated with the CERT).
 +Added: kktls_p12_npas_alg_get.patch (PKCS12_newpass PBE parameter must be a SEQUENCE).
 +Added: kktls_alpn_empty.patch (server ALPN empty selection rejected explicitly).
++Added: kktls_armcap_neon.patch (arm: NEON from AT_HWCAP, no SIGILL probes; OPENSSL_armcap_P stays exported).
 +Added: cve-2016-8610.patch (consecutive warning alerts limited to 5; upstream 1.0.2 22646a075e (1.0.2i, released the same day as 1.0.1u, not in it) + error string f1f97699cb (1.0.2k)).
 +Added: cve-2020-1971-template.patch (EDIPartyName explicit tags, BAD_TEMPLATE on implicit-tagged MSTRING/CHOICE; upstream 1.1.1 aa0ad2011d, 1ecc76f674, 41d62636fd).
 +Dropped: early_ccs.patch (CVE-2014-0224, upstream since 1.0.1h).
@@ -436,7 +483,7 @@ index 0859abe..f886bd0 100644
  progs.patch:
  
  Fixup sources under the apps/ directory that are not built under the android environment.
-@@ -37,3 +89,253 @@ alpn.patch
+@@ -37,3 +90,271 @@ alpn.patch
  This change adds support for ALPN in OpenSSL. ALPN is the IETF
  blessed version of NPN and we'll be supporting both ALPN and NPN for
  some time yet.
@@ -446,6 +493,24 @@ index 0859abe..f886bd0 100644
 +kktls: CVE-2017-3731 (fixed in OpenSSL 1.0.2k, after the last 1.0.1 release):
 +a truncated record of the stitched RC4-MD5 cipher made the payload length wrap
 +around. LineageOS cm-11.0 carried the same fix (be01785) for its 1.0.1e tree.
++
++kktls_armcap_neon.patch
++
++kktls: the arm build now carries armcap.c and armv4cpuid.S (openssl.config:
++OPENSSL_CPUID_OBJ, mem_clr.c replaced by the asm OPENSSL_cleanse), so the
++NEON paths of ghash-armv4 (GHASH of AES-GCM), sha512-armv4 (SHA-384/512)
++and armv4-gf2m (GF(2^m) multiplication of the binary-curve EC code) run when
++the CPU has NEON. The NEON check reads getauxval(AT_HWCAP) (Android 4.3+)
++instead of running NEON and mrrc instructions under a SIGILL handler;
++ARMV7_TICK is never set, and the OPENSSL_armcap environment override is
++masked to ARMV7_NEON (1 = NEON, 0 = scalar). The stock exports stay:
++OPENSSL_armcap_P is not hidden, and armcap.c defines cleanse_ctr (from
++mem_clr.c before). Platform builds only: an unbundled build
++(TARGET_BUILD_APPS, LOCAL_SDK_VERSION := 9 in Crypto.mk) does not compile
++armcap.c, as NDK API 9 has no <sys/auxv.h>. A static link of
++libcrypto_static may leave armcap.o and its constructor out unless the
++program references OPENSSL_cpuid_setup (e.g. -Wl,-u,OPENSSL_cpuid_setup);
++OPENSSL_armcap_P then stays 0 (the scalar paths).
 +
 +cve-2022-0778.patch
 +
@@ -7524,6 +7589,131 @@ index 0000000..4edc97c
 +         if (s->s3->alpn_selected)
 +             OPENSSL_free(s->s3->alpn_selected);
 +         s->s3->alpn_selected = OPENSSL_malloc(selected_len);
+diff --git a/patches/kktls_armcap_neon.patch b/patches/kktls_armcap_neon.patch
+new file mode 100644
+index 0000000..932db71
+--- /dev/null
++++ b/patches/kktls_armcap_neon.patch
+@@ -0,0 +1,119 @@
++From: kktls port, OpenSSL 1.0.1u (NEON on Android 4.4 ARM)
++Subject: kktls_armcap_neon
++OPENSSL_cpuid_setup() sets ARMV7_NEON from getauxval(AT_HWCAP) instead of
++SIGILL probes; ARMV7_TICK is never set and the OPENSSL_armcap override is
++masked to ARMV7_NEON. armcap.c keeps the stock export cleanse_ctr (mem_clr.c
++is not built on arm any more). armv4cpuid.S: OPENSSL_armcap_P stays exported
++(no .hidden), as in the stock Android 4.4 libcrypto.
++---
++diff --git a/crypto/armcap.c b/crypto/armcap.c
++index 28522ea..d9b50ed 100644
++--- a/crypto/armcap.c
+++++ b/crypto/armcap.c
++@@ -1,27 +1,26 @@
++-#include <stdio.h>
++ #include <stdlib.h>
++-#include <string.h>
++-#include <setjmp.h>
++-#include <signal.h>
+++#include <sys/auxv.h>
++ #include <crypto.h>
++ 
++ #include "arm_arch.h"
++ 
++-unsigned int OPENSSL_armcap_P;
+++/* the kernel's NEON hwcap bit (asm/hwcap.h; bionic's and glibc's sys/auxv.h do not define it) */
+++#ifndef HWCAP_NEON
+++# define HWCAP_NEON (1 << 12)
+++#endif
++ 
++-static sigset_t all_masked;
+++unsigned int OPENSSL_armcap_P;
++ 
++-static sigjmp_buf ill_jmp;
++-static void ill_handler(int sig)
++-{
++-    siglongjmp(ill_jmp, sig);
++-}
+++/*
+++ * kktls: the stock Android 4.4 libcrypto exports cleanse_ctr (from mem_clr.c,
+++ * which this build replaces with armv4cpuid.S); kept so no stock export goes.
+++ */
+++unsigned char cleanse_ctr = 0;
++ 
++ /*
++  * Following subroutines could have been inlined, but it's not all
++  * ARM compilers support inline assembler...
++  */
++-void _armv7_neon_probe(void);
++ unsigned int _armv7_tick(void);
++ 
++ unsigned int OPENSSL_rdtsc(void)
++@@ -32,14 +31,18 @@ unsigned int OPENSSL_rdtsc(void)
++         return 0;
++ }
++ 
+++/*
+++ * kktls: NEON from the kernel's AT_HWCAP (getauxval, Android 4.3+) instead of
+++ * running a NEON and an mrrc instruction under a SIGILL handler in every
+++ * process that loads libcrypto. ARMV7_TICK is never set (OPENSSL_rdtsc
+++ * returns 0), and the OPENSSL_armcap override is masked to ARMV7_NEON.
+++ */
++ #if defined(__GNUC__) && __GNUC__>=2
++ void OPENSSL_cpuid_setup(void) __attribute__ ((constructor));
++ #endif
++ void OPENSSL_cpuid_setup(void)
++ {
++     char *e;
++-    struct sigaction ill_oact, ill_act;
++-    sigset_t oset;
++     static int trigger = 0;
++ 
++     if (trigger)
++@@ -47,35 +50,11 @@ void OPENSSL_cpuid_setup(void)
++     trigger = 1;
++ 
++     if ((e = getenv("OPENSSL_armcap"))) {
++-        OPENSSL_armcap_P = strtoul(e, NULL, 0);
+++        OPENSSL_armcap_P = strtoul(e, NULL, 0) & ARMV7_NEON;
++         return;
++     }
++ 
++-    sigfillset(&all_masked);
++-    sigdelset(&all_masked, SIGILL);
++-    sigdelset(&all_masked, SIGTRAP);
++-    sigdelset(&all_masked, SIGFPE);
++-    sigdelset(&all_masked, SIGBUS);
++-    sigdelset(&all_masked, SIGSEGV);
++-
++     OPENSSL_armcap_P = 0;
++-
++-    memset(&ill_act, 0, sizeof(ill_act));
++-    ill_act.sa_handler = ill_handler;
++-    ill_act.sa_mask = all_masked;
++-
++-    sigprocmask(SIG_SETMASK, &ill_act.sa_mask, &oset);
++-    sigaction(SIGILL, &ill_act, &ill_oact);
++-
++-    if (sigsetjmp(ill_jmp, 1) == 0) {
++-        _armv7_neon_probe();
+++    if (getauxval(AT_HWCAP) & HWCAP_NEON)
++         OPENSSL_armcap_P |= ARMV7_NEON;
++-    }
++-    if (sigsetjmp(ill_jmp, 1) == 0) {
++-        _armv7_tick();
++-        OPENSSL_armcap_P |= ARMV7_TICK;
++-    }
++-
++-    sigaction(SIGILL, &ill_oact, NULL);
++-    sigprocmask(SIG_SETMASK, &oset, NULL);
++ }
++diff --git a/crypto/armv4cpuid.S b/crypto/armv4cpuid.S
++index 2d618de..4d9ae63 100644
++--- a/crypto/armv4cpuid.S
+++++ b/crypto/armv4cpuid.S
++@@ -151,4 +151,3 @@ atomic_add_spinlock:
++ #endif
++ 
++ .comm	OPENSSL_armcap_P,4,4
++-.hidden	OPENSSL_armcap_P
 diff --git a/patches/kktls_cert_chain.patch b/patches/kktls_cert_chain.patch
 new file mode 100644
 index 0000000..abe9341
