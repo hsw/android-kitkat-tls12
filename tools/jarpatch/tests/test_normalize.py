@@ -212,8 +212,13 @@ class JvmIndependent(unittest.TestCase):
         self.assertEqual(normalize._literals("NaN = 1.5f", True), "NaN = float:0x3fc00000")     # names stay
         self.assertEqual(normalize._literals("'\"', 1.5f, '\\''", True), "'\"', float:0x3fc00000, '\\''")
         self.assertEqual(normalize._literals("value = 1.5f"), "value = 1.5f")    # outside an annotation: as it is
-        self.assertEqual(normalize._strip_comment("value = '#'    # c"), "value = '#'")
-        self.assertEqual(normalize._strip_comment('const-string v0, "a\\"#b"    # c'), 'const-string v0, "a\\"#b"')
+        self.assertEqual(normalize.segments('a "x\\"y" \'b\'"open'),
+                         [(False, "a "), (True, '"x\\"y"'), (False, " "), (True, "'b'"), (True, '"open')])
+        self.assertEqual(normalize.segments(""), [])
+        self.assertEqual(normalize.strip_comment("value = '#'    # c"), "value = '#'")
+        self.assertEqual(normalize.strip_comment("x # 'y"), "x")
+        self.assertEqual(normalize.strip_comment("x '#"), "x '#")
+        self.assertEqual(normalize.strip_comment('const-string v0, "a\\"#b"    # c'), 'const-string v0, "a\\"#b"')
 
     def test_strings_and_instructions_kept(self):
         """Only values are rewritten: a const-string whose text holds ` = ` and a decimal stays as it is."""
@@ -394,14 +399,15 @@ class Tree(unittest.TestCase):
         self.assertEqual(self.run_cli().returncode, 2)
         self.assertEqual(self.run_cli("--dir", "a", "--jar", "b").returncode, 2)
         self.assertEqual(self.run_cli("--bogus").returncode, 2)
-        self.assertEqual(self.run_cli("--dir", os.path.join(self.root, "missing")).returncode, 1)
+        r = self.run_cli("--dir", os.path.join(self.root, "missing"))
+        self.assertEqual((r.returncode, r.stderr.split(": ")[-1]), (2, "not a directory\n"))
 
     def test_jar_without_classes_dex(self):
         jar = os.path.join(self.root, "odexed.jar")
         with zipfile.ZipFile(jar, "w") as z:
             z.writestr("META-INF/MANIFEST.MF", "Manifest-Version: 1.0\n")
         r = self.run_cli("--jar", jar)
-        self.assertEqual(r.returncode, 1)
+        self.assertEqual(r.returncode, 2)
         self.assertIn("no dex", r.stderr)
         with zipfile.ZipFile(jar, "a") as z:
             z.writestr("classes.dex", b"dex\n035\0")

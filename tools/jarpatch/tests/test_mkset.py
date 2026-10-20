@@ -162,7 +162,7 @@ class MakeSet(unittest.TestCase):
         r = subprocess.run([sys.executable, "-I", os.path.join(TOOL, "mkset.py"), os.path.join(self.tmp.name, "empty"),
                             os.path.join(self.tmp.name, "empty"), "--tag", "android-4.4.2_r2", "--jni", jni],
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
-        self.assertEqual(r.returncode, 1)
+        self.assertEqual(r.returncode, 2)
         self.assertIn("no core.jar", r.stdout)
 
     def test_cli_usage(self):

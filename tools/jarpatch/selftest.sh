@@ -52,6 +52,10 @@ mapfile -t SM < <(bash "$HERE/fetch-smali.sh") || true
 SMALI=${SM[1]}
 T=$(mktemp -d "${TMPDIR:-/tmp}/kktls-jarpatch-selftest.XXXXXX"); trap 'rm -rf "$T"' EXIT
 REL=v0 TAG=android-4.4.4_r2 ABI=armeabi-v7a
+# the smali API level and the set's jars are the patcher's own (normalize.BAKSMALI_API, mkset.JARS)
+read -r API JARS < <(python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); import mkset, normalize
+print(normalize.BAKSMALI_API, " ".join(mkset.JARS))' "$HERE") || true
+[ -n "${JARS:-}" ] || { echo "selftest: cannot read normalize.BAKSMALI_API and mkset.JARS" >&2; exit 2; }
 BCP=/system/framework/core.jar:/system/framework/conscrypt.jar:/system/framework/okhttp.jar:/system/framework/ext.jar
 
 # mkjar OUT.jar SRC_JAR LAYER... : the smali/ and res/ trees of LAYER/SRC_JAR (or LAYER itself when it has smali/
@@ -64,7 +68,7 @@ mkjar() {
     [ ! -d "$d/smali" ] || cp -r "$d/smali/." "$w/smali/"
     [ ! -d "$d/res" ] || cp -r "$d/res/." "$w/res/"
   done
-  "$JAVA" -jar "$SMALI" a -a 19 -o "$w/classes.dex" "$w/smali" > "$w/log" 2>&1 && [ -f "$w/classes.dex" ] ||
+  "$JAVA" -jar "$SMALI" a -a "$API" -o "$w/classes.dex" "$w/smali" > "$w/log" 2>&1 && [ -f "$w/classes.dex" ] ||
     { echo "selftest: smali of $out failed:"; cat "$w/log"; return 1; } >&2
   mkdir -p "$(dirname "$out")"
   python3 -I - "$out" "$w" <<'EOF'
@@ -82,7 +86,6 @@ EOF
   rm -rf "$w"
 }
 src_jar() { case $1 in core-libart) echo core ;; *) echo "$1" ;; esac; }
-JARS="core core-libart conscrypt okhttp"
 
 # ---- stock, ours, the device's base system, the set file, the release dir
 pids=()

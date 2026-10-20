@@ -30,6 +30,7 @@ import zipfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOL = os.path.dirname(HERE)
 sys.path.insert(0, TOOL)
+import linkcheck  # noqa: E402
 import mkset  # noqa: E402
 import normalize  # noqa: E402
 from test_nativescan import elf  # noqa: E402
@@ -178,10 +179,15 @@ elif a[:1] == ["shell"]:
                 else:
                     l = "-rw-r--r-- root root %d 2014-01-01 00:00 %s" % (os.path.getsize(p), n)
                 sys.stdout.write(l + "\r\n")
-    elif c.startswith("ls ") and c.endswith(" 2>/dev/null"):
-        d = dev(c[3:-len(" 2>/dev/null")])
-        if os.path.isdir(d):
+    elif c.startswith("ls ") and c.endswith(" 2>&1"):                # toolbox messages
+        top = c[3:-len(" 2>&1")]
+        d = dev(top)
+        if top == os.environ.get("FAKE_ADB_DENY_DIR"):
+            sys.stdout.write("opendir failed, Permission denied\r\n")
+        elif os.path.isdir(d):
             sys.stdout.write("".join(n + "\r\n" for n in sorted(os.listdir(d))))
+        else:
+            sys.stdout.write("%s: No such file or directory\r\n" % top)
     elif c.startswith("cat "):
         with open(dev(c[4:])) as f:
             sys.stdout.write(f.read().replace("\n", "\r\n"))
@@ -255,7 +261,7 @@ class Fixture(unittest.TestCase):
                 z.writestr(n, data)
 
     @classmethod
-    def make_release(cls, rel, ours, conf=None, installer="# java-patched) oem_ack\n"):
+    def make_release(cls, rel, ours, conf=None, installer="# %s\n" % " ".join(jp.INSTALLER_CAPS.values())):
         """The donor java zip and the openssl and conscrypt zips the --accept-oem copies are made from; installer:
         their kktls/checks.sh (None: none, an installer older than the jar patcher)."""
         os.makedirs(rel, exist_ok=True)
@@ -571,6 +577,23 @@ class Refusals(Fixture):
         rc, out = self.patch()
         self.assertRefused(rc, out, "restore it first", "/system/etc/kktls/java.version: installed: v6")
 
+    def test_adb_unlistable_dir(self):
+        # a directory the shell cannot list is a tool error, never an empty directory (its odex and link checks would
+        # be skipped); a missing one (here /system/etc/kktls) is empty
+        for d in ("/system/framework", "/system/app", "/system/priv-app", "/system/lib", "/system/etc/kktls"):
+            if d == "/system/etc/kktls":
+                os.makedirs(os.path.join(self.sysdir, "etc", "kktls"))
+            shutil.rmtree(self.out, ignore_errors=True)
+            os.environ["FAKE_ADB_DENY_DIR"] = d
+            try:
+                rc, out = self.patch(adb=True)
+            finally:
+                del os.environ["FAKE_ADB_DENY_DIR"]
+            self.assertEqual(rc, 2, out)
+            self.assertIn("kktls-jarpatch: error: adb: %s is not listable: opendir failed, Permission denied" % d, out)
+            self.assertFalse([n for n in os.listdir(self.out) if n.endswith(".zip")], d)
+            self.assertFalse(os.path.exists(os.path.join(self.out, "stage", "manifest.json")), d)
+
     def test_already_patched_marker_adb(self):
         os.makedirs(os.path.join(self.sysdir, "etc", "kktls"))
         with open(os.path.join(self.sysdir, "etc", "kktls", "java.version"), "w") as f:
@@ -715,7 +738,7 @@ class ToolErrors(Fixture):
         self.assertIn("%s: its installer predates this tool (no java-patched in kktls/checks.sh)" % DONOR, out)
         self.assertFalse(os.path.exists(os.path.join(self.out, "work")))
         rel = os.path.join(self.t.name, "rel7")
-        self.make_release(rel, os.path.join(self.base, "ours"), installer="# java-patched)\n")
+        self.make_release(rel, os.path.join(self.base, "ours"), installer="# %s\n" % jp.INSTALLER_CAPS["java-patched"])
         shutil.rmtree(self.out)
         rc, out = self.patch("--accept-oem", release=rel)
         self.assertEqual(rc, 2, out)
@@ -765,13 +788,15 @@ class Logic(unittest.TestCase):
             self.assertIn("not an empty directory", r.stdout)
 
     def test_dex_id_counts(self):
-        h = bytearray(0x70)
+        h = bytearray(linkcheck.HEADER_SIZE)
         h[0:8] = b"dex\n035\0"
-        for (k, off), n in zip(jp.DEX_IDS, (1, 2, 3, 65536)):
+        for (k, off), n in zip(linkcheck.ID_TABLES, (9, 1, 2, 3, 65536, 7)):
             h[off:off + 4] = n.to_bytes(4, "little")
-        self.assertEqual(jp.dex_id_counts(bytes(h)), {"type": 1, "proto": 2, "field": 3, "method": 65536})
-        with self.assertRaises(jp.ToolError):
-            jp.dex_id_counts(b"PK\3\4" + bytes(0x70))
+        self.assertEqual(linkcheck.id_counts(bytes(h)), {"type": 1, "proto": 2, "field": 3, "method": 65536})
+        self.assertEqual(linkcheck.dex_header(bytes(h))["class"], (7, 0))
+        for bad in (b"PK\3\4" + bytes(0x70), bytes(h[:-1])):
+            with self.assertRaises(linkcheck.LinkError):
+                linkcheck.id_counts(bad)
 
     def test_oem(self):
         # the markers equal installer/checks.sh KK_OEM_MARKERS (skipped in the release asset, which has no installer/)
@@ -780,17 +805,42 @@ class Logic(unittest.TestCase):
             with open(checks) as f:
                 text = f.read()
             self.assertEqual(jp.OEM_MARKERS, text.split('KK_OEM_MARKERS="', 1)[1].split('"', 1)[0].split())
+            # the texts the patcher looks for in a donor's installer
+            for cap, needle in jp.INSTALLER_CAPS.items():
+                self.assertIn(needle, text, cap)
+            self.assertIn("\n    %s # " % jp.INSTALLER_CAPS["java-patched"], text)   # kk_precheck's case label
         with tempfile.TemporaryDirectory() as t:
             bp = os.path.join(t, "build.prop")
             with open(bp, "w") as f:
                 f.write("# ro.cm.version=1\nro.build.id=KK\n ro.miui.x=1\nro.cm.version=11\nro.cm.device=x\n")
-            self.assertEqual(jp.oem_markers(bp), ["ro.cm.device", "ro.cm.version"])   # awk's $1: unstripped key
+            props, keys = jp.read_build_prop(bp)
+            self.assertEqual(jp.oem_markers(keys), ["ro.cm.device", "ro.cm.version"])   # awk's $1: unstripped key
+            self.assertEqual(props, {"ro.build.id": "KK", "ro.miui.x": "1", "ro.cm.version": "11", "ro.cm.device": "x"})
+        with self.assertRaises(jp.ToolError):
+            jp.read_build_prop(os.path.join(t, "missing.prop"))
         fp = "f" * 64
         self.assertEqual(jp.oem_conf("kind=openssl\nrelease=v9", fp), "kind=openssl\nrelease=v9\noem_ack=%s\n" % fp)
         with self.assertRaises(jp.ToolError):
             jp.oem_conf("kind=openssl\noem_ack=%s\n" % fp, fp)
         self.assertEqual(self.run_cli("--accept-oem", "--accept-oem", "--adb", "s", "--release-dir", "r",
                                       "--out", "o").returncode, 2)
+
+    def test_adb_ls(self):
+        class Fake(jp.Adb):
+            def __init__(self, text):
+                jp.Adb.__init__(self, "s")
+                self.text = text
+
+            def shell(self, command):
+                assert command == "ls /system/app 2>&1", command
+                return self.text
+        self.assertEqual(Fake("b.apk\na.apk\n\n").ls("/system/app"), ["a.apk", "b.apk"])
+        for missing in ("/system/app: No such file or directory\n", "ls: /system/app: No such file or directory\n"):
+            self.assertEqual(Fake(missing).ls("/system/app"), [])
+        for err in ("opendir failed, Permission denied\n", "ls: /system/app: Permission denied\n",
+                    "a.apk\nopendir failed, I/O error\n"):
+            with self.assertRaises(jp.ToolError):
+                Fake(err).ls("/system/app")
 
     def test_ls_files(self):
         toolbox = ("\n/system/lib:\ndrwxr-xr-x root root 2014-01-01 00:00 hw\n"

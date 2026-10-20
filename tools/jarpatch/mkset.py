@@ -25,7 +25,7 @@ fetch-smali.sh) and normalized (normalize.py, model H); the set is the dex diff,
 
 The header names the stock AOSP tag, the reference model, the normalizer version and the smali version; lines starting
 with `#` are comments (--note adds some). A --jni name that no stock jar defines is an error (a typo would silently drop
-a check). Exit 0 written, 1 error, 2 usage.
+a check). Exit 0 written, 2 usage or error.
 
 read_set(path, tag) parses and validates a set file (used by the patcher, checkset.py and the tests): its header must
 name this normalizer's model and versions (and tag, when given). Stdlib only.
@@ -38,6 +38,7 @@ import zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # `python3 -I` leaves the script dir out
 import normalize  # noqa: E402
+import rawzip  # noqa: E402
 
 JARS = ("core", "core-libart", "conscrypt", "okhttp")
 HEADER_KEYS = ("tag", "model", "normalizer", "smali")
@@ -256,12 +257,9 @@ def main(argv):
         text = make_set(collect(pos[0], bak), collect(pos[1], bak), jni, opt["--tag"], notes)
     except (SetError, normalize.NormalizeError, OSError, zipfile.BadZipFile) as e:
         print("mkset: " + str(e), file=sys.stderr)
-        return 1
+        return 2
     if "--out" in opt:
-        tmp = opt["--out"] + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            f.write(text)
-        os.replace(tmp, opt["--out"])
+        rawzip.atomic_write(opt["--out"], text)
     else:
         sys.stdout.write(text)
     return 0

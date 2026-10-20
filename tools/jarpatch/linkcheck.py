@@ -3,6 +3,7 @@
 """linkcheck.py: the jar patcher's link check, one class index per runtime.
 
     python3 -I linkcheck.py --dex FILE...            print the classes, members and references of dex/jar/apk files
+                                                     (exit 0 ok, 2 usage or tool error: an unreadable file)
 
 The patcher (kktls-jarpatch.py) calls run() after staging the patched classes.dex files. Two runtimes are checked:
 dalvik (the device's BOOTCLASSPATH, with core.jar) and art (the same with core.jar replaced by core-libart.jar, as the
@@ -27,15 +28,32 @@ before and after).
 Stdlib only: the dex tables (strings, types, protos, fields, methods, class definitions and class data) are read
 directly.
 """
+import collections
 import os
 import re
 import struct
 import sys
 import zipfile
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # `python3 -I` leaves the script dir out
+import normalize  # noqa: E402
+
 NO_INDEX = 0xffffffff
 OBJECT = "Ljava/lang/Object;"
 PRIMS = "ZBSCIJFDV"
+# the /system directories whose jars and apks are in scope (the patcher's odex check and its adb copy use them too)
+SUBDIRS = (("framework", ".jar"), ("app", ".apk"), ("priv-app", ".apk"))
+DEX_MAGIC = b"dex\n"
+HEADER_SIZE = 0x70
+# the header's (size, offset) pairs of the id tables, in file order
+ID_TABLES = (("string", 0x38), ("type", 0x40), ("proto", 0x48), ("field", 0x50), ("method", 0x58), ("class", 0x60))
+# what a reference names; FIELD and METHOD are also the indexes of the member sets in a class tuple of Dex.classes
+TYPE, FIELD, METHOD = 1, 2, 3
+OUT, IN = "out", "in"
+# one failed reference: where and what are the refusal's columns, target the unresolved reference of an outbound miss
+#   OUT: where = jar name, what = replacement class, target = its reference
+#   IN:  where = /system path of the dex, what = its reference, target = None
+Miss = collections.namedtuple("Miss", "where what target direction")
 
 
 class LinkError(Exception):
@@ -43,6 +61,20 @@ class LinkError(Exception):
 
 
 # --- dex reader ----------------------------------------------------------------------------------------------------
+
+def dex_header(data, name="dex"):
+    """{string|type|proto|field|method|class: (size, offset)} of a dex file's id tables (data: at least the
+    header)."""
+    if len(data) < HEADER_SIZE or not data.startswith(DEX_MAGIC):
+        raise LinkError("%s: not a dex file" % name)
+    return {k: struct.unpack_from("<2I", data, off) for k, off in ID_TABLES}
+
+
+def id_counts(data):
+    """{type|proto|field|method: count} from a dex header (each must stay below 65536 in a single-dex jar)."""
+    h = dex_header(data)
+    return {k: h[k][0] for k in ("type", "proto", "field", "method")}
+
 
 def _uleb(data, off):
     res = shift = 0
@@ -68,16 +100,15 @@ class Dex(object):
 
     def __init__(self, data, name="dex"):
         self.name = name
-        if len(data) < 0x70 or not data.startswith(b"dex\n"):
-            raise LinkError("%s: not a dex file" % name)
+        header = dex_header(data, name)
         try:
-            self._parse(data)
+            self._parse(data, header)
         except (struct.error, IndexError) as e:
             raise LinkError("%s: truncated or corrupt dex (%s)" % (name, e))
 
-    def _parse(self, data):
+    def _parse(self, data, header):
         u = struct.unpack_from
-        (ns, so, nt, to, np_, po, nf, fo, nm, mo, nc, co) = u("<12I", data, 0x38)
+        (ns, so), (nt, to), (np_, po), (nf, fo), (nm, mo), (nc, co) = (header[k] for k, _ in ID_TABLES)
         soffs = u("<%dI" % ns, data, so) if ns else ()
         cache = {}
 
@@ -150,7 +181,7 @@ def read_dex(path):
     try:
         with open(path, "rb") as f:
             head = f.read(4)
-        if head == b"dex\n":
+        if head == DEX_MAGIC:
             with open(path, "rb") as f:
                 return Dex(f.read(), name)
         with zipfile.ZipFile(path) as z:
@@ -163,10 +194,8 @@ def read_dex(path):
 
 # --- smali references (the replacement classes) ------------------------------------------------------------------
 
-STRING = re.compile(r'"(?:[^"\\]|\\.)*"')
 MEMBER = re.compile(r"(\[*L[^;\s]+;|\[+[ZBSCIJFD])->([^\s(:]+)(?:(\([^)\s]*\)[^\s,{}]+)|:([^\s,{}]+))")
 TOKEN = re.compile(r"[^\s,{}=]+")
-SKIP_PREFIX = (".local ", ".end local", ".restart local", ".source ", ".line ")
 
 
 def parse_types(desc):
@@ -210,11 +239,10 @@ def smali_refs(text):
     types, fields, methods = set(), set(), set()
     for line in text.split("\n"):
         s = line.strip()
-        if not s or s.startswith("#") or s.startswith(SKIP_PREFIX):
+        if not s or s.startswith("#") or s.startswith(normalize.DEBUG_PREFIX):
             continue
-        s = STRING.sub('""', s)
-        if "#" in s:
-            s = s[:s.index("#")]
+        # string and char literals emptied (never references), the trailing comment dropped
+        s = "".join(t[0] * 2 if lit else t for lit, t in normalize.segments(normalize.strip_comment(s)))
         if s.startswith(".annotation system "):
             continue
         for m in MEMBER.finditer(s):
@@ -279,8 +307,8 @@ class World(object):
         return out
 
     def resolve(self, owner, member, kind):
-        """The class defining member (`name:type` for kind 2, `name(args)ret` for kind 3) as seen from owner, or
-        None."""
+        """The class defining member (`name:type` for kind FIELD, `name(args)ret` for kind METHOD) as seen from owner,
+        or None."""
         e = owner if not owner.startswith("[") else (OBJECT if self.has_type(owner) else None)
         if e is None or self.get(e) is None:
             return None
@@ -314,7 +342,7 @@ def boot_classes(dexes):
 
 
 def ref_text(kind, owner, member=None):
-    return owner if kind == 1 else "%s->%s" % (owner, member)
+    return owner if kind == TYPE else "%s->%s" % (owner, member)
 
 
 def inbound(dx, before, after, stats):
@@ -330,8 +358,8 @@ def inbound(dx, before, after, stats):
         if not b:
             stats["unresolved_before"] += 1
         elif not a:
-            misses.append(ref_text(1, t))
-    for kind, refs in ((2, dx.fields), (3, dx.methods)):
+            misses.append(ref_text(TYPE, t))
+    for kind, refs in ((FIELD, dx.fields), (METHOD, dx.methods)):
         for owner, member in refs:
             if not (before.touches(owner) or after.touches(owner)):
                 continue
@@ -348,7 +376,7 @@ def outbound(text, world):
     """Sorted references of one replacement class's smali text that do not resolve in world."""
     types, fields, methods = smali_refs(text)
     miss = {t for t in types if world.get(t) is None}
-    for kind, refs in ((2, fields), (3, methods)):
+    for kind, refs in ((FIELD, fields), (METHOD, methods)):
         for owner, member in refs:
             if world.resolve(owner, member, kind) is None:
                 miss.add(ref_text(kind, owner, member))
@@ -392,21 +420,22 @@ def run(root, bootclasspath, staged, replaced, changed, dalvik_only, log=None):
         return p
 
     others = []
-    for sub, ext in (("framework", ".jar"), ("app", ".apk"), ("priv-app", ".apk")):
+    for sub, ext in SUBDIRS:
         d = os.path.join(root, sub)
         if os.path.isdir(d):
             others += [(sub, n) for n in sorted(os.listdir(d)) if n.endswith(ext)]
-    misses = {}
+    misses = {}      # {Miss: [runtime]}
     stats = {}
     for rt, names in runtimes(bootclasspath, dalvik_only):
         st = {"bootclasspath": len(names), "dex": 0, "no_dex": 0, "classes": 0, "refs_total": 0, "refs_checked": 0,
               "unresolved_before": 0, "regressions": 0, "outbound_classes": 0, "outbound_refs": 0, "outbound_misses": 0}
-        jars = {n[:-4] for n in names if n[:-4] in staged}
+        jar = {n: n[:-len(".jar")] for n in names}
+        jars = {jar[n] for n in names if jar[n] in staged}
         ch = set()
         for j in jars:
             ch |= set(changed.get(j, ()))
         bdex = [dex_of(device_jar(n)) for n in names]
-        adex = [dex_of(staged[n[:-4]]) if n[:-4] in staged else d for n, d in zip(names, bdex)]
+        adex = [dex_of(staged[jar[n]]) if jar[n] in staged else d for n, d in zip(names, bdex)]
         if any(d is None for d in bdex + adex):
             raise LinkError("a BOOTCLASSPATH jar has no classes.dex")
         bboot, aboot = boot_classes(bdex), boot_classes(adex)
@@ -423,12 +452,12 @@ def run(root, bootclasspath, staged, replaced, changed, dalvik_only, log=None):
                 st["outbound_refs"] += n
                 st["outbound_misses"] += len(bad)
                 for r in bad:
-                    misses.setdefault((j, c, r, "out"), []).append(rt)
+                    misses.setdefault(Miss(j, c, r, OUT), []).append(rt)
         # inbound: the boot class path (patched dex for the staged jars) ...
         for n, dx in zip(names, adex):
             st["dex"] += 1
             for r in inbound(dx, before, after, st):
-                misses.setdefault(("/system/framework/" + n, r, None, "in"), []).append(rt)
+                misses.setdefault(Miss("/system/framework/" + n, r, None, IN), []).append(rt)
         # ... the other framework jars and the apps, each with its own classes after the boot class path
         skip = set(names) | {"core.jar", "core-libart.jar"}
         for sub, n in others:
@@ -441,16 +470,16 @@ def run(root, bootclasspath, staged, replaced, changed, dalvik_only, log=None):
             st["dex"] += 1
             b, a = World(bboot, dx.classes, ch, bmemo), World(aboot, dx.classes, ch, amemo)
             for r in inbound(dx, b, a, st):
-                misses.setdefault(("/system/%s/%s" % (sub, n), r, None, "in"), []).append(rt)
-        st["regressions"] = sum(1 for k, v in misses.items() if k[3] == "in" and rt in v)
+                misses.setdefault(Miss("/system/%s/%s" % (sub, n), r, None, IN), []).append(rt)
+        st["regressions"] = sum(1 for k, v in misses.items() if k.direction == IN and rt in v)
         stats[rt] = st
     res = []
-    for (where, what, ref, d), rts in sorted(misses.items()):
-        if d == "out":
-            res.append((where, what, "references %s, which does not resolve on the patched boot class path (%s)"
-                        % (ref, ", ".join(rts))))
+    for m, rts in sorted(misses.items()):
+        if m.direction == OUT:
+            res.append((m.where, m.what, "references %s, which does not resolve on the patched boot class path (%s)"
+                        % (m.target, ", ".join(rts))))
         else:
-            res.append((where, what, "resolved before the patch, not after (%s)" % ", ".join(rts)))
+            res.append((m.where, m.what, "resolved before the patch, not after (%s)" % ", ".join(rts)))
     return stats, res
 
 
@@ -463,7 +492,7 @@ def main(argv):
             dx = read_dex(p)
         except LinkError as e:
             print("linkcheck: %s" % e, file=sys.stderr)
-            return 1
+            return 2
         if dx is None:
             print("# %s: no classes.dex" % p)
             continue

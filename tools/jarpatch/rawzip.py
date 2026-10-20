@@ -27,9 +27,11 @@ EOCD = struct.Struct("<IHHHHIIH")              # sig, disk, cd disk, entries her
 CEN = struct.Struct("<IHHHHHHIIIHHHHHII")      # sig, made by, needed, flags, method, time, date, crc, csize, usize,
 #                                                name len, extra len, comment len, disk, int attr, ext attr, offset
 LOC = struct.Struct("<IHHHHHIIIHH")            # sig, needed, flags, method, time, date, crc, csize, usize, name, extra
-FLAG_ENCRYPTED, FLAG_DD = 0x0001, 0x0008
+FLAG_ENCRYPTED, FLAG_DD, FLAG_UTF8 = 0x0001, 0x0008, 0x0800
 STORED, DEFLATED = 0, 8
 MAX32, MAX16 = 0xffffffff, 0xffff
+# an appended entry: made by unix (3) with zip 2.0, needs 2.0 (deflate), 1980-01-01 00:00 (DOS date and time)
+NEW_MADE_BY, NEW_NEEDED, NEW_DATE, NEW_TIME = 0x0314, 20, 0x0021, 0
 
 
 class ZipError(Exception):
@@ -48,7 +50,7 @@ class Entry(object):
 
     @property
     def text(self):
-        return self.name.decode("utf-8" if self.flags & 0x800 else "cp437", "replace")
+        return self.name.decode("utf-8" if self.flags & FLAG_UTF8 else "cp437", "replace")
 
 
 def has_zip64_extra(extra):
@@ -189,11 +191,12 @@ def rewrite(src, dst, changes):
     for n in sorted(k for k, v in changes.items() if v is not None and k not in byname):
         raw, bn = changes[n], n.encode("utf-8")
         comp = compress(DEFLATED, raw, n)
-        flags = 0x800 if any(c > 0x7f for c in bn) else 0
+        flags = FLAG_UTF8 if any(c > 0x7f for c in bn) else 0
         crc = zlib.crc32(raw) & MAX32
-        rec = (0x0314, 20, flags, DEFLATED, 0, 0x21, crc, len(comp), len(raw))   # unix, 1980-01-01 00:00
+        rec = (NEW_MADE_BY, NEW_NEEDED, flags, DEFLATED, NEW_TIME, NEW_DATE, crc, len(comp), len(raw))
         off = len(out)
-        out += LOC.pack(LOC_SIG, 20, flags, DEFLATED, 0, 0x21, crc, len(comp), len(raw), len(bn), 0) + bn + comp
+        out += LOC.pack(LOC_SIG, NEW_NEEDED, flags, DEFLATED, NEW_TIME, NEW_DATE, crc, len(comp), len(raw), len(bn),
+                        0) + bn + comp
         cen.append((None, rec, bn, b"", b"", 0, 0o100644 << 16, off))
         names.append(n)
     # the central directory keeps the source's record order (appended entries last)
@@ -208,11 +211,17 @@ def rewrite(src, dst, changes):
     if len(cen) >= MAX16 or cd_off >= MAX32 or cd_size >= MAX32:
         raise ZipError("the output would need zip64")
     out += EOCD.pack(EOCD_SIG, 0, 0, len(cen), len(cen), cd_size, cd_off, len(comment)) + comment
-    tmp = dst + ".tmp"
-    with open(tmp, "wb") as f:
-        f.write(out)
-    os.replace(tmp, dst)
+    atomic_write(dst, out)
     return names
+
+
+def atomic_write(path, data):
+    """Write data (bytes, or text as UTF-8) to path through path.tmp and os.replace: path is never left half
+    written."""
+    tmp = path + ".tmp"
+    with open(tmp, "wb") as f:
+        f.write(data.encode("utf-8") if isinstance(data, str) else data)
+    os.replace(tmp, path)
 
 
 def main(argv):

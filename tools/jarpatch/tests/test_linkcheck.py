@@ -193,6 +193,10 @@ class Pure(unittest.TestCase):
                                  "Lp/Ex;"})
         self.assertEqual(fields, {("Lp/E;", "ONE:Lp/E;"), ("Lp/A;", "f:[Lp/F;")})
         self.assertEqual(methods, {("Lp/N;", "init(Lp/Arg;)V"), ("[Lp/F;", "clone()Ljava/lang/Object;")})
+        # literals and comments are never references, a quote inside a char literal included (normalize.segments)
+        types, fields, methods = lc.smali_refs("    value = {'\"', \"Lp/S;->x:I\", 'L', Lp/T;}    # Lp/C; '\n"
+                                               "    const-string v0, \"#\"    # Lp/D;->y:I\n")
+        self.assertEqual((types, fields, methods), ({"Lp/T;"}, set(), set()))
 
     def test_resolve(self):
         boot = {"Ljava/lang/Object;": cls(None, methods=["hashCode()I", "clone()Ljava/lang/Object;"]),
@@ -202,17 +206,17 @@ class Pure(unittest.TestCase):
                 "Lp/A;": cls("Lp/Base;")}
         own = {"Lq/Sub;": cls("Lp/A;"), "Lp/A;": cls("Ljava/lang/Object;", fields=["own:I"])}
         w = lc.World(boot, own)
-        self.assertEqual(w.resolve("Lp/A;", "b:I", 2), "Lp/Base;")              # superclass
-        self.assertEqual(w.resolve("Lp/A;", "run()V", 3), "Lp/I;")              # interface of an interface
-        self.assertEqual(w.resolve("Lp/A;", "K:I", 2), "Lp/I;")
-        self.assertEqual(w.resolve("Lq/Sub;", "hashCode()I", 3), "Ljava/lang/Object;")
-        self.assertEqual(w.resolve("Lp/I;", "hashCode()I", 3), "Ljava/lang/Object;")
-        self.assertEqual(w.resolve("[[Lp/A;", "clone()Ljava/lang/Object;", 3), "Ljava/lang/Object;")
-        self.assertEqual(w.resolve("[I", "hashCode()I", 3), "Ljava/lang/Object;")
-        self.assertIsNone(w.resolve("[Lp/Missing;", "hashCode()I", 3))
-        self.assertIsNone(w.resolve("Lp/A;", "own:I", 2))      # the boot class path wins over the jar's own copy
-        self.assertIsNone(w.resolve("Lp/A;", "run(I)V", 3))
-        self.assertIsNone(w.resolve("Lp/Missing;", "run()V", 3))
+        self.assertEqual(w.resolve("Lp/A;", "b:I", lc.FIELD), "Lp/Base;")              # superclass
+        self.assertEqual(w.resolve("Lp/A;", "run()V", lc.METHOD), "Lp/I;")              # interface of an interface
+        self.assertEqual(w.resolve("Lp/A;", "K:I", lc.FIELD), "Lp/I;")
+        self.assertEqual(w.resolve("Lq/Sub;", "hashCode()I", lc.METHOD), "Ljava/lang/Object;")
+        self.assertEqual(w.resolve("Lp/I;", "hashCode()I", lc.METHOD), "Ljava/lang/Object;")
+        self.assertEqual(w.resolve("[[Lp/A;", "clone()Ljava/lang/Object;", lc.METHOD), "Ljava/lang/Object;")
+        self.assertEqual(w.resolve("[I", "hashCode()I", lc.METHOD), "Ljava/lang/Object;")
+        self.assertIsNone(w.resolve("[Lp/Missing;", "hashCode()I", lc.METHOD))
+        self.assertIsNone(w.resolve("Lp/A;", "own:I", lc.FIELD))      # the boot class path wins over the jar's own copy
+        self.assertIsNone(w.resolve("Lp/A;", "run(I)V", lc.METHOD))
+        self.assertIsNone(w.resolve("Lp/Missing;", "run()V", lc.METHOD))
         for changed, desc, want in (({"Lp/I;"}, "Lq/Sub;", True), ({"Lp/Base;"}, "[Lq/Sub;", True),
                                     ({"Lp/Gone;"}, "Lp/Gone;", True), ({"Lp/Other;"}, "Lq/Sub;", False),
                                     ({"Lp/I;"}, "[I", False), ({"Lp/I;"}, "Lp/Missing;", False)):

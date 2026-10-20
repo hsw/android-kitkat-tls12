@@ -6,7 +6,7 @@
     python3 -I normalize.py --dir SMALI_DIR [--dump DIR]   normalize an existing `baksmali d` output tree
 
 Prints `<class descriptor>\t<sha256>` lines sorted by descriptor; --dump also writes each normalized text to
-DIR/<class path>.nsmali. Exit 0 ok, 1 tool error (no classes.dex, baksmali failed, bad smali), 2 usage.
+DIR/<class path>.nsmali. Exit 0 ok, 2 usage or tool error (no classes.dex, baksmali failed, bad smali).
 
 A class's digest is the sha256 of its baksmali text (2.5.2, `d -a 19`, debug info kept) with everything removed that
 only debug info or the disassembler's naming decides, so that two dex builds of the same source compare equal while any
@@ -94,22 +94,36 @@ def _split_string(line):
     return (line, "") if i < 0 else (line[:i], line[i:])
 
 
-def _strip_comment(line):
-    """line without a trailing `# ...` comment; a `#` inside a string or char literal is kept."""
-    quote = None
-    i = 0
+def segments(line):
+    """[(literal, text)] of a smali line, in order: a string (`"..."`) or char (`'.'`) literal with its quotes and
+    escapes as (True, text) (an unterminated one runs to the end of the line), the text between literals as (False,
+    text). The one literal scanner of the jar patcher (linkcheck.py uses it too)."""
+    out, start, quote, i = [], 0, None, 0
     while i < len(line):
         c = line[i]
         if quote:
             if c == "\\":
                 i += 1
             elif c == quote:
-                quote = None
+                out.append((True, line[start:i + 1]))
+                start, quote = i + 1, None
         elif c in "\"'":
-            quote = c
-        elif c == "#":
-            return line[:i].rstrip()
+            if i > start:
+                out.append((False, line[start:i]))
+            start, quote = i, c
         i += 1
+    if start < len(line):
+        out.append((quote is not None, line[start:]))
+    return out
+
+
+def strip_comment(line):
+    """line without a trailing `# ...` comment; a `#` inside a string or char literal is kept."""
+    head = []
+    for lit, t in segments(line):
+        if not lit and "#" in t:
+            return ("".join(head) + t[:t.index("#")]).rstrip()
+        head.append(t)
     return line
 
 
@@ -126,21 +140,7 @@ def _float_bits(m):
 
 def _floats(text):
     """text with its decimal float/double literals as bits; string and char literals are left untouched."""
-    out, start, quote, i = [], 0, None, 0
-    while i < len(text):
-        c = text[i]
-        if quote:
-            if c == "\\":
-                i += 1
-            elif c == quote:
-                out.append(text[start:i + 1])
-                start, quote = i + 1, None
-        elif c in "\"'":
-            out.append(FLOAT.sub(_float_bits, text[start:i]))
-            start, quote = i, c
-        i += 1
-    out.append(text[start:] if quote else FLOAT.sub(_float_bits, text[start:]))
-    return "".join(out)
+    return "".join(t if lit else FLOAT.sub(_float_bits, t) for lit, t in segments(text))
 
 
 def _literals(s, in_annotation=False):
@@ -163,7 +163,7 @@ def normalize_text(text):
     lines = [l for l in lines if l and not l.startswith("#") and not _is_debug(l)]
     in_ann, kept = False, []
     for l in lines:
-        l = _strip_comment(l)
+        l = strip_comment(l)
         if l.startswith(ANN_OPEN):
             in_ann = True
         elif l == ANN_CLOSE:
@@ -308,7 +308,7 @@ def main(argv):
             res = jar_digests(src, dump=dump)
     except NormalizeError as e:
         print("normalize: " + str(e), file=sys.stderr)
-        return 1
+        return 2
     for c in sorted(res):
         print("%s\t%s" % (c, res[c]))
     return 0
