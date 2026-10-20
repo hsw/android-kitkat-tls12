@@ -2,13 +2,16 @@
 """Unit tests of kktls-jarpatch.py on fixture systems assembled from smali sources: the staged classes equal the
 donor's (the oracle in fixture form), the round-trip invariant, and each refusal with its reason (vendor-modified
 class, vendor-modified check class, missing class, unexpected class, stripped jar, already patched, a vendor backport
-equal to the kktls class). Skipped without Java and the smali jars of fetch-smali.sh, except the pure-logic tests.
+equal to the kktls class, and the link check hooked into the run: a caller of a class the series removes, a replacement
+class calling a member the device's boot class path lacks). Skipped without Java and the smali jars of
+fetch-smali.sh, except the pure-logic tests.
 
     python3 -I -m unittest discover tools/jarpatch/tests
 
 Local only: with KKTLS_JARPATCH_ORACLE_SYSTEM (a /system copy holding framework/ and build.prop of a stock AOSP 4.4
 build) and KKTLS_JARPATCH_ORACLE_RELEASE (the release dir with SHA256SUMS and the java zips) set, Oracle patches the
-stock jars and compares every class with the release java zip of that line.
+stock jars and compares every class with the release java zip of that line; KKTLS_JARPATCH_ORACLE_BOOTCLASSPATH (the
+image's BOOTCLASSPATH) replaces the default core:conscrypt:okhttp for the link check.
 """
 import contextlib
 import hashlib
@@ -44,12 +47,15 @@ NAT = "Lcom/android/org/conscrypt/NativeCrypto;"                   # changed
 BIO = "Lcom/android/org/conscrypt/OpenSSLBIOInputStream;"          # check class (conscrypt)
 ADDR = "Lcom/android/org/conscrypt/AddressUtils;"                  # added (not kktls package)
 OKP = "Lcom/android/okhttp/internal/Platform;"                     # changed
+OBJ = "Ljava/lang/Object;"                                         # ext.jar (boot class path, outside the set)
+HELP = "Lcom/example/Helper;"                                      # ext.jar; ours' DefaultHostnameVerifier calls it
+CALLER = "Lcom/vendor/Caller;"                                     # calls the removed class (link check tests)
 PROPS = "java/security/security.properties"
 REPLACED = {DHV, KK, NAT, ADDR, OKP}
 JNI = [INT, NAT, BIO]
 LINE, ABI, REL = "4.4.4", "armeabi-v7a", "vT"
 DONOR = "kktls-java-%s-%s-%s.zip" % (LINE, ABI, REL)
-BCP = "/system/framework/core.jar:/system/framework/conscrypt.jar:/system/framework/okhttp.jar"
+BCP = ":".join("/system/framework/%s.jar" % j for j in ("core", "conscrypt", "okhttp", "ext"))
 FINGERPRINT = "fixture/fixture/fixture:4.4.4/FIX/1:user/test-keys"
 
 FIXTURE = """\
@@ -59,6 +65,8 @@ FIXTURE = """\
 
 
 # direct methods
+"""
+VALUE = """\
 .method public static value()I
     .registers 1
 
@@ -69,8 +77,31 @@ FIXTURE = """\
     return v0
 .end method
 """
+CALL = """\
+.method public static call()V
+    .registers 1
 
-# {jar: ([(desc, line, const)], {entry: bytes})}
+    invoke-static {}, %(call)s
+
+    return-void
+.end method
+"""
+
+
+def fixture_smali(desc, line, const, call=None):
+    """One class: value()I returning const (none when const is None), call()V invoking call (a static method ref);
+    java.lang.Object has no superclass."""
+    t = FIXTURE % {"desc": desc}
+    if desc == OBJ:
+        t = t.replace(".super %s\n" % OBJ, "")
+    if const is not None:
+        t += VALUE % {"line": line, "const": const}
+    if call:
+        t += CALL % {"call": call}
+    return t
+
+
+# {jar: ([(desc, line, const[, call])], {entry: bytes})}  (see fixture_smali)
 STOCK = {
     "core": ([(INT, 3, "0x1"), (DHV, 3, "0x1"), (GONE, 3, "0x1")], {PROPS: b"a=1\n"}),
     "conscrypt": ([(NAT, 3, "0x1"), (BIO, 3, "0x1")], {}),
@@ -78,7 +109,7 @@ STOCK = {
 }
 STOCK["core-libart"] = STOCK["core"]
 OURS = {
-    "core": ([(INT, 3, "0x1"), (DHV, 3, "0x2"), (KK, 3, "0x1")], {PROPS: b"a=1\nkktls=1\n"}),
+    "core": ([(INT, 3, "0x1"), (DHV, 3, "0x2", HELP + "->value()I"), (KK, 3, "0x1")], {PROPS: b"a=1\nkktls=1\n"}),
     "conscrypt": ([(NAT, 3, "0x3"), (BIO, 3, "0x1"), (ADDR, 3, "0x1")], {}),
     "okhttp": ([(OKP, 3, "0x2")], {}),
 }
@@ -88,6 +119,9 @@ OURS["core-libart"] = OURS["core"]
 def device_jars():
     """The stock jars with other line numbers (debug info only) and a vendor class in each."""
     return {j: ([(d, l + 10, c) for d, l, c in cls] + [(VEN, 5, "0x7")], dict(ent)) for j, (cls, ent) in STOCK.items()}
+
+
+EXT = [(OBJ, 1, None), (HELP, 1, "0x1")]       # /system/framework/ext.jar of the device
 
 
 def smali_or_skip(test):
@@ -158,6 +192,7 @@ class Fixture(unittest.TestCase):
             for j, (classes, entries) in spec.items():
                 cls.make_jar(os.path.join(cls.base, side, "system", "framework", j + ".jar"), classes, entries)
                 n += 1
+        cls.make_jar(os.path.join(cls.base, "device", "system", "framework", "ext.jar"), EXT, {})
         write_prop(os.path.join(cls.base, "device", "system", "build.prop"))
         os.makedirs(os.path.join(cls.base, "device", "system", "app"))
         cls.make_jar(os.path.join(cls.base, "device", "system", "app", "Vendor.apk"), [(VEN, 1, "0x1")], {})
@@ -181,11 +216,11 @@ class Fixture(unittest.TestCase):
         key = tuple(classes)
         if key not in cls.cache:
             src = tempfile.mkdtemp(dir=cls.base, prefix="src-")
-            for desc, line, const in classes:
-                p = os.path.join(src, desc[1:-1] + ".smali")
+            for spec in classes:
+                p = os.path.join(src, spec[0][1:-1] + ".smali")
                 os.makedirs(os.path.dirname(p), exist_ok=True)
                 with open(p, "w") as f:
-                    f.write(FIXTURE % {"desc": desc, "line": line, "const": const})
+                    f.write(fixture_smali(*spec))
             d = src + ".dex"
             r = subprocess.run(["java", "-jar", cls.jars[1], "a", "-a", "19", "-o", d, src],
                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
@@ -292,8 +327,8 @@ class Patch(Fixture):
             self.assertEqual(got[VEN][1], device[VEN][1])          # the vendor class kept
             self.assertEqual(set(got), set(donor) | {VEN})
             v = m["jars"][j]
-            self.assertEqual(v["sha256"], hashlib.sha256(open(os.path.join(self.sysdir, "framework", j + ".jar"),
-                                                               "rb").read()).hexdigest())
+            with open(os.path.join(self.sysdir, "framework", j + ".jar"), "rb") as f:
+                self.assertEqual(v["sha256"], hashlib.sha256(f.read()).hexdigest())
             if j in ("core", "core-libart"):
                 with open(os.path.join(stage, j, PROPS), "rb") as f:
                     self.assertEqual(f.read(), b"a=1\nkktls=1\n")
@@ -307,6 +342,11 @@ class Patch(Fixture):
         self.assertEqual((m["source"], m["bootclasspath"], m["dalvik_only"]), ("system", BCP.split(":"), False))
         self.assertFalse(os.path.exists(os.path.join(self.out, "work")))
         rep = self.read_report()
+        for rt in ("dalvik", "art"):
+            v = m["linkcheck"][rt]
+            self.assertEqual((v["regressions"], v["outbound_misses"], v["outbound_classes"]), (0, 0, 5), rt)
+            self.assertIn("linkcheck %s " % rt, rep)
+        self.assertEqual(m["linkcheck"]["dalvik"]["bootclasspath"], 4)
         self.assertIn("match class core %s" % DHV, rep)
         self.assertIn("match check conscrypt %s" % BIO, rep)
         self.assertIn("match entry core %s" % PROPS, rep)
@@ -323,6 +363,7 @@ class Patch(Fixture):
         rc, out = self.patch()
         m = self.check_staged(rc, out, jars=("core", "conscrypt", "okhttp"))
         self.assertTrue(m["dalvik_only"])
+        self.assertEqual(sorted(m["linkcheck"]), ["dalvik"])
 
     def test_core_libart_missing_with_art(self):
         os.remove(os.path.join(self.sysdir, "framework", "core-libart.jar"))
@@ -407,7 +448,7 @@ class Refusals(Fixture):
 
     def test_vendor_backport_equal_to_ours(self):
         # cm-11 ships some classes source-identical to the series: equal to ours, but no kktls on the system
-        self.device_jar("core", [(INT, 3, "0x1"), (DHV, 3, "0x2"), (GONE, 3, "0x1")])
+        self.device_jar("core", [(INT, 3, "0x1"), (DHV, 3, "0x2", HELP + "->value()I"), (GONE, 3, "0x1")])
         rc, out = self.patch()
         self.assertRefused(rc, out, "REFUSED core %s: equals the kktls version, but the system carries no kktls" % DHV)
         self.assertNotIn("restore", out)
@@ -453,6 +494,36 @@ class Refusals(Fixture):
             jp.assemble = real
 
 
+class LinkCheck(Fixture):
+    """The link check inside the run (linkcheck.py itself: test_linkcheck.py)."""
+
+    def test_caller_of_removed_class(self):
+        # the series removes com.example.Gone: a caller outside the boot class path, in a framework jar and an apk
+        for p in ("framework/caller.jar", "app/Caller.apk"):
+            self.make_jar(os.path.join(self.sysdir, p), [(CALLER, 1, "0x1", GONE + "->value()I")], {})
+        rc, out = self.patch()
+        for p in ("framework/caller.jar", "app/Caller.apk"):
+            for ref in (GONE, GONE + "->value()I"):
+                self.assertIn("REFUSED /system/%s %s: link check: resolved before the patch, not after (dalvik, art)"
+                              % (p, ref), out)
+        self.assertRefused(rc, out)
+        self.assertIn("result refused", self.read_report())
+
+    def test_boot_jar_lacks_member(self):
+        # ours' DefaultHostnameVerifier calls Helper.value(); this device's ext.jar has Helper without it
+        self.make_jar(os.path.join(self.sysdir, "framework", "ext.jar"), [(OBJ, 1, None), (HELP, 1, None)], {})
+        rc, out = self.patch()
+        why = "link check: references %s->value()I, which does not resolve on the patched boot class path" % HELP
+        self.assertRefused(rc, out, "REFUSED core %s: %s (dalvik)" % (DHV, why),
+                           "REFUSED core-libart %s: %s (art)" % (DHV, why))
+
+    def test_caller_kept_class(self):
+        # a caller of a replaced class's kept member links
+        self.make_jar(os.path.join(self.sysdir, "app", "Caller.apk"), [(CALLER, 1, "0x1", DHV + "->value()I")], {})
+        rc, out = self.patch()
+        self.assertEqual(rc, 0, out)
+
+
 class ToolErrors(Fixture):
     def test_release_dir(self):
         empty = os.path.join(self.t.name, "empty")
@@ -482,7 +553,7 @@ class ToolErrors(Fixture):
         shutil.copytree(os.path.join(self.base, "ours"), other)
         cls, ent = OURS["core"]
         self.make_jar(os.path.join(other, "system", "framework", "core.jar"),
-                      [(c, l, "0x6" if c == DHV else k) for c, l, k in cls], ent)
+                      [(c[0], c[1], "0x6") + c[3:] if c[0] == DHV else c for c in cls], ent)
         rel = os.path.join(self.t.name, "rel3")
         self.make_release(rel, other)
         rc, out = self.patch(release=rel)
@@ -590,7 +661,8 @@ class Oracle(unittest.TestCase):
         sysdir, rel = os.environ["KKTLS_JARPATCH_ORACLE_SYSTEM"], os.environ["KKTLS_JARPATCH_ORACLE_RELEASE"]
         with tempfile.TemporaryDirectory() as t:
             out = os.path.join(t, "out")
-            bcp = ":".join("/system/framework/%s.jar" % j for j in ("core", "conscrypt", "okhttp"))
+            bcp = os.environ.get("KKTLS_JARPATCH_ORACLE_BOOTCLASSPATH") or \
+                ":".join("/system/framework/%s.jar" % j for j in ("core", "conscrypt", "okhttp"))
             r = subprocess.run([sys.executable, "-I", SCRIPT, "--system", sysdir, "--bootclasspath", bcp,
                                 "--build-prop", os.path.join(sysdir, "build.prop"), "--release-dir", rel,
                                 "--out", out], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -598,6 +670,9 @@ class Oracle(unittest.TestCase):
             self.assertEqual(r.returncode, 0, r.stdout)
             with open(os.path.join(out, "stage", "manifest.json")) as f:
                 m = json.load(f)
+            for rt, v in m["linkcheck"].items():
+                print("oracle link check %s: %s" % (rt, " ".join("%s=%d" % kv for kv in sorted(v.items()))),
+                      file=sys.stderr)
             st = mkset.read_set(m["set"])
             with zipfile.ZipFile(m["donor"]) as z:
                 for j in m["jars"]:

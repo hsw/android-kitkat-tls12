@@ -42,11 +42,15 @@ What it does (nothing on the device is changed):
      one classes.dex (type, proto, field and method id counts must stay below 65536); the donor's classes and entries
      must equal the set's ours digests (else the release dir and the set file do not belong together: tool error);
   4. round-trip invariant: the new classes.dex is disassembled again, every class not in the set must keep the digest
-     it had on the device and every replaced class must have the set's ours digest.
+     it had on the device and every replaced class must have the set's ours digest;
+  5. link check (linkcheck.py), per runtime (dalvik: BOOTCLASSPATH with core.jar; art: with core-libart.jar): every
+     reference of the replacement classes must resolve on the patched boot class path, and every reference of the
+     boot class path, the other framework jars and the app/priv-app dex that resolved before the patch must still
+     resolve (a caller of a member the series removes refuses).
 
 Output (exit 0): OUT/stage/<jar>/classes.dex, OUT/stage/<jar>/<entry path> (the donor's bytes of the set's entries)
 and OUT/stage/manifest.json (system, device jar sha256s, sha256 of ro.build.fingerprint, donor, per-jar staged
-files). The raw fingerprint is never printed or written. OUT must not exist or be empty.
+files, link check counts). The raw fingerprint is never printed or written. OUT must not exist or be empty.
 
 Exit 0 staged, 1 refused (each reason: jar, class, why), 2 usage or tool error. Stdlib only; Java 8+ and the
 smali/baksmali jars of fetch-smali.sh.
@@ -63,6 +67,7 @@ import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)   # `python3 -I` leaves the script dir out
+import linkcheck  # noqa: E402
 import mkset  # noqa: E402
 import normalize  # noqa: E402
 
@@ -508,6 +513,7 @@ class Patcher(object):
                     "bootclasspath": s.bootclasspath, "dalvik_only": "core-libart" not in jars,
                     "donor": os.path.abspath(donor), "donor_sha256": sha256_file(donor), "release": rel,
                     "set": os.path.abspath(set_path), "tag": st.header["tag"], "jars": {}}
+        replaced_smali, changed, staged = {}, {}, {}
         for j in jars:
             log("baksmali %s.jar (donor)" % j)
             don = disassemble(dj[j], os.path.join(work, "donor", j), bak)
@@ -515,9 +521,11 @@ class Patcher(object):
             tree = os.path.join(work, "device", j)
             expect = {c: dg for c, (_, dg) in dev[j].items()}
             replaced = removed = 0
+            replaced_smali[j], changed[j] = {}, set()
             for jj, c, _, ours in st.classes:
                 if jj != j:
                     continue
+                changed[j].add(c)
                 if (don[c][1] if c in don else None) != ours:
                     raise ToolError("donor %s.jar class %s does not match the set's ours digest (wrong release "
                                     "dir or set file)" % (j, c))
@@ -530,9 +538,11 @@ class Patcher(object):
                     don[c][0], os.path.join(work, "donor", j)))
                 os.makedirs(os.path.dirname(dst), exist_ok=True)
                 shutil.copyfile(don[c][0], dst)
+                replaced_smali[j][c] = dst
                 expect[c] = ours
                 replaced += 1
             dex = os.path.join(stage, j, "classes.dex")
+            staged[j] = dex
             log("smali %s.jar: %d class(es) replaced, %d removed" % (j, replaced, removed))
             assemble(tree, dex, sma)
             with open(dex, "rb") as f:
@@ -564,6 +574,7 @@ class Patcher(object):
                                    "odex": j + ".odex" in s.odex["framework"],
                                    "dex": os.path.relpath(dex, stage), "entries": entries,
                                    "replaced": replaced, "removed": removed, "classes": len(got)}
+        manifest["linkcheck"] = self.link_check(staged, replaced_smali, changed, "core-libart" not in jars)
         tmp = os.path.join(stage, "manifest.json.tmp")
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(manifest, f, indent=1, sort_keys=True)
@@ -571,6 +582,21 @@ class Patcher(object):
         os.replace(tmp, os.path.join(stage, "manifest.json"))
         shutil.rmtree(work, ignore_errors=True)
         return manifest
+
+    def link_check(self, staged, replaced, changed, dalvik_only):
+        s = self.system
+        try:
+            stats, misses = linkcheck.run(s.root, s.bootclasspath, staged, replaced, changed, dalvik_only, log)
+        except linkcheck.LinkError as e:
+            raise ToolError("link check: %s" % e)
+        for rt, v in sorted(stats.items()):
+            self.lines.append("linkcheck %s %s" % (rt, " ".join("%s=%d" % kv for kv in sorted(v.items()))))
+            log("link check %s: %d dex, %d of %d references into the set checked, %d regression(s); %d replacement "
+                "class reference(s), %d unresolved" % (rt, v["dex"], v["refs_checked"], v["refs_total"],
+                                                       v["regressions"], v["outbound_refs"], v["outbound_misses"]))
+        if misses:
+            raise Refused([(w, n, "link check: " + why) for w, n, why in misses])
+        return stats
 
 
 def write_report(path, patcher, result, reasons):
@@ -623,7 +649,8 @@ def main(argv):
         if patcher and "--report" in opt:
             write_report(opt["--report"], patcher, "refused", e.reasons)
         return 1
-    except (ToolError, normalize.NormalizeError, mkset.SetError, OSError, zipfile.BadZipFile) as e:
+    except (ToolError, normalize.NormalizeError, mkset.SetError, linkcheck.LinkError, OSError,
+            zipfile.BadZipFile) as e:
         print("kktls-jarpatch: error: %s" % e, file=sys.stderr)
         return 2
     if "--report" in opt:
