@@ -74,8 +74,8 @@ OUT/stage/manifest.json (system, device jar sha256s, sha256 of ro.build.fingerpr
 link check counts, the zip, with the scan: oem markers, extra consumers and the oem zips), with --accept-oem the two
 oem zips, and OUT/native-consumers.txt after the scan (also when refused). The raw fingerprint is never printed or written. OUT must not exist or be empty.
 
-Exit 0 staged, 1 refused (each reason: jar, class, why), 2 usage or tool error. Stdlib only; Java 8+ and the
-smali/baksmali jars of fetch-smali.sh.
+Exit 0 staged, 1 refused (each reason: jar, class, why), 2 usage or tool error. Stdlib only; Java 8+ (`java` on PATH,
+or $KKTLS_JAVA) and the smali/baksmali jars of fetch-smali.sh.
 """
 import hashlib
 import json
@@ -492,7 +492,7 @@ def index_tree(root):
 
 def disassemble(src, out, baksmali_jar):
     """baksmali d -a 19 (debug info kept) of a jar or dex into out; {descriptor: (path, digest)}."""
-    cmd = ["java", "-jar", baksmali_jar, "d", "-a", normalize.BAKSMALI_API, "-j", JOBS, src, "-o", out]
+    cmd = [normalize.JAVA, "-jar", baksmali_jar, "d", "-a", normalize.BAKSMALI_API, "-j", JOBS, src, "-o", out]
     r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
     if r.returncode != 0:
         raise ToolError("baksmali of %s failed (exit %d): %s" % (src, r.returncode, r.stdout.strip()[-500:]))
@@ -501,7 +501,7 @@ def disassemble(src, out, baksmali_jar):
 
 def assemble(tree, dex, smali_jar):
     os.makedirs(os.path.dirname(dex), exist_ok=True)
-    cmd = ["java", "-jar", smali_jar, "a", "-a", normalize.BAKSMALI_API, "-j", JOBS, "-o", dex, tree]
+    cmd = [normalize.JAVA, "-jar", smali_jar, "a", "-a", normalize.BAKSMALI_API, "-j", JOBS, "-o", dex, tree]
     r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
     if r.returncode != 0 or not os.path.isfile(dex):
         raise ToolError("smali of %s failed (exit %d): %s" % (tree, r.returncode, r.stdout.strip()[-500:]))

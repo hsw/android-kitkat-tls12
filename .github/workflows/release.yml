@@ -1,5 +1,6 @@
 # Release on a tag vN: the full build on GitHub-hosted runners (build.yml with the tag as release name), then the
-# recovery zips and their SHA256SUMS go to the GitHub release of that tag. Nothing is built or uploaded elsewhere.
+# recovery zips, the jar patcher zip and their SHA256SUMS go to the GitHub release of that tag. Nothing is built or
+# uploaded elsewhere.
 name: release
 
 on:
@@ -26,7 +27,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      # only the artifact zips (the release set: every zip mkzips.sh writes)
+      # only the artifact zips (the release set: every zip mkzips.sh writes, kktls-jarpatch included)
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: zips
@@ -45,5 +46,5 @@ jobs:
         run: |
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1 ||
             gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "$TAG" \
-              --notes "Recovery zips built by the release workflow from $TAG ($GITHUB_SHA). Check them with SHA256SUMS."
+              --notes "Recovery zips and the jar patcher (kktls-jarpatch) built by the release workflow from $TAG ($GITHUB_SHA). Check them with SHA256SUMS."
           gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber dist/*

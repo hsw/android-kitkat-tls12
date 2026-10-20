@@ -23,7 +23,8 @@ android-4.4.2_r2 build agree on every class the series touches or libjavacrypto.
 baksmali round trip keeps every digest.
 
 Imported by mkset.py and the patcher: NORMALIZER_VERSION and MODEL go into the set files (a set made with another
-version must not be compared with this one). Stdlib only (Java 8+ and the jars of fetch-smali.sh for --jar).
+version must not be compared with this one). Stdlib only (Java 8+ and the jars of fetch-smali.sh for --jar; the
+java binary is $KKTLS_JAVA when set, else `java` on PATH; the patcher and checkset.py use the same).
 """
 import hashlib
 import os
@@ -39,6 +40,7 @@ MODEL = "H"
 SMALI_VERSION = "2.5.2"     # must equal fetch-smali.sh's SMALI_VERSION (tests check it)
 BAKSMALI_API = "19"
 HERE = os.path.dirname(os.path.abspath(__file__))
+JAVA = os.environ.get("KKTLS_JAVA") or "java"   # Java 8+ for smali/baksmali 2.5.2
 
 DEBUG_PREFIX = (".source ", ".line ", ".local ", ".end local", ".restart local")
 DEBUG_EXACT = (".prologue", ".epilogue")
@@ -166,7 +168,7 @@ def check_dex_jar(jar):
 def baksmali(jar, out_dir, baksmali_jar):
     """baksmali d -a 19 (debug info kept) of jar into out_dir."""
     check_dex_jar(jar)
-    cmd = ["java", "-jar", baksmali_jar, "d", "-a", BAKSMALI_API, "-j", str(min(8, os.cpu_count() or 1)),
+    cmd = [JAVA, "-jar", baksmali_jar, "d", "-a", BAKSMALI_API, "-j", str(min(8, os.cpu_count() or 1)),
            jar, "-o", out_dir]
     r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
     if r.returncode != 0:

@@ -35,7 +35,9 @@
 #            allow-missing-libssl.txt and SHA256SUMS (helpers/ is not a release file dir: nothing of it goes to /system)
 #   check    per target: check_artifacts.py --layer release, openssl-abi-check.py symbols against stock-openssl (0 removed
 #            public exports), kktls-symcheck of our libssl/libcrypto against stock-openssl (SKIP when this host cannot
-#            run the helper's ABI); summary in WORK/out/kktls/checks.tsv
+#            run the helper's ABI), jarpatch/checkset.py: the built core, core-libart, conscrypt and okhttp jars
+#            against the "ours" column of the jar patcher's committed set file of the tag (a drift fails: the patcher
+#            of this release would not accept its own donor zips); summary in WORK/out/kktls/checks.tsv
 #
 # Options:
 #   --work DIR        scratch root (default ./kktls-release-work)
@@ -52,6 +54,9 @@
 #   --d8 FILE --dexdump FILE  Android build-tools 37.0.0 (default $D8/$DEXDUMP, else $ANDROID_HOME/build-tools/37.0.0/)
 #   --reuse-stock     keep a complete stock-openssl/ of the same inputs (e.g. restored from a CI cache), see `stock`
 # Environment: KKTLS_CCACHE_MAX  ccache -M of WORK/<tag>/ccache (default 30G)
+#   KKTLS_JAVA   Java 8+ for smali/baksmali in the check step (default: the build image's Java 17 runtime
+#                /opt/kktls/jre17/bin/java, else `java` on PATH; Java 6 does not do)
+#   KKTLS_CACHE  where jarpatch/fetch-smali.sh keeps the pinned smali/baksmali jars (default WORK/dl/smali)
 #
 # Inputs: everything from this repository comes from `git archive HEAD` into WORK/inputs/ (the series, the layer D
 # files, the checkers, the targets file); the inputs must be committed (exit 4 if any is modified or untracked), and a
@@ -120,7 +125,7 @@ while [ $# -gt 0 ]; do
     --dry-run) DRY=1; shift ;;
     --reuse-stock) REUSE_STOCK=1; shift ;;
     all|sync|stock|apply|build|stage|build-d|collect|symcheck|check) CMDS+=("$1"); shift ;;
-    -h|--help) sed -n '2,61p' "$ME"; exit 0 ;;
+    -h|--help) sed -n '2,66p' "$ME"; exit 0 ;;
     *) die "unknown argument: $1" 2 ;;
   esac
 done
@@ -200,6 +205,24 @@ else
   need="git make python3"; case " ${CMDS[*]} " in *" sync "*) need="repo $need" ;; esac
   for c in $need; do command -v $c >/dev/null || die "--runner direct: $c not found" 3; done
 fi
+# a Java 8+ binary for smali/baksmali (the check step's set check): $KKTLS_JAVA, the image's Java 17 runtime (kept off
+# PATH: the 4.4 build needs Java 6 there), or java on PATH
+jp_java() {
+  local j v a b
+  for j in ${KKTLS_JAVA:-} /opt/kktls/jre17/bin/java java; do
+    command -v "$j" > /dev/null 2>&1 || continue
+    v=$("$j" -version 2>&1 | sed -n 's/.* version "\([0-9][0-9.]*\).*/\1/p' | head -n 1)
+    IFS=. read -r a b _ <<< "$v.0"
+    [ "$a" != 1 ] || a=$b   # 1.6, 1.8: the second number
+    if [ -n "$a" ] && [ "$a" -ge 8 ] 2> /dev/null; then command -v "$j"; return 0; fi
+  done
+  return 1
+}
+JP_JAVA=''
+case " ${CMDS[*]} " in
+  *" check "*) JP_JAVA=$(jp_java) ||
+    die "missing Java 8+ for the jar patcher's set check (KKTLS_JAVA, /opt/kktls/jre17/bin/java or java on PATH)" 3 ;;
+esac
 PY="python3 -I"
 CONS=$INPUTS/conscrypt
 TOOLS=$INPUTS/tools
@@ -515,6 +538,12 @@ do_check() {
     fi
     printf '%s\t%s\tkktls-symcheck\t%s\t%s\n' "$t" "$abi" "$r" "$l/symcheck-$abi.log" >> "$sum"
     echo "  $abi kktls-symcheck: $r ($(tail -n1 "$l/symcheck-$abi.log"))"
+    # the jar patcher's set file of this tag (the ours column) against the jars just built
+    r=PASS
+    KKTLS_JAVA=$JP_JAVA KKTLS_CACHE=${KKTLS_CACHE:-$WORK/dl/smali} $PY "$TOOLS/jarpatch/checkset.py" --tag "$t" "$o" \
+      > "$l/jarpatch-set-$abi.log" 2>&1 || { r=FAIL; rc=1; }
+    printf '%s\t%s\tjarpatch-set\t%s\t%s\n' "$t" "$abi" "$r" "$l/jarpatch-set-$abi.log" >> "$sum"
+    echo "  $abi jarpatch-set: $r ($(tail -n1 "$l/jarpatch-set-$abi.log"))"
   done < <(rows_of "$t")
   return $rc
 }

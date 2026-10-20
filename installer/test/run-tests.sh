@@ -184,8 +184,8 @@ MKA=(--in "$IN" --release v9 --cacerts "$T/cacerts" --conscrypt-notice "$T/cnoti
 "$MK" "${MKA[@]}" --out "$T/z2" --jb "$T/jb" > "$T/mk2.log"
 "$MK" "${MKA[@]}" --out "$T/z44" > "$T/mk44.log"
 Z=$T/z1
-check "mkzips writes 28 zips (10 + 3 JB bases x 2 ABIs x openssl, java and conscrypt)" [ "$(wc -l < "$Z/SHA256SUMS")" = 28 ]
-check "mkzips without --jb writes the 10 4.4 zips" [ "$(wc -l < "$T/z44/SHA256SUMS")" = 10 ]
+check "mkzips writes 29 zips (11 + 3 JB bases x 2 ABIs x openssl, java and conscrypt)" [ "$(wc -l < "$Z/SHA256SUMS")" = 29 ]
+check "mkzips without --jb writes the 10 4.4 zips and the jar patcher" [ "$(wc -l < "$T/z44/SHA256SUMS")" = 11 ]
 check "the 4.4 zips do not depend on --jb" sh -c "grep -v -- '-4\.[123]-' '$Z/SHA256SUMS' | cmp -s - '$T/z44/SHA256SUMS'"
 check "zips are byte-identical across two runs" cmp -s "$T/z1/SHA256SUMS" "$T/z2/SHA256SUMS"
 check "the release set has the java zips of 4.1, 4.2 and 4.3 for both ABIs" sh -c "[ \"\$(ls '$Z' | grep 'java-4\.[123]-' | tr '\n' ' ')\" = 'kktls-java-4.1-armeabi-v7a-v9.zip kktls-java-4.1-x86-v9.zip kktls-java-4.2-armeabi-v7a-v9.zip kktls-java-4.2-x86-v9.zip kktls-java-4.3-armeabi-v7a-v9.zip kktls-java-4.3-x86-v9.zip ' ]"
@@ -195,12 +195,24 @@ else
   check "mkzips refuses the dropped --out-unreleased option" sh -c "grep -q '^mkzips: unknown argument --out-unreleased' '$T/mku.log' && [ ! -e '$T/u' ]"
 fi
 for z in "$Z"/kktls-*.zip; do
+  case $z in */kktls-jarpatch-*) continue ;; esac   # not a recovery zip (below)
   l=$(unzip -Z1 "$z")
   check "$(basename "$z") has NOTICE" sh -c "echo '$l' | grep -qx NOTICE"
   check "$(basename "$z") has update-binary" sh -c "echo '$l' | grep -qx META-INF/com/google/android/update-binary"
   check "$(basename "$z") entries sorted" sh -c "echo '$l' | sort -c"
   check "$(basename "$z") update-binary is 0755" sh -c "unzip -Z '$z' META-INF/com/google/android/update-binary | grep -q '^-rwxr-xr-x'"
 done
+JPZ=$Z/kktls-jarpatch-v9.zip JPD=$REL_DIR/tools/jarpatch
+[ -d "$JPD" ] || JPD=$REL_DIR/jarpatch
+check "jarpatch zip: the patcher files, the set files and LICENSE under kktls-jarpatch-v9/, sorted" sh -c "unzip -Z1 '$JPZ' > '$T/jpl' && sort -c '$T/jpl' && [ \"\$(sed 's#^kktls-jarpatch-v9/##' '$T/jpl' | sort | tr '\n' ' ')\" = 'LICENSE README.md aosp44-ssl-consumers.txt checkset.py fetch-smali.sh kktls-jarpatch.py linkcheck.py mkset.py nativescan.py normalize.py rawzip.py sets/4.4.2.txt sets/4.4.4.txt sets/jni-classes.txt ' ]"
+check "jarpatch zip: files equal the tree's" sh -c "for f in kktls-jarpatch.py sets/4.4.4.txt; do unzip -p '$JPZ' kktls-jarpatch-v9/\$f | cmp -s - '$JPD'/\$f || exit 1; done"
+check "jarpatch zip: no tests, no caches, no installer" sh -c "! grep -qE 'tests/|selftest|__pycache__|\.pyc\$|META-INF/|kktls/zip.conf' '$T/jpl'"
+cp -r "$IN" "$T/in-noset"; mv "$T/in-noset/android-4.4.4_r2" "$T/in-noset/android-4.4.3_r1"
+if "$MK" --in "$T/in-noset" --release v9 --cacerts "$T/cacerts" --conscrypt-notice "$T/cnotice" --out "$T/zn" > "$T/mkn.log" 2>&1; then
+  bad "mkzips accepts a 4.4 tag without a jar patcher set file"
+else
+  check "mkzips refuses a 4.4 tag without a jar patcher set file" grep -q 'set files name tag android-4.4.3_r1, want exactly one' "$T/mkn.log"
+fi
 check "openssl zip carries the allow list" sh -c "unzip -Z1 '$Z/kktls-openssl-4.4-x86-v9.zip' | grep -qx kktls/allow-missing-libssl.txt"
 for b in 4.3 4.2 4.1; do
   for a in armeabi-v7a x86; do
@@ -264,7 +276,7 @@ jbx_java() { # base gate-arm [gate-x86]: give jbx/<base> java files and gate lin
 }
 mkx() { "$MK" "${MKA[@]}" --out "$T/zx" --jb "$T/jbx" > "$T/mkx.log" 2>&1; }
 jbx_java 4.2 4.2.2; jbx_java 4.1 "4.1.2 4.1 4.1.1"
-check "mkzips: gate 4.2.2 -> android=4.2.2, gate of all 4.1 releases -> android=4.1" sh -c "'$MK' --in '$IN' --release v9 --cacerts '$T/cacerts' --conscrypt-notice '$T/cnotice' --out '$T/zx' --jb '$T/jbx' > /dev/null && unzip -p '$T/zx/kktls-java-4.2-armeabi-v7a-v9.zip' kktls/zip.conf | grep -qx android=4.2.2 && unzip -p '$T/zx/kktls-java-4.1-armeabi-v7a-v9.zip' kktls/zip.conf | grep -qx android=4.1 && [ \"\$(wc -l < '$T/zx/SHA256SUMS')\" = 28 ]"
+check "mkzips: gate 4.2.2 -> android=4.2.2, gate of all 4.1 releases -> android=4.1" sh -c "'$MK' --in '$IN' --release v9 --cacerts '$T/cacerts' --conscrypt-notice '$T/cnotice' --out '$T/zx' --jb '$T/jbx' > /dev/null && unzip -p '$T/zx/kktls-java-4.2-armeabi-v7a-v9.zip' kktls/zip.conf | grep -qx android=4.2.2 && unzip -p '$T/zx/kktls-java-4.1-armeabi-v7a-v9.zip' kktls/zip.conf | grep -qx android=4.1 && [ \"\$(wc -l < '$T/zx/SHA256SUMS')\" = 29 ]"
 for g in "4.2" "4.2.1 4.2.2" "4.2.2 4.3" "4.2.x" ""; do
   jbx_java 4.2 "$g"
   if mkx; then bad "mkzips accepts the 4.2 gate '$g'"; else ok; fi
@@ -1128,12 +1140,12 @@ fi
 
 # ---- real release output --------------------------------------------------------------------------------------------
 if [ ${#REAL[@]} = 4 ]; then
-  jbargs=() nz=10 nj=0 nd=0
+  jbargs=() nz=11 nj=0 nd=0
   if [ ${#RJB[@]} != 0 ]; then
     # per JB base 2 openssl zips; a base with java lines also 2 java zips (ARM and x86), one with layer D 2 conscrypt zips
     nj=$(cat "${RJB[0]}"/4.[1-3]/armeabi-v7a/BUILD-INFO.txt | grep -c '^gate ') || true
     nd=$(cat "${RJB[0]}"/4.[1-3]/armeabi-v7a/BUILD-INFO.txt | grep -c '^conscrypt lib/libkktls_conscrypt_jni.so$') || true
-    jbargs=(--jb "${RJB[0]}"); nz=$((10 + 2 * $(ls -d "${RJB[0]}"/4.[1-3] | wc -l) + 2 * nj + 2 * nd))
+    jbargs=(--jb "${RJB[0]}"); nz=$((11 + 2 * $(ls -d "${RJB[0]}"/4.[1-3] | wc -l) + 2 * nj + 2 * nd))
   fi
   "$MK" --in "${REAL[0]}" --release t1 --cacerts "${REAL[1]}" --conscrypt-notice "${REAL[2]}" --out "$T/r1" "${jbargs[@]}" \
     > "$T/r1.log"
