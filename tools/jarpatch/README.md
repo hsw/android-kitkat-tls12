@@ -48,7 +48,7 @@ are outside the set (the patcher would keep the old code), the same reason the r
    present with one `classes.dex` each (`core-libart.jar` may be missing on a Dalvik-only ROM).
 2. Reference check against the set file (`sets/<line>.txt`): every class the series changes, adds or removes, every
    class the donor `libjavacrypto.so` looks up by name (`check` lines) and the `security.properties` entry must be the
-   stock AOSP version, compared as normalized bytecode (`normalize.py`: debug info, labels and parameter names do not
+   stock AOSP version, compared as normalized bytecode (`normalize.py`: debug info, comments, labels, parameter names and the JVM's spelling of float literals do not
    count; every instruction, constant, string and reference does). Verdicts: `vendor-modified`, `missing`,
    `unexpected-present`, `already-kktls` ("restore first": a kktls class, the kktls `security.properties` or the
    installer's marker is there). Any of them refuses.

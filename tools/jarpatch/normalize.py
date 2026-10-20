@@ -11,10 +11,14 @@ DIR/<class path>.nsmali. Exit 0 ok, 1 tool error (no classes.dex, baksmali faile
 A class's digest is the sha256 of its baksmali text (2.5.2, `d -a 19`, debug info kept) with everything removed that
 only debug info or the disassembler's naming decides, so that two dex builds of the same source compare equal while any
 change in what the class does compares different:
-  - dropped: comment lines, `.source`, `.line`, `.local`/`.end local`/`.restart local`, `.prologue`/`.epilogue`;
+  - dropped: comment lines and trailing comments (`    # 2.0f`: baksmali's notes, never code), `.source`, `.line`,
+    `.local`/`.end local`/`.restart local`, `.prologue`/`.epilogue`;
   - `.param pN, "name"`: dropped when the parameter has no annotations; when it opens a `.param` ... `.end param` block
     (parameter annotations) only `.param pN` stays;
-  - labels (`:cond_0`, `:try_start_1`, `:pswitch_data_0`, ...) renamed per method in order of first appearance.
+  - labels (`:cond_0`, `:try_start_1`, `:pswitch_data_0`, ...) renamed per method in order of first appearance;
+  - decimal float and double literals (field initial values and annotation elements, after ` = `) written as their
+    bits (`float:0x00800000`, `double:0x...`): baksmali prints them with the JVM's Float/Double.toString, whose digits
+    changed in Java 19 (`1.17549435E-38f` before, `1.1754944E-38f` after, the same float).
 Kept as they are: class, super, interfaces, access flags, annotations, fields with their initial values, method
 signatures and flags, `.registers`, every instruction with its operands (registers, constants, strings, type, field
 and method references), try/catch ranges, switch and array payloads. Text inside string literals is never rewritten.
@@ -30,12 +34,13 @@ import hashlib
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
 import zipfile
 
-NORMALIZER_VERSION = 1
+NORMALIZER_VERSION = 2       # 2: trailing comments dropped, float/double literals as bits (digests JVM-independent)
 MODEL = "H"
 SMALI_VERSION = "2.5.2"     # must equal fetch-smali.sh's SMALI_VERSION (tests check it)
 BAKSMALI_API = "19"
@@ -49,6 +54,8 @@ DEBUG_EXACT = (".prologue", ".epilogue")
 # which keeps `->field:Lpkg_1;`-like member types out.
 LABEL = re.compile(r"(?<![^\s{]):[A-Za-z]+(?:_[A-Za-z]+)*_[0-9a-f]+\b")
 PARAM = re.compile(r"\.param ([vp]\d+)\b")
+# a decimal float (suffix f) or double literal as baksmali prints it; ints and longs are hex, names hold no `.`
+FLOAT = re.compile(r"(?<![\w$/;>.-])(-?)(Infinity|NaN|\d+\.\d+(?:E-?\d+)?)([fF]?)(?![\w$.])")
 # sub-annotations (`value = .subannotation ...`) only occur inside an annotation: depth > 0 skips them anyway
 ANN_OPEN = ".annotation "
 ANN_CLOSE = ".end annotation"
@@ -82,10 +89,61 @@ def _split_string(line):
     return (line, "") if i < 0 else (line[:i], line[i:])
 
 
+def _strip_comment(line):
+    """line without a trailing `# ...` comment; a `#` inside a string or char literal is kept."""
+    quote = None
+    i = 0
+    while i < len(line):
+        c = line[i]
+        if quote:
+            if c == "\\":
+                i += 1
+            elif c == quote:
+                quote = None
+        elif c in "\"'":
+            quote = c
+        elif c == "#":
+            return line[:i].rstrip()
+        i += 1
+    return line
+
+
+def _float_bits(m):
+    sign, num, suffix = m.groups()
+    if num == "NaN":
+        bits = "NaN"
+    elif suffix:
+        bits = "0x%08x" % struct.unpack(">I", struct.pack(">f", float(sign + num)))[0]
+    else:
+        bits = "0x%016x" % struct.unpack(">Q", struct.pack(">d", float(sign + num)))[0]
+    return ("float:" if suffix else "double:") + bits
+
+
+def _literals(s):
+    """The value part (after ` = `) of a field or annotation element line with its float/double literals as bits;
+    string literals are left untouched."""
+    i = s.find(" = ")
+    if i < 0:
+        return s
+    out, rest = [s[:i + 3]], s[i + 3:]
+    while rest:
+        code, tail = _split_string(rest)
+        out.append(FLOAT.sub(_float_bits, code))
+        if not tail:
+            break
+        j = 1                                   # the end of the string literal that starts tail
+        while j < len(tail) and tail[j] != '"':
+            j += 2 if tail[j] == "\\" else 1
+        out.append(tail[:j + 1])
+        rest = tail[j + 1:]
+    return "".join(out)
+
+
 def normalize_text(text):
     """Normalized form (model H) of one class's baksmali text."""
     lines = [l.strip() for l in text.split("\n")]
     lines = [l for l in lines if l and not l.startswith("#") and not _is_debug(l)]
+    lines = [_literals(_strip_comment(l)) for l in lines]
     out, labels, in_method = [], {}, False
     for i, s in enumerate(lines):
         if s.startswith(".method "):

@@ -171,6 +171,48 @@ class DigestUnchanged(unittest.TestCase):
         self.assertEqual(d(stripped), d(PARAM_ANN % "s"))
 
 
+FLOATS = """\
+.class public Lp/F;
+.super Ljava/lang/Object;
+
+.field public static final A:F = %s
+.field public static final B:D = %s
+.field public static final S:Ljava/lang/String; = "1.5f # not a comment"
+
+.method public static f()F
+    .registers 1
+    const/high16 v0, 0x40000000    %s
+    return v0
+.end method
+"""
+
+
+class JvmIndependent(unittest.TestCase):
+    """baksmali prints float and double literals with the JVM's Float/Double.toString (other digits since Java 19)
+    and adds comments: neither may change a digest; another value must."""
+
+    def test_float_double_spellings(self):
+        base = d(FLOATS % ("1.1754944E-38f", "1.0E23", "# 2.0f"))
+        self.assertEqual(d(FLOATS % ("1.17549435E-38f", "9.999999999999999E22", "# 2.0f")), base)   # Java 17
+        self.assertEqual(d(FLOATS % ("1.1754944E-38f", "1.0E23", "# 2.00000f")), base)            # a comment
+        self.assertEqual(d(FLOATS % ("1.1754944E-38f", "1.0E23", "")), base)
+        self.assertNotEqual(d(FLOATS % ("1.1754945E-38f", "1.0E23", "")), base)
+        self.assertNotEqual(d(FLOATS % ("1.1754944E-38f", "1.0E22", "")), base)
+        self.assertNotEqual(d(FLOATS % ("-Infinityf", "1.0E23", "")), d(FLOATS % ("Infinityf", "1.0E23", "")))
+        self.assertNotEqual(d(FLOATS % ("NaNf", "NaN", "")), d(FLOATS % ("NaNf", "Infinity", "")))
+        self.assertNotEqual(d(FLOATS.replace("1.5f # not", "2.5f # not") % ("NaNf", "NaN", "")),
+                            d(FLOATS % ("NaNf", "NaN", "")))     # string literals are never rewritten
+
+    def test_literal_forms(self):
+        self.assertEqual(normalize.normalize_text(FLOATS % ("1.1754944E-38f", "4.9E-324", "# 2.0f")).split("\n")[2:6], [
+            ".field public static final A:F = float:0x00800000", ".field public static final B:D = double:0x0000000000000001",
+            '.field public static final S:Ljava/lang/String; = "1.5f # not a comment"', ".method public static f()F"])
+        self.assertEqual(normalize._literals("value = {1.5f, \"a = 2.0\", -2.5, '#'}"),
+                         "value = {float:0x3fc00000, \"a = 2.0\", double:0xc004000000000000, '#'}")
+        self.assertEqual(normalize._strip_comment("value = '#'    # c"), "value = '#'")
+        self.assertEqual(normalize._strip_comment('const-string v0, "a\\"#b"    # c'), 'const-string v0, "a\\"#b"')
+
+
 class DigestChanged(unittest.TestCase):
     def assertChanges(self, old, new, text=BASE):
         self.assertNotEqual(d(sub(text, old, new)), d(text), "%r -> %r" % (old, new))

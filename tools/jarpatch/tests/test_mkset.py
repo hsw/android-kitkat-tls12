@@ -91,7 +91,7 @@ class MakeSet(unittest.TestCase):
         with open(p, "w") as f:
             f.write(mkset.make_set(stock, ours, JNI, "android-4.4.4_r2"))
         s = mkset.read_set(p)
-        self.assertEqual(s.header, {"tag": "android-4.4.4_r2", "model": "H", "normalizer": "1", "smali": "2.5.2"})
+        self.assertEqual(s.header, {"tag": "android-4.4.4_r2", "model": "H", "normalizer": str(normalize.NORMALIZER_VERSION), "smali": "2.5.2"})
         self.assertIn(("core", ADDED, None, C), s.classes)
         self.assertIn(("core", GONE, C, None), s.classes)
         self.assertIn(("conscrypt", BIO, B), s.checks)
@@ -111,7 +111,7 @@ class MakeSet(unittest.TestCase):
 
     def test_reader_refuses(self):
         ours = ["ours %s %s" % (j, C) for j in mkset.JARS]
-        good = ["tag android-4.4.2_r2", "model H", "normalizer 1", "smali 2.5.2", "class core %s %s %s" % (DHV, A, B)]
+        good = ["tag android-4.4.2_r2", "model H", "normalizer %d" % normalize.NORMALIZER_VERSION, "smali 2.5.2", "class core %s %s %s" % (DHV, A, B)]
         good += ours
         bad = {
             "unknown jar": good + ["class framework %s %s %s" % (INT, A, B)],
@@ -125,7 +125,7 @@ class MakeSet(unittest.TestCase):
             "repeated header": good + ["model S"],
             "missing header": good[1:],
             "foreign tag": ["tag android-5.0.0_r1"] + good[1:],
-            "other normalizer": [l.replace("normalizer 1", "normalizer 9") for l in good],
+            "other normalizer": [l.replace("normalizer %d" % normalize.NORMALIZER_VERSION, "normalizer 9") for l in good],
             "other model": [l.replace("model H", "model S") for l in good],
             "no ours line": good[:-1],
             "repeated ours": good + [ours[0]],

@@ -92,8 +92,9 @@ class Logic(unittest.TestCase):
     def test_header_mismatch(self):
         with self.assertRaisesRegex(checkset.CheckError, "tag android-4.4.2_r2, expected android-4.4.4_r2"):
             checkset.load(self.path, "android-4.4.4_r2")
-        p = self.write("n.txt", self.text.replace("normalizer 1", "normalizer 9"))
-        with self.assertRaisesRegex(checkset.CheckError, "normalizer 9, expected 1"):
+        v = checkset.normalize.NORMALIZER_VERSION
+        p = self.write("n.txt", self.text.replace("normalizer %d" % v, "normalizer 9"))
+        with self.assertRaisesRegex(checkset.CheckError, "normalizer 9, expected %d" % v):
             checkset.load(p)
 
     def test_usage(self):
