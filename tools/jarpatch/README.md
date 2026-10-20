@@ -20,7 +20,8 @@ It runs on a PC (Linux or macOS), not on the device. Nothing on the device is ch
   `kktls-conscrypt-<abi>-<rel>.zip`. Use the patcher of the same release: zips whose installer predates the
   java-patched kind (or `oem_ack`) are a tool error, as the device would refuse what is made from them.
 - The device over `adb` (`adb` on PATH; no root needed: the files are world-readable), or a copy of its `/system`
-  with its `BOOTCLASSPATH` (from `init.environ.rc`) and `build.prop`.
+  with its `BOOTCLASSPATH` (from `init.environ.rc`) and `build.prop`. Over `adb` the device's `ls` output names the
+  files to copy: a name that would put a file outside `<out>` (`..`, `/`) is a tool error.
 
 ## Use
 
@@ -43,8 +44,9 @@ are outside the set (the patcher would keep the old code), the same reason the r
 
 ## What it checks
 
-1. Android 4.4.1 to 4.4.4, ABI `armeabi-v7a` or `x86`, a build fingerprint; no `.odex` in `/system/{framework,app,priv-app}`
-   whose jar or apk lacks `classes.dex` (odexed-and-stripped ROMs are refused, as the installer does); the four jars
+1. Android 4.4.1 to 4.4.4, ABI `armeabi-v7a` or `x86`, a build fingerprint; no `.odex` in
+   `/system/{framework,app,priv-app,vendor/app}` (the system code 4.4's package manager scans) whose jar or apk lacks
+   `classes.dex` (odexed-and-stripped ROMs are refused, as the installer does); the four jars
    present with one `classes.dex` each (`core-libart.jar` may be missing on a Dalvik-only ROM).
 2. Reference check against the set file (`sets/<line>.txt`): every class the series changes, adds or removes, every
    class the donor `libjavacrypto.so` looks up by name (`check` lines) and the `security.properties` entry must be the
@@ -60,7 +62,8 @@ are outside the set (the patcher would keep the old code), the same reason the r
    native method: the donor's `libjavacrypto.so` replaces the device's and registers the stock 4.4 natives only.
 4. Link check per runtime (Dalvik with `core.jar`, ART with `core-libart.jar`, `linkcheck.py`): every reference of the
    replaced classes resolves on the patched boot class path, and no reference of the boot class path, the other
-   framework jars or the apps that resolved before the patch breaks (a caller of a member the series removes refuses).
+   framework jars or the apps (`/system/{app,priv-app,vendor/app}`) that resolved before the patch breaks (a caller of
+   a member the series removes refuses).
    Constructors resolve in the named class only (they are not inherited). A replaced, added or check class (`check`
    lines: the classes the donor's `libjavacrypto.so` uses) that another `BOOTCLASSPATH` jar defines too refuses: an
    earlier copy is the one the runtime loads, a later one is a second implementation the series or the check does not
@@ -87,6 +90,8 @@ are outside the set (the patcher would keep the old code), the same reason the r
   is a property of the series, not of the device. Measured for both shipped sets: the series makes no class or
   member final or abstract, adds no abstract method, narrows no member's access and changes no member's static kind
   (a new set must be measured again).
+- Only `/system` is read: a `/vendor` that is its own partition (not a link to `/system/vendor`) and apps in
+  `/data/app` are not (the latter are dexopted from their apk, which keeps its `classes.dex`).
 - `conscrypt.jar` natives are checked per class (see 3.); the device's own `libjavacrypto.so` is not read (which
   classes it registers natives for is not compared with `sets/jni-classes.txt`).
 - On `--accept-oem`, the `extra` native consumers in the report are listed, not checked: reading the report is the

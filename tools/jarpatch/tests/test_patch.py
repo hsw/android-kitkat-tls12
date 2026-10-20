@@ -179,6 +179,8 @@ elif a[:1] == ["shell"]:
                 else:
                     l = "-rw-r--r-- root root %d 2014-01-01 00:00 %s" % (os.path.getsize(p), n)
                 sys.stdout.write(l + "\r\n")
+        if "-lR " + top == os.environ.get("FAKE_ADB_INJECT_DIR"):
+            sys.stdout.write(os.environ["FAKE_ADB_INJECT"])
     elif c.startswith("ls ") and c.endswith(" 2>&1"):                # toolbox messages
         top = c[3:-len(" 2>&1")]
         d = dev(top)
@@ -189,6 +191,8 @@ elif a[:1] == ["shell"]:
             sys.stdout.write("".join(n + "\r\n" for n in sorted(os.listdir(d))))
         else:
             sys.stdout.write("%s: No such file or directory\r\n" % top)
+        if top == os.environ.get("FAKE_ADB_INJECT_DIR"):
+            sys.stdout.write(os.environ["FAKE_ADB_INJECT"])
     elif c.startswith("cat "):
         with open(dev(c[4:])) as f:
             sys.stdout.write(f.read().replace("\n", "\r\n"))
@@ -492,6 +496,32 @@ class Patch(Fixture):
         self.assertIn("oem-marker ro.cm.version", self.read_report())
         self.assertEqual(sorted(n for n in os.listdir(self.out) if n.endswith(".zip")), [])
 
+    def test_adb_hostile_listing(self):
+        # a ROM controls its ls output: a name with "/" or a fake `ls -lR` header with ".." (file names may hold
+        # newlines) would make adb pull write outside --out; it is a tool error before anything lands there
+        self.oem_system()
+        os.makedirs(os.path.join(self.sysdir, "vendor", "app"))
+        # FAKE_ADB_INJECT_DIR: "DIR" for `ls DIR`, "-lR DIR" for `ls -lR DIR`
+        for d, text, msg in (
+                ("/system/app", "../../../pwn.apk\r\n", "adb: ls /system/app printed '../../../pwn.apk', which is "
+                                                        "no file name"),
+                ("/system/vendor/app", "..\r\n", "adb: ls /system/vendor/app printed '..', which is no file name"),
+                ("-lR /system/lib", "\r\n/system/lib/../../../pwn:\r\n-rw-r--r-- root root 5 2014-01-01 00:00 evil\r\n",
+                 "adb: ls -lR /system/lib printed the directory header '/system/lib/../../../pwn:'"),
+                ("-lR /system/bin", "-rw-r--r-- root root 5 2014-01-01 00:00 ..\r\n",
+                 "adb: ls -lR /system/bin printed '..' in /system/bin, which is no file name")):
+            shutil.rmtree(self.out, ignore_errors=True)
+            os.environ.update(FAKE_ADB_INJECT_DIR=d, FAKE_ADB_INJECT=text)
+            try:
+                rc, out = self.patch("--accept-oem", adb=True)
+            finally:
+                del os.environ["FAKE_ADB_INJECT_DIR"], os.environ["FAKE_ADB_INJECT"]
+            self.assertEqual(rc, 2, out)
+            self.assertIn("kktls-jarpatch: error: " + msg, out)
+            self.assertFalse(os.path.lexists(os.path.join(self.t.name, "pwn")), d)
+            self.assertFalse(os.path.lexists(os.path.join(self.t.name, "pwn.apk")), d)
+            self.assertFalse([n for n in os.listdir(self.out) if n.endswith(".zip")], d)
+
     def test_oem_accepted(self):
         self.oem_system()
         rc, out = self.patch("--accept-oem")
@@ -561,6 +591,18 @@ class Refusals(Fixture):
                            "REFUSED - /system/app/Vendor.apk: odexed without classes.dex",
                            "REFUSED - /system/app/Orphan.odex: odexed, no jar/apk next to it")
 
+    def test_stripped_vendor_app(self):
+        # 4.4's package manager scans /vendor/app (= /system/vendor/app) as system code: an odexed-and-stripped apk
+        # there loses its app once core.jar changes, like one in /system/app
+        os.makedirs(os.path.join(self.sysdir, "vendor", "app"))
+        self.make_jar(os.path.join(self.sysdir, "vendor", "app", "X.apk"), [(VEN, 1, "0x1")], {}, dex=False)
+        open(os.path.join(self.sysdir, "vendor", "app", "X.odex"), "w").close()
+        for adb in (False, True):
+            shutil.rmtree(self.out, ignore_errors=True)
+            rc, out = self.patch(adb=adb)
+            self.assertRefused(rc, out, "REFUSED - /system/vendor/app/X.apk: odexed without classes.dex")
+        self.assertTrue(os.path.isfile(os.path.join(self.out, "device", "vendor", "app", "X.apk")))
+
     def test_already_patched(self):
         for j in mkset.JARS:
             shutil.copyfile(os.path.join(self.base, "ours", "system", "framework", j + ".jar"),
@@ -586,6 +628,7 @@ class Refusals(Fixture):
         for d, msg in (("/system/framework", "opendir failed, Permission denied"),
                        ("/system/app", "opendir failed, Permission denied"),
                        ("/system/priv-app", "opendir failed, Permission denied"),
+                       ("/system/vendor/app", "opendir failed, Permission denied"),
                        ("/system/lib", "opendir failed, Permission denied"),
                        ("/system/etc/kktls", "opendir failed, Permission denied"),
                        ("/system/app", "ls: {d}: Input/output error"),
@@ -663,10 +706,12 @@ class LinkCheck(Fixture):
 
     def test_caller_of_removed_class(self):
         # the series removes com.example.Gone: a caller outside the boot class path, in a framework jar and an apk
-        for p in ("framework/caller.jar", "app/Caller.apk"):
+        os.makedirs(os.path.join(self.sysdir, "vendor", "app"))
+        callers = ("framework/caller.jar", "app/Caller.apk", "vendor/app/Caller.apk")
+        for p in callers:
             self.make_jar(os.path.join(self.sysdir, p), [(CALLER, 1, "0x1", GONE + "->value()I")], {})
         rc, out = self.patch()
-        for p in ("framework/caller.jar", "app/Caller.apk"):
+        for p in callers:
             for ref in (GONE, GONE + "->value()I"):
                 self.assertIn("REFUSED /system/%s %s: link check: resolved before the patch, not after (dalvik, art)"
                               % (p, ref), out)
@@ -919,7 +964,7 @@ class Logic(unittest.TestCase):
     def test_adb_ls(self):
         class Fake(jp.Adb):
             def __init__(self, text):
-                jp.Adb.__init__(self, "s")
+                jp.Adb.__init__(self, "s", "/nonexistent")
                 self.text = text
 
             def shell(self, command):
@@ -935,6 +980,27 @@ class Logic(unittest.TestCase):
                     "ls: /system/app: No such file or directory\nls: /system/app: No such file or directory\n"):
             with self.assertRaises(jp.ToolError):
                 Fake(err).ls("/system/app")
+        # names a hostile ls prints (a file name with a newline): never a path outside the directory
+        for odd in ("a.apk\n../../../x.apk\n", "..\n", ".\n", "a/b.apk\n", "/tmp/x.apk\n"):
+            with self.assertRaises(jp.UnsafePath):
+                Fake(odd).ls("/system/app")
+
+    def test_inside(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = os.path.join(t, "stage")
+            os.makedirs(os.path.join(root, "app"))
+            self.assertEqual(jp.inside(root, "app/a.apk"), os.path.join(root, "app/a.apk"))
+            self.assertEqual(jp.inside(root, "vendor/app/x/b.so"), os.path.join(root, "vendor/app/x/b.so"))
+            os.symlink(t, os.path.join(root, "out"))
+            for rel in ("app/../../x", "../x", "/etc/x", "", ".", "app/..", "out/x"):
+                with self.assertRaises(jp.UnsafePath):
+                    jp.inside(root, rel)
+
+            class Fake(jp.Adb):
+                def run(self, args):
+                    raise AssertionError("adb ran: %s" % args)
+            with self.assertRaises(jp.UnsafePath):
+                Fake("s", root).pull("/system/app/x.apk", os.path.join(root, "app", "..", "..", "x.apk"))
 
     def test_ls_files(self):
         toolbox = ("\n/system/lib:\ndrwxr-xr-x root root 2014-01-01 00:00 hw\n"
@@ -965,6 +1031,16 @@ class Logic(unittest.TestCase):
             ("/system/bin/c", "Input/output error"), ("/system/bin/missing", jp.NO_SUCH_DIR)])
         self.assertEqual(jp.ls_files("ls: /system/vendor: Input/output error\n", "/system/vendor"),
                          ([], [("/system/vendor", "Input/output error")]))
+        # a hostile listing: a header below TOP with an empty, "." or ".." component, a file name that is no name
+        for hdr in ("/system/lib/../../../tmp/pwn", "/system/lib/hw/..", "/system/lib//x", "/system/lib/./x"):
+            with self.assertRaises(jp.UnsafePath):
+                jp.ls_files("%s:\n-rw-r--r-- root root 5 2014-01-01 00:00 evil\n" % hdr, "/system/lib")
+        for name in ("..", "."):
+            with self.assertRaises(jp.UnsafePath):
+                jp.ls_files("/system/lib:\n-rw-r--r-- root root 5 2014-01-01 00:00 %s\n" % name, "/system/lib")
+        # a header outside TOP is not TOP's: its files are skipped
+        self.assertEqual(jp.ls_files("/system/../x:\n-rw-r--r-- root root 5 2014-01-01 00:00 evil\n", "/system/lib"),
+                         ([], []))
 
     def test_lines_map(self):
         self.assertEqual(dict(jp.LINES), {"4.4.1": "4.4.2", "4.4.2": "4.4.2", "4.4.3": "4.4.4", "4.4.4": "4.4.4"})

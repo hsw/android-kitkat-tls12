@@ -12,11 +12,12 @@ dalvik (the device's BOOTCLASSPATH, with core.jar) and art (the same with core.j
   outbound  every type, field and method reference of every replacement class (parsed from its smali file) must
             resolve against the patched boot class path;
   inbound   every type, field and method reference of every dex in scope (the boot class path jars, the other
-            /system/framework jars, /system/app and /system/priv-app with classes.dex) that resolved against the
-            device's own boot class path must still resolve against the patched one. A jar or apk outside the boot
-            class path also sees its own classes (after the boot class path, which wins); only classes.dex is read
-            (4.4 system code is single-dex). References that did not resolve before the patch either (optional
-            libraries, a vendor's dangling reference) are counted, not refused: the patch did not break them;
+            /system/framework jars, /system/app, /system/priv-app and /system/vendor/app with classes.dex) that
+            resolved against the device's own boot class path must still resolve against the patched one. A jar or
+            apk outside the boot class path also sees its own classes (after the boot class path, which wins); only
+            classes.dex is read (4.4 system code is single-dex). References that did not resolve before the patch
+            either (optional libraries, a vendor's dangling reference) are counted, not refused: the patch did not
+            break them;
   placement every patched jar must be on the runtime's boot class path, and no other boot jar may define a
             replacement class or a check class (the set's classes the donor's libjavacrypto.so uses) or carry a
             resource the patch writes (java/security/security.properties): the first definition on BOOTCLASSPATH
@@ -46,8 +47,10 @@ import rawzip  # noqa: E402
 NO_INDEX = 0xffffffff
 OBJECT = "Ljava/lang/Object;"
 PRIMS = "ZBSCIJFDV"
-# the /system directories whose jars and apks are in scope (the patcher's odex check and its adb copy use them too)
-SUBDIRS = (("framework", ".jar"), ("app", ".apk"), ("priv-app", ".apk"))
+# the /system directories whose jars and apks are in scope (the patcher's odex check and its adb copy use them too):
+# the system code directories 4.4's PackageManagerService scans (/vendor/app is /system/vendor/app on 4.4 builds); a
+# missing one is empty
+SUBDIRS = (("framework", ".jar"), ("app", ".apk"), ("priv-app", ".apk"), ("vendor/app", ".apk"))
 DEX_MAGIC = b"dex\n"
 HEADER_SIZE = 0x70
 # the header's (size, offset) pairs of the id tables, in file order
@@ -438,7 +441,7 @@ def runtimes(bootclasspath, dalvik_only):
 def run(root, bootclasspath, staged, replaced, changed, dalvik_only, log=None, checked=None, entries=None):
     """Link check of a staged patch.
 
-    root          the /system copy (framework/, app/, priv-app/)
+    root          the /system copy (framework/, app/, priv-app/, vendor/app/)
     bootclasspath the device's BOOTCLASSPATH entries (/system/framework/<jar>.jar)
     staged        {jar name without .jar: patched classes.dex path}
     replaced      {jar: {descriptor: smali path}} the replacement classes (added or changed by the series)

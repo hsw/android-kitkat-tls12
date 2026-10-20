@@ -31,6 +31,8 @@ refused too. The release zips themselves are unchanged apart from the installer.
   restore are those of the java zip, and it writes the java marker, so the conscrypt zip of the same release installs
   on top. The openssl and conscrypt kinds skip the OEM/CM gate only when `zip.conf` has an `oem_ack` equal to the
   sha256 of the running system's fingerprint; an `oem_ack` for another system refuses.
+- Installer: the dex check of the java (and java-patched) zips covers `/system/vendor/app` too, which the 4.4 package
+  manager scans as system code: an odexed apk there without `classes.dex` refuses.
 - Release build: the `check` step compares the built `core`, `core-libart`, `conscrypt` and `okhttp` jars with the
   jar patcher's set file of the tag (`tools/jarpatch/checkset.py`), line by line and as whole jars (a per-jar
   aggregate in the set file, so a class the set does not list counts too), and fails on a difference. `mkzips.sh` adds

@@ -445,6 +445,14 @@ refused "java with a stripped odexed apk" "$R0" "$J"
 cp "$T/fx/dex.jar" "$R0/system/app/Browser.apk"; echo "junk" > "$R0/system/priv-app/Settings.apk"
 refused "java with an unreadable odexed apk" "$R0" "$J"
 cp "$T/fx/dex.jar" "$R0/system/priv-app/Settings.apk"
+# /system/vendor/app: the package manager scans /vendor/app as system code too
+mkdir -p "$R0/system/vendor/app"; echo odex > "$R0/system/vendor/app/OemIme.odex"
+refused "java with an odexed /system/vendor/app entry and no apk" "$R0" "$J"
+check "java, vendor/app odex without apk: the refusal names it" grep -q '/system/vendor/app/OemIme.odex has no jar/apk next to it' "$T/out"
+cp "$T/fx/nodex.jar" "$R0/system/vendor/app/OemIme.apk"
+refused "java with a stripped odexed /system/vendor/app apk" "$R0" "$J"
+check "java, stripped vendor/app apk: the refusal names it" grep -q '/system/vendor/app/OemIme.apk is odexed without classes.dex' "$T/out"
+rm -r "$R0/system/vendor"
 refused "java 4.4.4 zip on 4.4.2" "$R0" "$J4"
 echo v9 > "$R0/system/etc/kktls/java.version"; echo v8 > "$R0/system/etc/kktls/java.version"
 refused "conscrypt with another release's java marker" "$R0" "$D"
@@ -680,7 +688,9 @@ EOF
 PJ=$T/kktls-java-patched.zip PJF=$T/kktls-java-patched-fp.zip
 mkpatched "$PJ"; mkpatched "$PJF" generic/sdk/generic:4.4.2/KK/2:user/test-keys
 check "java-patched zip: kind, the donor's release, a jar line per jar, fingerprint" sh -c "unzip -p '$PJ' kktls/zip.conf | grep -c '^kind=java-patched\$\|^release=v9\$\|^jar\.[a-z-]*=[0-9a-f]\{64\}\$\|^fingerprint=[0-9a-f]\{64\}\$' | grep -qx 7"
-mkroot "$R0"; ORIG=$(snap "$R0" system)
+mkroot "$R0"
+mkdir -p "$R0/system/vendor/app"; cp "$T/fx/dex.jar" "$R0/system/vendor/app/OemIme.apk"
+echo odex > "$R0/system/vendor/app/OemIme.odex"; ORIG=$(snap "$R0" system)
 refused "java-patched without the openssl marker" "$R0" "$PJ"
 installs "openssl (java-patched chain)" "$R0" "$O"
 refused "java-patched made for another fingerprint" "$R0" "$PJF"
@@ -690,6 +700,10 @@ refused "java-patched with one jar changed" "$R0" "$PJ"
 check "java-patched, one jar changed: the refusal names it" grep -q 'okhttp.jar is not the jar this zip was made from' "$T/out"
 check "java-patched, one jar changed: only that jar" [ "$(grep -c 'is not the jar this zip was made from' "$T/out")" = 1 ]
 cp "$T/okhttp.jar" "$R0/system/framework/okhttp.jar"
+cp "$T/fx/nodex.jar" "$R0/system/vendor/app/OemIme.apk"
+refused "java-patched with a stripped odexed /system/vendor/app apk" "$R0" "$PJ"
+check "java-patched, stripped vendor/app apk: the refusal names it" grep -q '/system/vendor/app/OemIme.apk is odexed without classes.dex' "$T/out"
+cp "$T/fx/dex.jar" "$R0/system/vendor/app/OemIme.apk"
 # zip.conf and payload that do not belong together (kk_check_patched): each refusal names its reason
 FP1=generic/sdk/generic:4.4.2/KK/1:user/test-keys H64=$(printf %064d 0)
 mkpatched "$T/pj-noline.zip" "$FP1" "core core-libart conscrypt"
@@ -708,6 +722,7 @@ refused "java-patched: no jar line and no jar" "$R0" "$T/pj-nojar.zip"
 check "java-patched, no jar line: the refusal says so" grep -q 'zip.conf names no jar (jar.<name>=)' "$T/out"
 : > "$LOG"
 installs "java-patched" "$R0" "$PJ"
+check "java-patched: the dex check counts /system/vendor/app" grep -q 'dex check: 6 odexed jar/apk files carry classes.dex' "$T/out"
 check "java-patched: the four jars replaced" sh -c "for j in core core-libart conscrypt okhttp; do cmp -s '$R0/system/framework/'\$j.jar '$T/fx/patched.jar' || exit 1; done"
 check "java-patched: core.odex removed, framework.odex kept" sh -c "[ ! -e '$R0/system/framework/core.odex' ] && [ -f '$R0/system/framework/framework.odex' ]"
 check "java-patched: dalvik-cache wiped" [ -z "$(ls -A "$R0/data/dalvik-cache")" ]
@@ -1200,7 +1215,7 @@ if [ ${#REAL[@]} = 4 ]; then
     sv=$(sed -n 's/^ro.build.version.release=//p' "$R0/system/build.prop")
     sa=$(sed -n 's/^ro.product.cpu.abi=//p' "$R0/system/build.prop")
     echo "  sdk system: release $sv, abi $sa, id $(sed -n 's/^ro.build.id=//p' "$R0/system/build.prop"),"\
-      "$(ls "$R0"/system/framework/*.odex "$R0"/system/app/*.odex "$R0"/system/priv-app/*.odex 2> /dev/null | wc -l) .odex"
+      "$(ls "$R0"/system/framework/*.odex "$R0"/system/app/*.odex "$R0"/system/priv-app/*.odex "$R0"/system/vendor/app/*.odex 2> /dev/null | wc -l) .odex"
     ORIG=$(snap "$R0" system); : > "$LOG"
     for z in kktls-openssl-4.4-$sa-t1 kktls-cacerts-t1 kktls-java-$sv-$sa-t1 kktls-conscrypt-$sa-t1; do
       KK_PATH=$T/chcon installs "sdk: $z" "$R0" "$T/r1/$z.zip"

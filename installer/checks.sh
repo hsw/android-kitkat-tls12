@@ -111,9 +111,11 @@ kk_check_dex() {
   # Replacing core.jar makes every other .odex stale; Dalvik then re-dexopts each jar/apk from its classes.dex into
   # /data/dalvik-cache. A firmware whose jar/apk next to an .odex has no classes.dex (odexed and stripped) would
   # bootloop. BOOTCLASSPATH is in the boot ramdisk (not readable from recovery): its jars are in /system/framework,
-  # so the .odex scan of /system/framework covers them.
+  # so the .odex scan of /system/framework covers them. vendor/app: the package manager scans /vendor/app (on 4.4
+  # /system/vendor/app) as system apps too; a missing directory, or a /system/vendor that is a symlink not resolving
+  # in recovery, gives an empty glob.
   local d o base f n=0
-  for d in framework app priv-app; do
+  for d in framework app priv-app vendor/app; do
     for o in "$KK_ROOT/system/$d"/*.odex; do
       [ -f "$o" ] || continue
       base=${o%.odex}

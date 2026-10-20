@@ -181,7 +181,8 @@ Each release has these zips and a `SHA256SUMS` file:
   because the Java side sets OpenSSL 1.0.1u `SSL_MODE` bits that mean something else in a stock 1.0.1e.
 - **Dex check:** replacing `core.jar` makes every other pre-optimised `.odex` stale, and Dalvik regenerates them from
   the `classes.dex` inside each jar or apk. The java zip refuses when any jar or apk in `/system/framework`,
-  `/system/app` or `/system/priv-app` has an `.odex` but no `classes.dex`: such a device would not boot. The Jelly
+  `/system/app`, `/system/priv-app` or `/system/vendor/app` (the system code the package manager scans) has an `.odex`
+  but no `classes.dex`: such a device would not boot or would lose that app. The Jelly
   Bean SDK system images are such systems: the Jelly Bean java zips are refused there.
 - **What install does:** mounts `/system` and `/data`, runs all checks and lists every failure, checks that `/system`
   and `/data` have room for the new files and the backup (else it refuses before writing anything), backs up the files
@@ -289,7 +290,8 @@ zip's dex check, backup and restore. The conscrypt zip of the same release insta
   restore zip first.
 - A broken link (a caller of a member the series removes), a class that changes in the round trip, a dex over the
   65536 id limit, a vendor class with native methods in `conscrypt.jar`.
-- Odexed-and-stripped ROMs: an `.odex` in `/system/{framework,app,priv-app}` whose jar or apk has no `classes.dex`.
+- Odexed-and-stripped ROMs: an `.odex` in `/system/{framework,app,priv-app,vendor/app}` whose jar or apk has no
+  `classes.dex`.
 - An OEM/CM build (the `build.prop` markers of `installer/checks.sh`) without `--accept-oem`.
 - On the device: a patched zip on any other system (another jar or fingerprint, a ROM update, a second run on the
   already patched jars).

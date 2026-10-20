@@ -8,9 +8,10 @@
 
 Inputs:
   --adb SERIAL        the device's /system over adb (no root needed: the files are world-readable): every
-                      /system/framework/*.jar, every /system/{app,priv-app}/*.apk, /system/build.prop, the names of the
-                      .odex files, whether /system/lib/libart.so exists, the installer marker /system/etc/kktls/
-                      java.version and the BOOTCLASSPATH of a shell. The files are copied into OUT/device/.
+                      /system/framework/*.jar, every /system/{app,priv-app,vendor/app}/*.apk, /system/build.prop, the
+                      names of the .odex files, whether /system/lib/libart.so exists, the installer marker
+                      /system/etc/kktls/java.version and the BOOTCLASSPATH of a shell. The files are copied into
+                      OUT/device/ (a listed name that would leave it, "..", "/", is a tool error).
   --system DIR        a copy of /system (DIR/framework/, or DIR/system/framework/), e.g. a mounted ROM image, with
   --bootclasspath L   the device's BOOTCLASSPATH (`/system/framework/core.jar:...`, from init.environ.rc) and
   --build-prop FILE   its build.prop.
@@ -27,8 +28,9 @@ Inputs:
 
 What it does (nothing on the device is changed):
   1. gates: Android 4.4.1 to 4.4.4 (4.4, android-4.4_r1/r1.2, lacks upstream SSLEngine and okhttp fixes that the
-     series builds on and the patcher does not carry: refused), ABI armeabi-v7a or x86, a build fingerprint; no .odex in /system/{framework,app,priv-app}
-     whose jar/apk lacks classes.dex (the installer's dex check: after core.jar changes Dalvik must re-dexopt them);
+     series builds on and the patcher does not carry: refused), ABI armeabi-v7a or x86, a build fingerprint; no .odex in
+     /system/{framework,app,priv-app,vendor/app} (the system code 4.4's package manager scans) whose jar/apk lacks
+     classes.dex (the installer's dex check: after core.jar changes Dalvik must re-dexopt them);
      the four jars present with exactly one classes.dex (core-libart.jar may be absent when /system/lib/libart.so is,
      a Dalvik-only ROM); an OEM/CM build (or --accept-oem): the native-consumer scan (nativescan.py: every ELF of
      /system/{lib,bin,xbin,vendor} and of the apps' lib/ that needs libssl.so or libcrypto.so, "extra" when not in
@@ -57,8 +59,8 @@ What it does (nothing on the device is changed):
      it had on the device and every replaced class must have the set's ours digest;
   5. link check (linkcheck.py), per runtime (dalvik: BOOTCLASSPATH with core.jar; art: with core-libart.jar): every
      reference of the replacement classes must resolve on the patched boot class path, and every reference of the
-     boot class path, the other framework jars and the app/priv-app dex that resolved before the patch must still
-     resolve (a caller of a member the series removes refuses); every patched jar must be on that runtime's
+     boot class path, the other framework jars and the app/priv-app/vendor/app dex that resolved before the patch must
+     still resolve (a caller of a member the series removes refuses); every patched jar must be on that runtime's
      BOOTCLASSPATH, and no other BOOTCLASSPATH jar may define a replaced, added or check class or carry an entry
      the set writes (java/security/security.properties: the first copy on BOOTCLASSPATH is the one loaded).
 
@@ -137,6 +139,10 @@ class ToolError(Exception):
     pass
 
 
+class UnsafePath(ToolError):
+    """A device-supplied name that would put a copied file outside the mirror (never a per-file failure)."""
+
+
 class Refused(Exception):
     def __init__(self, reasons):
         Exception.__init__(self, "%d reason(s)" % len(reasons))
@@ -171,7 +177,7 @@ def read_build_prop(path):
 
 class System(object):
     """What the patcher reads of a device's /system. root mirrors /system for the files that were read: framework/
-    (every .jar), app/ and priv-app/ (every .apk) and, with --system, everything else of the copy."""
+    (every .jar), app/, priv-app/ and vendor/app/ (every .apk) and, with --system, everything else of the copy."""
 
     def __init__(self, source, root, build_prop, bootclasspath, odex, libart, java_marker, adb=None):
         self.source = source              # "adb" or "system"
@@ -220,9 +226,25 @@ def from_system(d, bcp_text, build_prop):
                   marker)
 
 
+def inside(root, rel):
+    """root/rel, or UnsafePath unless its real path lies below the real path of root (the --adb names come from the
+    device's ls output: a hostile ROM controls them, and adb pull would write wherever they point)."""
+    dst = os.path.join(root, rel)
+    r, d = os.path.realpath(root), os.path.realpath(dst)
+    if os.path.isabs(rel) or d == r or os.path.commonpath([r, d]) != r:
+        raise UnsafePath("adb: device path %r would be copied outside %s" % (rel, root))
+    return dst
+
+
+def bad_name(n):
+    """True when n, an entry name from a device listing, is no plain file name (".", "..", or holds "/")."""
+    return "/" in n or n in (".", "..")
+
+
 class Adb(object):
-    def __init__(self, serial):
+    def __init__(self, serial, root):
         self.cmd = ["adb", "-s", serial]
+        self.root = root   # every pull lands below it (inside)
 
     def run(self, args):
         try:
@@ -246,9 +268,13 @@ class Adb(object):
             return []   # toolbox `D: No such file or directory`, busybox `ls: D: No such file or directory`
         if bad:
             raise ToolError("adb: %s is not listable: %s" % (d, bad[0]))
+        odd = [n for n in names if bad_name(n)]
+        if odd:
+            raise UnsafePath("adb: ls %s printed %r, which is no file name" % (d, odd[0]))
         return sorted(names)
 
     def pull(self, src, dst):
+        inside(self.root, os.path.relpath(dst, self.root))
         self.run(["pull", src, dst])
         if not os.path.isfile(dst):
             raise ToolError("adb pull %s: no file arrived" % src)
@@ -256,7 +282,7 @@ class Adb(object):
 
 def from_adb(serial, stage):
     """Copy what the patcher needs from the device's /system into stage/ (a /system mirror)."""
-    adb = Adb(serial)
+    adb = Adb(serial, stage)
     state = adb.run(["get-state"]).strip()
     if state != "device":
         raise ToolError("adb: device %s is %s" % (serial, state or "not available"))
@@ -266,12 +292,12 @@ def from_adb(serial, stage):
         if sub == "framework" and not any(n.endswith(".jar") for n in names):
             raise ToolError("adb: /system/framework lists no jar")
         odex[sub] = [n for n in names if n.endswith(".odex")]
-        os.makedirs(os.path.join(stage, sub), exist_ok=True)
+        os.makedirs(inside(stage, sub), exist_ok=True)
         files = [n for n in names if n.endswith(ext)]
         log("adb: pulling %d %s file(s) of /system/%s" % (len(files), ext, sub))
         for n in files:
-            adb.pull("/system/%s/%s" % (sub, n), os.path.join(stage, sub, n))
-    adb.pull("/system/build.prop", os.path.join(stage, "build.prop"))
+            adb.pull("/system/%s/%s" % (sub, n), inside(stage, os.path.join(sub, n)))
+    adb.pull("/system/build.prop", inside(stage, "build.prop"))
     libart = "libart.so" in adb.ls("/system/lib")
     marker = None
     if os.path.basename(JAVA_MARKER) in adb.ls("/system/" + os.path.dirname(JAVA_MARKER)):
@@ -301,12 +327,16 @@ def ls_files(listing, top):
     """(sorted paths of the regular files, sorted [(path, why)] of the directories ls could not read) of a
     `ls -lR TOP 2>&1` listing (toolbox or busybox format; directories come as `PATH:` headers, symbolic links and
     other types are skipped; an error line (ls_error) names its path (busybox `ls: PATH: why`) or follows the header
-    of the directory it is about (toolbox `opendir failed, why`); TOP itself missing is no error)."""
+    of the directory it is about (toolbox `opendir failed, why`); TOP itself missing is no error). UnsafePath when a
+    header below TOP has an empty, "." or ".." component or a file name is no plain name (bad_name): the listing comes
+    from the device, and these paths become host paths."""
     res, errs, cur = [], set(), None
     for l in listing.split("\n"):
         l = l.rstrip()
         if l.endswith(":") and l.startswith("/"):
             cur = l[:-1]
+            if cur.startswith(top + "/") and any(c in ("", ".", "..") for c in cur[len(top) + 1:].split("/")):
+                raise UnsafePath("adb: ls -lR %s printed the directory header %r" % (top, l))
             continue
         e = ls_error(l)
         if e:
@@ -320,6 +350,8 @@ def ls_files(listing, top):
             continue
         name = l.split()[-1]
         if cur == top or cur.startswith(top + "/"):
+            if bad_name(name):
+                raise UnsafePath("adb: ls -lR %s printed %r in %s, which is no file name" % (top, name, cur))
             res.append(cur + "/" + name)
     return sorted(res), sorted(errs)
 
@@ -327,7 +359,8 @@ def ls_files(listing, top):
 def fetch_native(system):
     """--adb: copy /system/{lib,bin,xbin,vendor} and the *.so files under /system/{app,priv-app} into the mirror for the
     native-consumer scan; a file that does not arrive or a directory ls cannot read (not readable for the shell user) is
-    reported, not fatal (a directory that does not exist, as /system/vendor on many builds, is not an error line)."""
+    reported, not fatal (a directory that does not exist, as /system/vendor on many builds, is not an error line); a
+    listed path that would leave the mirror is a tool error (UnsafePath)."""
     failed = []
     for sub in nativescan.TREES:
         top = "/system/" + sub
@@ -337,10 +370,12 @@ def fetch_native(system):
             paths = [p for p in paths if p.endswith(".so")]
         log("adb: pulling %d file(s) of %s for the native-consumer scan" % (len(paths), top))
         for p in paths:
-            dst = os.path.join(system.root, p[len("/system/"):])
+            dst = inside(system.root, p[len("/system/"):])   # before makedirs: that would create directories too
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             try:
                 system.adb.pull(p, dst)
+            except UnsafePath:
+                raise
             except ToolError as e:
                 if os.path.lexists(dst):
                     os.remove(dst)
@@ -496,8 +531,8 @@ def has_dex(path):
 
 
 def check_odex(system):
-    """The installer's dex check: every .odex in framework/app/priv-app needs its jar/apk with classes.dex next to it
-    (the four set jars are checked by check_jars)."""
+    """The installer's dex check: every .odex in framework/app/priv-app/vendor/app needs its jar/apk with classes.dex
+    next to it (the four set jars are checked by check_jars)."""
     reasons = []
     for sub, _ in SUBDIRS:
         for o in system.odex[sub]:
