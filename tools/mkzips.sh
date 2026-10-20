@@ -44,7 +44,7 @@
 #                                           fetch-smali.sh, README.md) and LICENSE; a host tool that makes a
 #                                           device-specific java zip from the 4.4 java zips of the same release. Every
 #                                           4.4 tag of --in needs a set file (sets/*.txt naming the tag); the release
-#                                           build's check step compared its jars with that set (jarpatch/checkset.py)
+#                                           build's check step compares its jars with that set (jarpatch/checkset.py)
 # Entries are sorted, with fixed timestamps and modes, so the same inputs give byte-identical zips. Exit 0 ok, 1 bad
 # input, 2 usage.
 set -euo pipefail
