@@ -22,7 +22,8 @@ device with this release's donor zips (tool error), or keep the device's stock c
 changes, so the release must not ship. Regenerate the set (mkset.py) from a stock build of the tag and this build's
 jars.
 
-Exit 0 every line matches, 1 drift (each differing line listed), 2 usage or tool error. Stdlib only (Java 8+ and the
+Exit 0 every line matches, 1 drift (each differing line listed; for a whole-jar drift also the jar's table, `TABLE`
+lines, to compare with the set's source jars), 2 usage or tool error. Stdlib only (Java 8+ and the
 jars of fetch-smali.sh, see normalize.py).
 """
 import glob
@@ -113,6 +114,11 @@ def main(argv):
             bad = compare(st, jars)
             for j, what, got, want in bad:
                 print("checkset: DRIFT %s %s.jar %s: built %s, set %s" % (d, j, what, got, want))
+            for j in sorted({b[0] for b in bad if b[1] == "ours (whole jar)"}):
+                # the table the aggregate was made of, to find the class or entry against the set's source jars
+                cls, ent = jars[j]
+                print("".join("checkset: TABLE %s.jar class %s %s\n" % (j, c, cls[c]) for c in sorted(cls)) +
+                      "".join("checkset: TABLE %s.jar entry %s %s\n" % (j, e, ent[e]) for e in sorted(ent)), end="")
             n = len(st.classes) + len(st.checks) + len(st.entries) + len(st.ours)
             print("checkset: %s %s: %d/%d lines of %s match" % ("FAIL" if bad else "ok", d, n - len(bad), n,
                                                                os.path.basename(path)))

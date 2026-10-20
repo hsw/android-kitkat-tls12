@@ -155,6 +155,7 @@ class Command(tm.EndToEnd):
         self.assertEqual(rc, 1, out)
         self.assertEqual(out.count("DRIFT"), 1, out)
         self.assertIn("conscrypt.jar ours (whole jar)", out)
+        self.assertIn("checkset: TABLE conscrypt.jar class Lcom/example/New; ", out)   # the jar's table follows
 
 
 if __name__ == "__main__":
