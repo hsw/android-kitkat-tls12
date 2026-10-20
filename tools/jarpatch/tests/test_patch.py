@@ -32,6 +32,7 @@ TOOL = os.path.dirname(HERE)
 sys.path.insert(0, TOOL)
 import mkset  # noqa: E402
 import normalize  # noqa: E402
+from test_nativescan import elf  # noqa: E402
 
 SCRIPT = os.path.join(TOOL, "kktls-jarpatch.py")
 _spec = importlib.util.spec_from_file_location("kktls_jarpatch", SCRIPT)
@@ -55,6 +56,7 @@ REPLACED = {DHV, KK, NAT, ADDR, OKP}
 JNI = [INT, NAT, BIO]
 LINE, ABI, REL = "4.4.4", "armeabi-v7a", "vT"
 DONOR = "kktls-java-%s-%s-%s.zip" % (LINE, ABI, REL)
+OPENSSL, CONSCRYPT = "kktls-openssl-4.4-%s-%s.zip" % (ABI, REL), "kktls-conscrypt-%s-%s.zip" % (ABI, REL)
 BCP = ":".join("/system/framework/%s.jar" % j for j in ("core", "conscrypt", "okhttp", "ext"))
 FINGERPRINT = "fixture/fixture/fixture:4.4.4/FIX/1:user/test-keys"
 
@@ -150,7 +152,7 @@ dev = lambda p: os.path.join(root, p.lstrip("/"))
 if a == ["get-state"]:
     print("device")
 elif a[:1] == ["pull"]:
-    if not os.path.isfile(dev(a[1])):
+    if not os.path.isfile(dev(a[1])) or a[1] == os.environ.get("FAKE_ADB_DENY"):
         sys.stderr.write("remote object '%s' does not exist\n" % a[1])
         sys.exit(1)
     shutil.copyfile(dev(a[1]), a[2])
@@ -158,6 +160,20 @@ elif a[:1] == ["shell"]:
     c = a[1]
     if c == "echo $BOOTCLASSPATH":
         sys.stdout.write(os.environ["FAKE_ADB_BCP"] + "\r\n")
+    elif c.startswith("ls -lR ") and c.endswith(" 2>/dev/null"):     # toolbox format
+        top = c[len("ls -lR "):-len(" 2>/dev/null")]
+        for d, dirs, files in os.walk(dev(top)):
+            dirs.sort()
+            sys.stdout.write("\r\n/%s:\r\n" % os.path.relpath(d, root))
+            for n in sorted(dirs + files):
+                p = os.path.join(d, n)
+                if os.path.islink(p):
+                    l = "lrwxrwxrwx root root 2014-01-01 00:00 %s -> %s" % (n, os.readlink(p))
+                elif os.path.isdir(p):
+                    l = "drwxr-xr-x root root 2014-01-01 00:00 " + n
+                else:
+                    l = "-rw-r--r-- root root %d 2014-01-01 00:00 %s" % (os.path.getsize(p), n)
+                sys.stdout.write(l + "\r\n")
     elif c.startswith("ls ") and c.endswith(" 2>/dev/null"):
         d = dev(c[3:-len(" 2>/dev/null")])
         if os.path.isdir(d):
@@ -236,19 +252,26 @@ class Fixture(unittest.TestCase):
 
     @classmethod
     def make_release(cls, rel, ours, conf=None):
+        """The donor java zip and the openssl and conscrypt zips the --accept-oem copies are made from."""
         os.makedirs(rel, exist_ok=True)
-        z = os.path.join(rel, DONOR)
         c = {"kind": "java", "release": REL, "abi": ABI, "android": LINE, "tag": "android-4.4.4_r2"}
         c.update(conf or {})
-        with zipfile.ZipFile(z, "w", zipfile.ZIP_DEFLATED) as zf:
+        with zipfile.ZipFile(os.path.join(rel, DONOR), "w", zipfile.ZIP_DEFLATED) as zf:
             zf.writestr("kktls/zip.conf", "".join("%s=%s\n" % kv for kv in c.items()))
             for j in mkset.JARS:
                 zf.write(os.path.join(ours, "system", "framework", j + ".jar"), "system/framework/%s.jar" % j)
             zf.writestr("system/lib/libjavacrypto.so", b"\x7fELF fixture")
-        with open(z, "rb") as f:
-            sha = hashlib.sha256(f.read()).hexdigest()
+        for kind, name, payload in (("openssl", OPENSSL, "system/lib/libssl.so"),
+                                    ("conscrypt", CONSCRYPT, "system/framework/kktls-conscrypt.jar")):
+            with zipfile.ZipFile(os.path.join(rel, name), "w", zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr("kktls/zip.conf", "kind=%s\nrelease=%s\nabi=%s\nandroid=4.4\ntag=android-4.4.2_r2\n" %
+                            (kind, REL, ABI))
+                zf.writestr("kktls/checks.sh", "# oem_ack\n", zipfile.ZIP_STORED)
+                zf.writestr(payload, kind.encode() * 50)
         with open(os.path.join(rel, "SHA256SUMS"), "w") as f:
-            f.write("%s  %s\n" % (sha, DONOR))
+            for n in (DONOR, OPENSSL, CONSCRYPT):
+                with open(os.path.join(rel, n), "rb") as z:
+                    f.write("%s  %s\n" % (hashlib.sha256(z.read()).hexdigest(), n))
 
     def setUp(self):
         if self.jars is None:
@@ -415,6 +438,61 @@ class Patch(Fixture):
         rc, out = self.patch()
         m = self.check_staged(rc, out)
         self.assertTrue(m["jars"]["core"]["odex"])
+
+    def oem_system(self):
+        """A CM build with an AOSP-named and an extra libssl consumer."""
+        write_prop(os.path.join(self.sysdir, "build.prop"), **{"ro.cm.version": "11-20140804-NIGHTLY-fixture"})
+        for p, need in (("lib/libjavacrypto.so", ["libssl.so"]), ("vendor/lib/libvendorssl.so", ["libcrypto.so"]),
+                        ("bin/static", None)):
+            os.makedirs(os.path.dirname(os.path.join(self.sysdir, p)), exist_ok=True)
+            with open(os.path.join(self.sysdir, p), "wb") as f:
+                f.write(elf(need) if need else elf(dynamic=False))
+
+    def test_oem_refused_adb(self):
+        # without --accept-oem: refused after the scan, the report is there; a file the shell cannot read is listed
+        self.oem_system()
+        os.environ["FAKE_ADB_DENY"] = "/system/bin/static"
+        try:
+            rc, out = self.patch(adb=True)
+        finally:
+            del os.environ["FAKE_ADB_DENY"]
+        self.assertRefused(rc, out, "REFUSED - ro.cm.version: OEM/CM build: rerun with --accept-oem after reading "
+                                    "the report " + os.path.join(self.out, "native-consumers.txt"))
+        with open(os.path.join(self.out, "native-consumers.txt")) as f:
+            rep = f.read().splitlines()
+        self.assertIn("extra vendor/lib/libvendorssl.so libcrypto.so", rep)
+        self.assertIn("aosp lib/libjavacrypto.so libssl.so", rep)
+        self.assertTrue(any(l.startswith("unreadable bin/static: adb pull failed") for l in rep), rep)
+        self.assertIn("native extra vendor/lib/libvendorssl.so libcrypto.so", self.read_report())
+        self.assertIn("oem-marker ro.cm.version", self.read_report())
+        self.assertEqual(sorted(n for n in os.listdir(self.out) if n.endswith(".zip")), [])
+
+    def test_oem_accepted(self):
+        self.oem_system()
+        rc, out = self.patch("--accept-oem")
+        m = self.check_staged(rc, out)
+        fp = hashlib.sha256(FINGERPRINT.encode()).hexdigest()
+        names = {"openssl": "kktls-openssl-oem-4.4-%s-%s-%s.zip" % (ABI, REL, fp[:8]),
+                 "conscrypt": "kktls-conscrypt-oem-%s-%s-%s.zip" % (ABI, REL, fp[:8])}
+        self.assertEqual((m["oem"]["markers"], m["oem"]["extra"]), (["ro.cm.version"], 1))
+        for kind, src in (("openssl", OPENSSL), ("conscrypt", CONSCRYPT)):
+            path = os.path.join(self.out, names[kind])
+            with open(path, "rb") as f:
+                data = f.read()
+            self.assertEqual(m["oem"]["zips"][kind], {"zip": names[kind],
+                                                      "sha256": hashlib.sha256(data).hexdigest()})
+            with open(os.path.join(self.rel, src), "rb") as f:
+                orig = f.read()
+            with zipfile.ZipFile(io.BytesIO(data)) as z, zipfile.ZipFile(io.BytesIO(orig)) as o:
+                self.assertEqual(z.namelist(), o.namelist())
+                self.assertEqual(z.read("kktls/zip.conf"), o.read("kktls/zip.conf") + b"oem_ack=" + fp.encode() + b"\n")
+                cd = int.from_bytes(orig[orig.rfind(b"PK\5\6") + 16:][:4], "little")
+                for i in o.infolist()[1:]:                       # every other entry's local record, raw
+                    start = i.header_offset
+                    end = min([j.header_offset for j in o.infolist() if j.header_offset > start] + [cd])
+                    self.assertIn(orig[start:end], data, i.filename)
+            self.assertIn("zip %s sha256 %s" % (names[kind], m["oem"]["zips"][kind]["sha256"]), self.read_report())
+        self.assertNotIn("predates oem_ack", out)
 
 
 class Refusals(Fixture):
@@ -648,6 +726,37 @@ class Logic(unittest.TestCase):
         self.assertEqual(jp.dex_id_counts(bytes(h)), {"type": 1, "proto": 2, "field": 3, "method": 65536})
         with self.assertRaises(jp.ToolError):
             jp.dex_id_counts(b"PK\3\4" + bytes(0x70))
+
+    def test_oem(self):
+        # the markers equal installer/checks.sh KK_OEM_MARKERS (skipped in the release asset, which has no installer/)
+        checks = os.path.join(TOOL, "..", "..", "installer", "checks.sh")
+        if os.path.isfile(checks):
+            with open(checks) as f:
+                text = f.read()
+            self.assertEqual(jp.OEM_MARKERS, text.split('KK_OEM_MARKERS="', 1)[1].split('"', 1)[0].split())
+        with tempfile.TemporaryDirectory() as t:
+            bp = os.path.join(t, "build.prop")
+            with open(bp, "w") as f:
+                f.write("# ro.cm.version=1\nro.build.id=KK\n ro.miui.x=1\nro.cm.version=11\nro.cm.device=x\n")
+            self.assertEqual(jp.oem_markers(bp), ["ro.cm.device", "ro.cm.version"])   # awk's $1: unstripped key
+        fp = "f" * 64
+        self.assertEqual(jp.oem_conf("kind=openssl\nrelease=v9", fp), "kind=openssl\nrelease=v9\noem_ack=%s\n" % fp)
+        with self.assertRaises(jp.ToolError):
+            jp.oem_conf("kind=openssl\noem_ack=%s\n" % fp, fp)
+        self.assertEqual(self.run_cli("--accept-oem", "--accept-oem", "--adb", "s", "--release-dir", "r",
+                                      "--out", "o").returncode, 2)
+
+    def test_ls_files(self):
+        toolbox = ("\n/system/lib:\ndrwxr-xr-x root root 2014-01-01 00:00 hw\n"
+                   "-rw-r--r-- root root 5 2014-01-01 00:00 libssl.so\n"
+                   "lrwxrwxrwx root root 2014-01-01 00:00 libx.so -> libssl.so\n\n/system/lib/hw:\n"
+                   "-rw-r--r-- root root 7 2014-01-01 00:00 keystore.default.so\n")
+        busybox = ("/system/bin:\n-rwxr-xr-x    1 0        2000        5 Jan  1  2014 netd\n"
+                   "lrwxrwxrwx    1 0        2000        7 Jan  1  2014 ls -> toolbox\n")
+        self.assertEqual(jp.ls_files(toolbox, "/system/lib"), ["/system/lib/hw/keystore.default.so",
+                                                               "/system/lib/libssl.so"])
+        self.assertEqual(jp.ls_files(busybox, "/system/bin"), ["/system/bin/netd"])
+        self.assertEqual(jp.ls_files(busybox, "/system/lib"), [])
 
     def test_lines_map(self):
         self.assertEqual(dict(jp.LINES),

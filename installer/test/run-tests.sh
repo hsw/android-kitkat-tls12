@@ -692,6 +692,45 @@ mkdir -p "$R0/system/etc/kktls"; echo v9 > "$R0/system/etc/kktls/openssl.version
 echo "ro.build.fingerprint=a/later/definition:4.4.2/KK/9:user/test-keys" >> "$R0/system/build.prop"
 installs "java-patched on a CM build with a second fingerprint line" "$R0" "$PJ"
 
+# --accept-oem copies (kktls-jarpatch.py write_oem_zip: the release zip, its zip.conf with oem_ack= appended): the
+# openssl and conscrypt kinds skip the OEM/CM gate only where the fingerprint gives oem_ack; any other system refuses
+mkoem() { # src out [fingerprint]
+  python3 -I - "$REL_DIR/tools/jarpatch" "$1" "$2" "${3:-generic/sdk/generic:4.4.2/KK/1:user/test-keys}" <<'EOF'
+import hashlib, importlib.util, os, sys, zipfile
+tool, src, out, fp = sys.argv[1:5]
+sys.path.insert(0, tool)
+import rawzip
+spec = importlib.util.spec_from_file_location("kktls_jarpatch", os.path.join(tool, "kktls-jarpatch.py"))
+jp = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(jp)
+with zipfile.ZipFile(src) as z:
+    text = z.read("kktls/zip.conf").decode()
+rawzip.rewrite(src, out, {"kktls/zip.conf": jp.oem_conf(text, hashlib.sha256(fp.encode()).hexdigest()).encode()})
+EOF
+}
+OO=$T/kktls-openssl-oem.zip DO=$T/kktls-conscrypt-oem.zip OOF=$T/kktls-openssl-oem-fp.zip DOF=$T/kktls-conscrypt-oem-fp.zip
+mkoem "$O" "$OO"; mkoem "$D" "$DO"
+mkoem "$O" "$OOF" generic/sdk/generic:4.4.2/KK/2:user/test-keys; mkoem "$D" "$DOF" generic/sdk/generic:4.4.2/KK/2:user/test-keys
+check "oem copy: the release zip.conf plus one oem_ack line" sh -c "[ \"\$(unzip -p '$OO' kktls/zip.conf)\" = \"\$(unzip -p '$O' kktls/zip.conf; echo oem_ack=$(printf %s generic/sdk/generic:4.4.2/KK/1:user/test-keys | sha256sum | cut -d' ' -f1))\" ]"
+mkroot "$R0" ro.cm.version=11-20140804-NIGHTLY-hammerhead; ORIG=$(snap "$R0" system)
+refused "openssl-oem made for another fingerprint on a CM build" "$R0" "$OOF"
+check "openssl-oem, other fingerprint: the refusal says so" grep -q 'oem_ack: this zip was made for another system' "$T/out"
+installs "openssl-oem on its CM build" "$R0" "$OO"
+check "openssl-oem: libssl replaced" cmp -s "$R0/system/lib/libssl.so" "$T/fx/ours.so"
+check "openssl-oem: the gate was skipped and says so" grep -q 'OEM/CM gate skipped' "$T/out"
+installs "java-patched over openssl-oem on a CM build" "$R0" "$PJ"
+refused "conscrypt without oem_ack on a CM build" "$R0" "$D"
+check "conscrypt without oem_ack: the AOSP gate refuses" grep -q 'not an AOSP-like build: build.prop sets ro.cm.version' "$T/out"
+refused "conscrypt-oem made for another fingerprint" "$R0" "$DOF"
+installs "conscrypt-oem on its CM build" "$R0" "$DO"
+check "conscrypt-oem: jni lib" [ -f "$R0/system/lib/libkktls_conscrypt_jni.so" ]
+installs "restore after the OEM chain" "$R0" "$R"
+check "restore after the OEM chain: /system identical to the original" [ "$ORIG" = "$(snap "$R0" system)" ]
+mkroot "$R0" ro.build.fingerprint=generic/sdk/generic:4.4.2/KK/3:user/test-keys
+refused "openssl-oem on an AOSP-like build of another fingerprint" "$R0" "$OO"
+mkroot "$R0"
+installs "openssl-oem on an AOSP-like build of its fingerprint" "$R0" "$OO"
+
 # cacerts and restore on Android 4.1-4.3: no SELinux in an AOSP 4.1/4.2 kernel (no label writes), labels on 4.3 and
 # on a 4.1/4.2 kernel that has SELinux
 check "cacerts zip says android=4.1-4.4" sh -c "unzip -p '$C' kktls/zip.conf | grep -qx android=4.1-4.4"

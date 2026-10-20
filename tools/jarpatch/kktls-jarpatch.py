@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """kktls-jarpatch.py: patch a 4.4 device's own core/core-libart/conscrypt/okhttp jars with the kktls Java layer A.
 
-    kktls-jarpatch.py --adb SERIAL --release-dir DIR --out DIR [--set FILE] [--report FILE]
+    kktls-jarpatch.py --adb SERIAL --release-dir DIR --out DIR [--accept-oem] [--set FILE] [--report FILE]
     kktls-jarpatch.py --system DIR --bootclasspath LIST --build-prop FILE --release-dir DIR --out DIR
-                      [--set FILE] [--report FILE]
+                      [--accept-oem] [--set FILE] [--report FILE]
 
 Inputs:
   --adb SERIAL        the device's /system over adb (no root needed: the files are world-readable): every
@@ -17,6 +17,9 @@ Inputs:
   --release-dir DIR   a directory with the release's SHA256SUMS and the java zip of the device's line and ABI,
                       kktls-java-<4.4.2|4.4.4>-<armeabi-v7a|x86>-<release>.zip (the donor of the replacement classes);
                       the line follows ro.build.version.release (4.4, 4.4.1, 4.4.2 -> 4.4.2; 4.4.3, 4.4.4 -> 4.4.4).
+  --accept-oem        on an OEM/CM build (a build.prop key of installer/checks.sh KK_OEM_MARKERS, e.g. ro.cm.version):
+                      also write device-bound copies of the release's openssl and conscrypt zips (see 7.); the release
+                      dir must hold kktls-openssl-4.4-<abi>-<release>.zip and kktls-conscrypt-<abi>-<release>.zip.
   --set FILE          the set file instead of sets/<line>.txt (tests).
   --report FILE       write the per-line verdicts and the result there as well.
 
@@ -24,7 +27,10 @@ What it does (nothing on the device is changed):
   1. gates: Android 4.4.x, ABI armeabi-v7a or x86, a build fingerprint; no .odex in /system/{framework,app,priv-app}
      whose jar/apk lacks classes.dex (the installer's dex check: after core.jar changes Dalvik must re-dexopt them);
      the four jars present with exactly one classes.dex (core-libart.jar may be absent when /system/lib/libart.so is,
-     a Dalvik-only ROM);
+     a Dalvik-only ROM); an OEM/CM build (or --accept-oem): the native-consumer scan (nativescan.py: every ELF of
+     /system/{lib,bin,xbin,vendor} and of the apps' lib/ that needs libssl.so or libcrypto.so, "extra" when not in
+     aosp44-ssl-consumers.txt) is written to OUT/native-consumers.txt (over adb those directories are pulled first);
+     without --accept-oem an OEM/CM build refuses: "OEM/CM build: rerun with --accept-oem after reading the report";
   2. reference check, one verdict per line of the set file (sets/<line>.txt, see mkset.py), on the normalized
      baksmali digests (normalize.py) of the device's classes and the sha256 of its non-dex entries:
        match               the device has the stock AOSP class/entry the series was applied to (or, for a class the
@@ -56,12 +62,17 @@ What it does (nothing on the device is changed):
        (the device's release), tag= (the donor's), jar.<name>=<sha256 of the device jar it was made from>,
        fingerprint=<sha256 of ro.build.fingerprint>;
      the installer (installer/checks.sh) installs it only on a system whose jars and fingerprint give these digests.
+  7. --accept-oem: kktls-openssl-oem-4.4-<abi>-<release>-<fp8>.zip and kktls-conscrypt-oem-<abi>-<release>-<fp8>.zip,
+     the release zips with oem_ack=<sha256 of ro.build.fingerprint> appended to zip.conf (every other entry byte for
+     byte): their kinds skip the installer's OEM/CM gate on this system only. The java-patched zip needs no such line
+     (it has no OEM/CM gate).
 
 Output (exit 0): OUT/kktls-java-patched-<android>-<abi>-<release>-<8 hex of sha256(fingerprint)>.zip (for that
 device only: it holds the device's own classes, not for redistribution), OUT/stage/jars/<jar>.jar (the patched jars),
 OUT/stage/<jar>/classes.dex, OUT/stage/<jar>/<entry path> (the donor's bytes of the set's entries) and
 OUT/stage/manifest.json (system, device jar sha256s, sha256 of ro.build.fingerprint, donor, per-jar staged files,
-link check counts, the zip). The raw fingerprint is never printed or written. OUT must not exist or be empty.
+link check counts, the zip, with the scan: oem markers, extra consumers and the oem zips), with --accept-oem the two
+oem zips, and OUT/native-consumers.txt after the scan (also when refused). The raw fingerprint is never printed or written. OUT must not exist or be empty.
 
 Exit 0 staged, 1 refused (each reason: jar, class, why), 2 usage or tool error. Stdlib only; Java 8+ and the
 smali/baksmali jars of fetch-smali.sh.
@@ -80,6 +91,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)   # `python3 -I` leaves the script dir out
 import linkcheck  # noqa: E402
 import mkset  # noqa: E402
+import nativescan  # noqa: E402
 import normalize  # noqa: E402
 import rawzip  # noqa: E402
 
@@ -91,6 +103,15 @@ JAVA_MARKER = "etc/kktls/java.version"
 DEX_IDS = (("type", 0x40), ("proto", 0x48), ("field", 0x50), ("method", 0x58))
 ID_LIMIT = 65536
 JOBS = str(min(8, os.cpu_count() or 1))
+# installer/checks.sh KK_OEM_MARKERS (a test keeps the two equal): build.prop keys (prefix match) that only
+# CyanogenMod-family and OEM firmwares set; the openssl and conscrypt zips refuse such a system unless their zip.conf
+# carries oem_ack=<sha256 of its ro.build.fingerprint> (the --accept-oem copies)
+OEM_MARKERS = """ro.cm. ro.modversion ro.cyanogen ro.miui. ro.build.version.emui ro.build.hw_emui ro.lewa. ro.aokp.
+ro.pa. ro.pac. ro.slim. ro.omni. ro.mk. ro.mokee. ro.carbon. ro.rr. ro.dirtyunicorns. ro.liquid. ro.beanstalk.
+ro.build.PDA ro.build.hidden_ver ro.build.sense. ro.htc. ro.lge. ro.semc. ro.sony. ro.yunos. ro.vivo.
+ro.build.version.opporom ro.oppo. ro.mediatek. ro.flyme. ro.meizu. ro.coolpad. ro.zte. ro.lenovo. ro.asus.""".split()
+NATIVE_REPORT = "native-consumers.txt"
+NATIVE_DIRS = ("lib", "bin", "xbin", "vendor")
 
 
 class ToolError(Exception):
@@ -135,8 +156,10 @@ class System(object):
     """What the patcher reads of a device's /system. root mirrors /system for the files that were read: framework/
     (every .jar), app/ and priv-app/ (every .apk) and, with --system, everything else of the copy."""
 
-    def __init__(self, source, root, props, bootclasspath, odex, libart, java_marker):
+    def __init__(self, source, root, props, bootclasspath, odex, libart, java_marker, build_prop, adb=None):
         self.source = source              # "adb" or "system"
+        self.build_prop = build_prop      # path of the build.prop that props came from
+        self.adb = adb                    # Adb of an --adb system (fetch_native pulls more of /system on demand)
         self.root = root
         self.props = props
         self.bootclasspath = bootclasspath   # ["/system/framework/core.jar", ...]
@@ -178,7 +201,7 @@ def from_system(d, bcp_text, build_prop):
         with open(mp, encoding="utf-8", errors="replace") as f:
             marker = f.read().strip()
     return System("system", root, read_props(build_prop), bcp, odex,
-                  os.path.isfile(os.path.join(root, "lib", "libart.so")), marker)
+                  os.path.isfile(os.path.join(root, "lib", "libart.so")), marker, build_prop)
 
 
 class Adb(object):
@@ -234,7 +257,58 @@ def from_adb(serial, stage):
     for p in bcp:
         if not os.path.isfile(os.path.join(stage, "framework", os.path.basename(p))):
             raise ToolError("BOOTCLASSPATH names %s, not in /system/framework" % p)
-    return System("adb", stage, read_props(os.path.join(stage, "build.prop")), bcp, odex, libart, marker)
+    bp = os.path.join(stage, "build.prop")
+    return System("adb", stage, read_props(bp), bcp, odex, libart, marker, bp, adb)
+
+
+def ls_files(listing, top):
+    """Regular files of a `ls -lR TOP` listing (toolbox or busybox format; directories come as `PATH:` headers,
+    symbolic links and other types are skipped): sorted paths."""
+    res, cur = [], None
+    for l in listing.split("\n"):
+        l = l.rstrip()
+        if l.endswith(":") and l.startswith("/"):
+            cur = l[:-1]
+            continue
+        if cur is None or not l.startswith("-"):
+            continue
+        name = l.split()[-1]
+        if cur == top or cur.startswith(top + "/"):
+            res.append(cur + "/" + name)
+    return sorted(res)
+
+
+def fetch_native(system):
+    """--adb: copy /system/{lib,bin,xbin,vendor} and the *.so files under /system/{app,priv-app} into the mirror for the
+    native-consumer scan; a file that does not arrive (not readable for the shell user) is reported, not fatal."""
+    failed = []
+    for sub in NATIVE_DIRS + tuple(s for s, ext in SUBDIRS if ext == ".apk"):
+        top = "/system/" + sub
+        paths = ls_files(system.adb.shell("ls -lR %s 2>/dev/null" % top), top)
+        if sub not in NATIVE_DIRS:
+            paths = [p for p in paths if p.endswith(".so")]
+        log("adb: pulling %d file(s) of %s for the native-consumer scan" % (len(paths), top))
+        for p in paths:
+            dst = os.path.join(system.root, p[len("/system/"):])
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            try:
+                system.adb.pull(p, dst)
+            except ToolError as e:
+                if os.path.lexists(dst):
+                    os.remove(dst)
+                failed.append((p[len("/system/"):], "adb pull failed: %s" % str(e)[-200:]))
+    return failed
+
+
+def oem_markers(build_prop):
+    """build.prop keys that start with one of OEM_MARKERS, as kk_check_aosp tests them (the text before the first
+    '=' of each line, unstripped)."""
+    try:
+        with open(build_prop, encoding="utf-8", errors="replace") as f:
+            keys = [l.rstrip("\n").split("=", 1)[0] for l in f]
+    except OSError as e:
+        raise ToolError("build.prop: %s" % e)
+    return sorted({k for k in keys for m in OEM_MARKERS if k.startswith(m)})
 
 
 def find_donor(release_dir, line, abi):
@@ -251,7 +325,22 @@ def find_donor(release_dir, line, abi):
         raise ToolError("%s: several java zips for %s %s (%s): keep one release" %
                         (release_dir, line, abi, ", ".join(n for n, _ in found)))
     name, rel = found[0]
+    return release_zip(release_dir, name, {"kind": "java", "android": line, "abi": abi, "release": rel}), rel
+
+
+def oem_sources(release_dir, abi, rel):
+    """[(kind, path)] of the release's 4.4 openssl and conscrypt zips of this ABI (the sources of the --accept-oem
+    copies), checked as the donor is."""
+    return [(k, release_zip(release_dir, n, {"kind": k, "android": "4.4", "abi": abi, "release": rel}))
+            for k, n in (("openssl", "kktls-openssl-4.4-%s-%s.zip" % (abi, rel)),
+                         ("conscrypt", "kktls-conscrypt-%s-%s.zip" % (abi, rel)))]
+
+
+def release_zip(release_dir, name, want):
+    """Path of release_dir/name after its SHA256SUMS line and the zip.conf keys of want are checked."""
     path = os.path.join(release_dir, name)
+    if not os.path.isfile(path):
+        raise ToolError("%s: no %s" % (release_dir, name))
     sums = {}
     try:
         with open(os.path.join(release_dir, "SHA256SUMS"), encoding="utf-8") as f:
@@ -271,11 +360,10 @@ def find_donor(release_dir, line, abi):
     except (OSError, KeyError, zipfile.BadZipFile) as e:
         raise ToolError("%s: no readable kktls/zip.conf: %s" % (name, e))
     conf = dict(l.split("=", 1) for l in conf.split("\n") if "=" in l)
-    want = {"kind": "java", "android": line, "abi": abi, "release": rel}
     for k, v in want.items():
         if conf.get(k) != v:
             raise ToolError("%s: zip.conf %s=%s, expected %s" % (name, k, conf.get(k), v))
-    return path, rel
+    return path
 
 
 def extract_donor(donor, jars, dst):
@@ -299,6 +387,16 @@ def zip_conf(conf, rel, abi, android, jars, fp_sha):
     lines += ["jar.%s=%s" % j for j in jars]
     lines.append("fingerprint=" + fp_sha)
     return "".join(l + "\n" for l in lines)
+
+
+def oem_conf(text, fp_sha):
+    """zip.conf text of an --accept-oem copy: the release zip's lines unchanged, then oem_ack=<sha256 of the
+    fingerprint> (checks.sh: the openssl and conscrypt kinds skip the OEM/CM gate only on that system)."""
+    if any(l.startswith("oem_ack=") for l in text.split("\n")):
+        raise ToolError("the release zip's zip.conf already has an oem_ack line")
+    if text and not text.endswith("\n"):
+        text += "\n"
+    return text + "oem_ack=" + fp_sha + "\n"
 
 
 def read_conf(z):
@@ -481,10 +579,12 @@ def describe(v, tag):
 
 
 class Patcher(object):
-    def __init__(self, system, release_dir, out, set_path=None):
+    def __init__(self, system, release_dir, out, set_path=None, accept_oem=False):
         self.system, self.release_dir, self.out, self.set_path = system, release_dir, out, set_path
+        self.accept_oem = accept_oem
         self.lines = []        # report lines
         self.verdicts = []
+        self.oem = []          # the OEM/CM marker keys of build.prop
 
     def gates(self):
         p = self.system.props
@@ -522,8 +622,17 @@ class Patcher(object):
         self.lines += ["android %s line %s abi %s" % (self.android, self.line, self.abi),
                        "fingerprint-sha256 " + self.fp_sha,
                        "donor %s" % os.path.basename(donor), "set %s %s" % (st.header["tag"], set_path)]
+        oem_src = oem_sources(self.release_dir, self.abi, rel) if self.accept_oem else []
         jars, reasons = check_jars(s)
         reasons = check_odex(s) + reasons
+        self.oem = oem_markers(s.build_prop)
+        native = None
+        if self.oem or self.accept_oem:
+            native = self.native_report()
+            if self.oem and not self.accept_oem:
+                reasons.append(("-", self.oem[0], "OEM/CM build: rerun with --accept-oem after reading the report %s "
+                                "(the openssl and conscrypt zips refuse this system without the copies that option "
+                                "writes)" % os.path.join(self.out, NATIVE_REPORT)))
         bak, sma = normalize.smali_jars()
         work = os.path.join(self.out, "work")
         dev, dev_entries = {}, {}
@@ -612,6 +721,12 @@ class Patcher(object):
         manifest["linkcheck"] = self.link_check(staged, replaced_smali, changed, "core-libart" not in jars)
         manifest["zip"], manifest["zip_sha256"] = self.write_zip(manifest, stage, donor)
         self.lines.append("zip %s sha256 %s" % (manifest["zip"], manifest["zip_sha256"]))
+        if native is not None:
+            manifest["oem"] = {"markers": self.oem, "native_report": NATIVE_REPORT, "extra": native, "zips": {}}
+        for kind, src in oem_src:
+            name, sha = self.write_oem_zip(kind, src, rel)
+            manifest["oem"]["zips"][kind] = {"zip": name, "sha256": sha}
+            self.lines.append("zip %s sha256 %s" % (name, sha))
         tmp = os.path.join(stage, "manifest.json.tmp")
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(manifest, f, indent=1, sort_keys=True)
@@ -669,6 +784,59 @@ class Patcher(object):
         log("wrote %s" % dst)
         return name, sha256_file(dst)
 
+    def native_report(self):
+        """Scan the device's native consumers of libssl/libcrypto, write OUT/native-consumers.txt and the report
+        lines; returns the number of consumers not in the AOSP 4.4 list."""
+        s = self.system
+        failed = fetch_native(s) if s.adb is not None else []
+        res = nativescan.scan(s.root)
+        res["unreadable"] = sorted(res["unreadable"] + failed)
+        try:
+            aosp = nativescan.read_list()
+        except OSError as e:
+            raise ToolError("AOSP consumer list: %s" % e)
+        lines, extra = nativescan.report(res, aosp)
+        head = ["# kktls-jarpatch native-consumer report",
+                "# OEM/CM markers in build.prop: %s" % (" ".join(self.oem) or "none"),
+                "# The kktls openssl zip replaces /system/lib/libssl.so and libcrypto.so with OpenSSL 1.0.1u built from",
+                "# the AOSP 4.4 sources. A file below that the vendor built against its own OpenSSL headers (other",
+                "# SSL/SSL_CTX/... layouts) may crash or misbehave with them. 'extra' = not in the AOSP 4.4 list",
+                "# (aosp44-ssl-consumers.txt); 'aosp' = an AOSP name, which a vendor may also have rebuilt;",
+                "# 'unreadable' = not scanned. --accept-oem writes the openssl and conscrypt zips for this system",
+                "# anyway: keep the kktls restore zip at hand."]
+        path = os.path.join(self.out, NATIVE_REPORT)
+        with open(path + ".tmp", "w", encoding="utf-8") as f:
+            f.write("\n".join(head + lines) + "\n")
+        os.replace(path + ".tmp", path)
+        self.lines += ["oem-marker " + m for m in self.oem] + ["native " + l for l in lines]
+        log("native consumers: %s (%s)" % (lines[0], path))
+        return extra
+
+    def write_oem_zip(self, kind, src, rel):
+        """OUT/kktls-<openssl-oem-4.4|conscrypt-oem>-<abi>-<rel>-<fp8>.zip: the release zip with oem_ack= appended to
+        its zip.conf, every other entry copied byte for byte; returns (name, sha256)."""
+        with zipfile.ZipFile(src) as z:
+            text = z.read("kktls/zip.conf").decode("utf-8")
+            try:
+                installer = z.read("kktls/checks.sh").decode("utf-8", "replace")
+            except KeyError:
+                installer = ""
+        if "oem_ack" not in installer:
+            log("WARNING: the installer in %s predates oem_ack: the device will refuse the copy as an OEM/CM build; "
+                "use the zips of the jarpatch tool's own release" % os.path.basename(src))
+        name = "kktls-%s-oem-%s%s-%s-%s.zip" % (kind, "4.4-" if kind == "openssl" else "", self.abi, rel,
+                                                self.fp_sha[:8])
+        dst = os.path.join(self.out, name)
+        try:
+            rawzip.rewrite(src, dst, {"kktls/zip.conf": oem_conf(text, self.fp_sha).encode("utf-8")})
+        except rawzip.ZipError as e:
+            raise ToolError("%s: %s" % (os.path.basename(src), e))
+        with zipfile.ZipFile(dst) as z:
+            if z.testzip() is not None:
+                raise ToolError("%s does not read back" % name)
+        log("wrote %s (for this system only)" % dst)
+        return name, sha256_file(dst)
+
     def link_check(self, staged, replaced, changed, dalvik_only):
         s = self.system
         try:
@@ -698,14 +866,18 @@ def write_report(path, patcher, result, reasons):
 
 def main(argv):
     usage = ("usage: kktls-jarpatch.py (--adb SERIAL | --system DIR --bootclasspath LIST --build-prop FILE) "
-             "--release-dir DIR --out DIR [--set FILE] [--report FILE]")
+             "--release-dir DIR --out DIR [--accept-oem] [--set FILE] [--report FILE]")
     opt = {}
     keys = ("--adb", "--system", "--bootclasspath", "--build-prop", "--release-dir", "--out", "--set", "--report")
+    accept_oem = False
     while argv:
         a = argv.pop(0)
         if a in ("-h", "--help"):
             print(__doc__)
             return 0
+        if a == "--accept-oem" and not accept_oem:
+            accept_oem = True
+            continue
         if a not in keys or not argv or a in opt:
             print(usage, file=sys.stderr)
             return 2
@@ -727,7 +899,7 @@ def main(argv):
             system = from_adb(opt["--adb"], os.path.join(out, "device"))
         else:
             system = from_system(opt["--system"], opt["--bootclasspath"], opt["--build-prop"])
-        patcher = Patcher(system, opt["--release-dir"], out, opt.get("--set"))
+        patcher = Patcher(system, opt["--release-dir"], out, opt.get("--set"), accept_oem)
         m = patcher.run()
     except Refused as e:
         for j, n, why in e.reasons:
@@ -744,6 +916,8 @@ def main(argv):
     log("staged %s (%s)" % (os.path.join(out, "stage"), ", ".join(
         "%s %d replaced/%d removed" % (j, v["replaced"], v["removed"]) for j, v in sorted(m["jars"].items()))))
     log("zip %s (for this device only)" % os.path.join(out, m["zip"]))
+    for kind, v in sorted(m.get("oem", {}).get("zips", {}).items()):
+        log("%s zip %s (for this device only)" % (kind, os.path.join(out, v["zip"])))
     return 0
 
 

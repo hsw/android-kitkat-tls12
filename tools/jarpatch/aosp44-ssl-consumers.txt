@@ -1,0 +1,26 @@
+# Native consumers of libssl.so/libcrypto.so in stock AOSP 4.4 (nativescan.py --list, paths relative to /system):
+# the union of an AOSP android-4.4.4_r2 aosp_arm-eng build and the SDK android-19 default system images armeabi-v7a
+# (build 3462041) and x86 (build 4174703). kktls-jarpatch.py --accept-oem reports every other consumer as "extra".
+bin/adb
+bin/dexopt
+bin/keystore
+bin/keystore_cli
+bin/mtpd
+bin/netd
+bin/ping6
+bin/pppd
+bin/racoon
+bin/vold
+bin/wpa_supplicant
+lib/drm/libfwdlockengine.so
+lib/hw/keystore.default.so
+lib/libandroid_runtime.so
+lib/libchromium_net.so
+lib/libjavacore.so
+lib/libjavacrypto.so
+lib/libsoftkeymaster.so
+lib/libssl.so
+lib/libstagefright.so
+lib/libstagefright_httplive.so
+lib/ssl/engines/libkeystore.so
+xbin/tcpdump

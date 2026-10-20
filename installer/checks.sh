@@ -16,7 +16,9 @@
 #   a conscrypt zip also needs the java marker of its own release;
 #   java-patched (the device's own jars with the kktls classes, made for one system): jar.<name>=<sha256> of each
 #   /system/framework/<name>.jar it was patched from and fingerprint=<sha256 of ro.build.fingerprint> instead of the
-#   release and AOSP gates (android= is informational); it writes the java marker as the java zip does
+#   release and AOSP gates (android= is informational); it writes the java marker as the java zip does;
+#   oem_ack=<sha256 of ro.build.fingerprint> (openssl and conscrypt only, the copies kktls-jarpatch.py --accept-oem
+#   writes for one OEM/CM system): the AOSP gate is skipped on that system, any other system refuses
 #
 # Properties come from KK_ROOT/system/build.prop, never from getprop: in recovery getprop answers for the recovery's
 # own default.prop, not for the system that is being changed.
@@ -161,8 +163,26 @@ kk_prop_first() { # key -> value of its first definition in build.prop, blanks t
       v = substr($0, i + 1); gsub(/^[ \t]+|[ \t]+$/, "", v); print v; exit }' "$KK_ROOT/system/build.prop" 2>/dev/null
 }
 
+kk_fp_sha() { # sha256 of ro.build.fingerprint (first definition, trimmed) as kktls-jarpatch.py writes it; empty on failure
+  local fp=$KK_DIR/kktls/fingerprint.tmp h
+  printf '%s' "$(kk_prop_first ro.build.fingerprint)" > "$fp" && h=$(kk_util sha256 "$fp") || h=
+  rm -f "$fp"
+  echo "$h"
+}
+
+kk_check_oem() { # openssl, conscrypt: the AOSP gate, unless zip.conf oem_ack= names this system's fingerprint
+  local ack h
+  if ! grep -q '^oem_ack=' "$KK_DIR/kktls/zip.conf"; then kk_check_aosp; return; fi
+  ack=$(kk_conf oem_ack) h=$(kk_fp_sha)
+  if [ -n "$h" ] && [ "$h" = "$ack" ]; then
+    kk_print "OEM/CM gate skipped: this copy was made for this system (oem_ack)"
+  else
+    kk_refuse "oem_ack: this zip was made for another system (ro.build.fingerprint sha256 $h): run kktls-jarpatch.py --accept-oem on this system"
+  fi
+}
+
 kk_check_patched() { # java-patched: this /system must be the one the zip was made from (zip.conf jar.<name>=, fingerprint=)
-  local f j want h n=0 fp=$KK_DIR/kktls/fingerprint.tmp
+  local f j want h n=0
   for f in "$KK_DIR"/system/framework/*.jar; do  # every jar of the payload must have been checked
     [ -f "$f" ] || continue
     j=${f##*/}; j=${j%.jar}
@@ -183,8 +203,7 @@ kk_check_patched() { # java-patched: this /system must be the one the zip was ma
 $(grep '^jar\.' "$KK_DIR/kktls/zip.conf")
 EOF
   [ $n -gt 0 ] || kk_refuse "zip.conf names no jar (jar.<name>=)"
-  printf '%s' "$(kk_prop_first ro.build.fingerprint)" > "$fp" && h=$(kk_util sha256 "$fp") || h=
-  rm -f "$fp"
+  h=$(kk_fp_sha)
   [ -n "$h" ] && [ "$h" = "$(kk_conf fingerprint)" ] ||
     kk_refuse "ro.build.fingerprint is not the one this zip was made for (sha256 $h)"
 }
@@ -221,7 +240,7 @@ kk_precheck() { # all checks of zip.conf's kind; returns 1 (after listing every 
   [ $KK_FAIL = 0 ] || return 1
   kk_check_helpers
   case $kind in
-    openssl) kk_check_version "$android"; kk_check_aosp; kk_check_abi "$abi"
+    openssl) kk_check_version "$android"; kk_check_oem; kk_check_abi "$abi"
              [ $KK_FAIL = 1 ] || kk_check_symbols ;;
     cacerts) kk_check_version "$android" ;;
     java) kk_check_version "$android"; kk_check_aosp; kk_check_abi "$abi"; kk_check_marker openssl
@@ -229,7 +248,7 @@ kk_precheck() { # all checks of zip.conf's kind; returns 1 (after listing every 
     java-patched) # no release or AOSP gate: the jar patcher checked the classes, these digests pin the system
           kk_check_abi "$abi"; kk_check_marker openssl; kk_check_patched
           [ $KK_FAIL = 1 ] || kk_check_dex ;;
-    conscrypt) kk_check_version "$android"; kk_check_aosp; kk_check_abi "$abi"; kk_check_marker java "$rel" ;;
+    conscrypt) kk_check_version "$android"; kk_check_oem; kk_check_abi "$abi"; kk_check_marker java "$rel" ;;
     restore) kk_restore_select ;;
     *) kk_refuse "unknown zip kind '$kind'" ;;
   esac
