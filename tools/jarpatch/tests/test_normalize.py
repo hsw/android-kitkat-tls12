@@ -207,10 +207,103 @@ class JvmIndependent(unittest.TestCase):
         self.assertEqual(normalize.normalize_text(FLOATS % ("1.1754944E-38f", "4.9E-324", "# 2.0f")).split("\n")[2:6], [
             ".field public static final A:F = float:0x00800000", ".field public static final B:D = double:0x0000000000000001",
             '.field public static final S:Ljava/lang/String; = "1.5f # not a comment"', ".method public static f()F"])
-        self.assertEqual(normalize._literals("value = {1.5f, \"a = 2.0\", -2.5, '#'}"),
+        self.assertEqual(normalize._literals("value = {1.5f, \"a = 2.0\", -2.5, '#'}", True),
                          "value = {float:0x3fc00000, \"a = 2.0\", double:0xc004000000000000, '#'}")
+        self.assertEqual(normalize._literals("NaN = 1.5f", True), "NaN = float:0x3fc00000")     # names stay
+        self.assertEqual(normalize._literals("'\"', 1.5f, '\\''", True), "'\"', float:0x3fc00000, '\\''")
+        self.assertEqual(normalize._literals("value = 1.5f"), "value = 1.5f")    # outside an annotation: as it is
         self.assertEqual(normalize._strip_comment("value = '#'    # c"), "value = '#'")
         self.assertEqual(normalize._strip_comment('const-string v0, "a\\"#b"    # c'), 'const-string v0, "a\\"#b"')
+
+    def test_strings_and_instructions_kept(self):
+        """Only values are rewritten: a const-string whose text holds ` = ` and a decimal stays as it is."""
+        text = '.class public Lp/S;\n.super Ljava/lang/Object;\n.method public static f()V\n    .registers 1\n' \
+               '    const-string v0, "%s"\n    return-void\n.end method\n'
+        self.assertIn('const-string v0, "k = 1.5"', normalize.normalize_text(text % "k = 1.5"))
+        self.assertNotEqual(d(text % "k = 1.5"), d(text % "k = 1.50"))
+        self.assertNotEqual(d(text % "k = 1.5f"), d(text % "k = 1.50f"))
+        self.assertIn('const-string v0, "x = 1.0E40f"', normalize.normalize_text(text % "x = 1.0E40f"))  # no overflow
+
+    def test_annotation_values_and_arrays(self):
+        """baksmali 2.5.2 text of an annotation with multi-line arrays and a sub-annotation (one element per line),
+        on a class, a field, a method and a parameter: every float/double element is written as bits."""
+        ann = ANN_FLOATS % (("1.17549435E-38f", "9.999999999999999E22") * 5)            # Java 17 spellings
+        base = ANN_FLOATS % (("1.1754944E-38f", "1.0E23") * 5)                           # Java 19+
+        self.assertEqual(d(ann), d(base))
+        n = normalize.normalize_text(base)
+        self.assertNotIn("E-38", n)
+        self.assertNotIn("E23", n)
+        self.assertIn('"x = 1.5",\n"1.5f"\n', n)
+        self.assertIn("d = {\nfloat:0x00800000,\nfloat:0x3fc00000\n}", n)
+        for i in range(10):                     # each literal counts
+            vals = [("1.1754944E-38f", "1.0E23")[j % 2] for j in range(10)]
+            vals[i] = "2.5f" if i % 2 == 0 else "2.5"
+            self.assertNotEqual(d(ANN_FLOATS % tuple(vals)), d(base), i)
+
+
+ANN_FLOATS = """\
+.class public Lp/A;
+.super Ljava/lang/Object;
+
+# annotations
+.annotation runtime Lp/Ann;
+    d = {
+        %s,
+        1.5f
+    }
+    s = {
+        "x = 1.5",
+        "1.5f"
+    }
+    sub = .subannotation Lp/B;
+        g = {
+            %s
+        }
+    .end subannotation
+.end annotation
+
+.field public static F:F
+    .annotation runtime Lp/Ann;
+        f = %s
+        d = %s
+    .end annotation
+.end field
+
+.method public static f(F)V
+    .registers 1
+    .annotation runtime Lp/Ann;
+        value = {
+            %s
+        }
+        d = {
+            %s
+        }
+    .end annotation
+    .param p0    # F
+        .annotation runtime Lp/Ann;
+            f = %s
+            d = {
+                .subannotation Lp/B;
+                    g = %s
+                .end subannotation
+            }
+        .end annotation
+    .end param
+    .array-data 4
+        0x3fc00000    # 1.5f
+    .end array-data
+    return-void
+.end method
+
+.method public static g()V
+    .registers 1
+    .annotation runtime Lp/Ann;
+        f = %s
+        d = %s
+    .end annotation
+    return-void
+.end method
+"""
 
 
 class DigestChanged(unittest.TestCase):

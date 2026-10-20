@@ -16,12 +16,15 @@ change in what the class does compares different:
   - `.param pN, "name"`: dropped when the parameter has no annotations; when it opens a `.param` ... `.end param` block
     (parameter annotations) only `.param pN` stays;
   - labels (`:cond_0`, `:try_start_1`, `:pswitch_data_0`, ...) renamed per method in order of first appearance;
-  - decimal float and double literals (field initial values and annotation elements, after ` = `) written as their
-    bits (`float:0x00800000`, `double:0x...`): baksmali prints them with the JVM's Float/Double.toString, whose digits
-    changed in Java 19 (`1.17549435E-38f` before, `1.1754944E-38f` after, the same float).
+  - decimal float and double literals of values (a `.field` line's initial value, and inside `.annotation` ...
+    `.end annotation` an element's value or an element line of a multi-line array) written as their bits
+    (`float:0x00800000`, `double:0x...`): baksmali prints them with the JVM's Float/Double.toString, whose digits
+    changed in Java 19 (`1.17549435E-38f` before, `1.1754944E-38f` after, the same float). Instruction lines are never
+    rewritten (they are neither `.field` lines nor inside an annotation).
 Kept as they are: class, super, interfaces, access flags, annotations, fields with their initial values, method
 signatures and flags, `.registers`, every instruction with its operands (registers, constants, strings, type, field
-and method references), try/catch ranges, switch and array payloads. Text inside string literals is never rewritten.
+and method references), try/catch ranges, switch and array payloads. Text inside string and char literals is never
+rewritten.
 Measured on the four 4.4 jars (`core`, `core-libart`, `conscrypt`, `okhttp`): Google's SDK 4.4.2 builds and an AOSP
 android-4.4.2_r2 build agree on every class the series touches or libjavacrypto.so names, and a baksmali -> smali ->
 baksmali round trip keeps every digest.
@@ -40,7 +43,7 @@ import sys
 import tempfile
 import zipfile
 
-NORMALIZER_VERSION = 2       # 2: trailing comments dropped, float/double literals as bits (digests JVM-independent)
+NORMALIZER_VERSION = 2       # 2: trailing comments dropped, float/double values as bits (digests JVM-independent)
 MODEL = "H"
 SMALI_VERSION = "2.5.2"     # must equal fetch-smali.sh's SMALI_VERSION (tests check it)
 BAKSMALI_API = "19"
@@ -56,6 +59,8 @@ LABEL = re.compile(r"(?<![^\s{]):[A-Za-z]+(?:_[A-Za-z]+)*_[0-9a-f]+\b")
 PARAM = re.compile(r"\.param ([vp]\d+)\b")
 # a decimal float (suffix f) or double literal as baksmali prints it; ints and longs are hex, names hold no `.`
 FLOAT = re.compile(r"(?<![\w$/;>.-])(-?)(Infinity|NaN|\d+\.\d+(?:E-?\d+)?)([fF]?)(?![\w$.])")
+# an annotation element line's `name = ` (element names hold no white space or quotes)
+ELEMENT = re.compile(r"[^\s\"']+ = ")
 # sub-annotations (`value = .subannotation ...`) only occur inside an annotation: depth > 0 skips them anyway
 ANN_OPEN = ".annotation "
 ANN_CLOSE = ".end annotation"
@@ -119,31 +124,52 @@ def _float_bits(m):
     return ("float:" if suffix else "double:") + bits
 
 
-def _literals(s):
-    """The value part (after ` = `) of a field or annotation element line with its float/double literals as bits;
-    string literals are left untouched."""
-    i = s.find(" = ")
-    if i < 0:
-        return s
-    out, rest = [s[:i + 3]], s[i + 3:]
-    while rest:
-        code, tail = _split_string(rest)
-        out.append(FLOAT.sub(_float_bits, code))
-        if not tail:
-            break
-        j = 1                                   # the end of the string literal that starts tail
-        while j < len(tail) and tail[j] != '"':
-            j += 2 if tail[j] == "\\" else 1
-        out.append(tail[:j + 1])
-        rest = tail[j + 1:]
+def _floats(text):
+    """text with its decimal float/double literals as bits; string and char literals are left untouched."""
+    out, start, quote, i = [], 0, None, 0
+    while i < len(text):
+        c = text[i]
+        if quote:
+            if c == "\\":
+                i += 1
+            elif c == quote:
+                out.append(text[start:i + 1])
+                start, quote = i + 1, None
+        elif c in "\"'":
+            out.append(FLOAT.sub(_float_bits, text[start:i]))
+            start, quote = i, c
+        i += 1
+    out.append(text[start:] if quote else FLOAT.sub(_float_bits, text[start:]))
     return "".join(out)
+
+
+def _literals(s, in_annotation=False):
+    """s with the float/double literals of a value as bits: a `.field` line's initial value (after ` = `) and, inside an
+    annotation (in_annotation), an element's value (after `name = `) or a whole element line of a multi-line array
+    (`1.5f,`). Any other line (instructions, directives, `.annotation`/`.subannotation`/`.enum` lines) is returned as it
+    is; names and string/char literals are never rewritten."""
+    if s.startswith(".field "):
+        i = s.find(" = ")
+        return s if i < 0 else s[:i + 3] + _floats(s[i + 3:])
+    if not in_annotation or s.startswith("."):
+        return s
+    m = ELEMENT.match(s)
+    return s[:m.end()] + _floats(s[m.end():]) if m else _floats(s)
 
 
 def normalize_text(text):
     """Normalized form (model H) of one class's baksmali text."""
     lines = [l.strip() for l in text.split("\n")]
     lines = [l for l in lines if l and not l.startswith("#") and not _is_debug(l)]
-    lines = [_literals(_strip_comment(l)) for l in lines]
+    in_ann, kept = False, []
+    for l in lines:
+        l = _strip_comment(l)
+        if l.startswith(ANN_OPEN):
+            in_ann = True
+        elif l == ANN_CLOSE:
+            in_ann = False
+        kept.append(_literals(l, in_ann))
+    lines = kept
     out, labels, in_method = [], {}, False
     for i, s in enumerate(lines):
         if s.startswith(".method "):
