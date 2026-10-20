@@ -155,14 +155,18 @@ kk_plan() { # the paths this zip touches -> KK_DIR/kktls/plan: "R path" (removed
         p=system/etc/security/cacerts/${f##*/}
         [ -f "$KK_DIR/$p" ] || echo "R $p" >> "$plan"
       done ;;
-    java) # stale .odex of the replaced jars would be used instead of the new classes.dex
+    java|java-patched) # stale .odex of the replaced jars would be used instead of the new classes.dex
       for j in $KK_JAVA_JARS; do
         [ -f "$KK_ROOT/system/framework/$j.odex" ] && echo "R system/framework/$j.odex" >> "$plan"
       done ;;
   esac
   # removals first: they free space before the payload is written (the backup is taken before either)
   (cd "$KK_DIR" && find system -type f | sort) | sed 's/^/P /' >> "$plan"
-  echo "M $KK_MARKER_DIR/$kind.version" >> "$plan"
+  echo "M $KK_MARKER_DIR/$(kk_marker "$kind").version" >> "$plan"
+}
+
+kk_marker() { # kind -> its marker name (java-patched installs layer A as the java zip does: the conscrypt zip needs java)
+  case $1 in java-patched) echo java ;; *) echo "$1" ;; esac
 }
 
 kk_kb() { # file -> its size in KiB, rounded up to 4 KiB blocks (0 when missing)
@@ -370,9 +374,9 @@ kk_install() { # after kk_precheck (which wrote KK_DIR/kktls/plan)
     fi
     return 1
   fi
-  [ "$kind" = java ] && kk_wipe_dalvik
+  case $kind in java|java-patched) kk_wipe_dalvik ;; esac
   sync
-  kk_print "installed: $(grep -c '^P ' "$KK_DIR/kktls/plan") files; marker /$KK_MARKER_DIR/$kind.version = $rel"
+  kk_print "installed: $(grep -c '^P ' "$KK_DIR/kktls/plan") files; marker /$KK_MARKER_DIR/$(kk_marker "$kind").version = $rel"
 }
 
 kk_restore() { # after kk_precheck (which wrote KK_DIR/kktls/restore-list, every copy in it verified)

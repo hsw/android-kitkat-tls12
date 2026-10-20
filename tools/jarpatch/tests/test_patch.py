@@ -336,9 +336,45 @@ class Patch(Fixture):
         self.assertIn("result staged", self.read_report())
         return m
 
+    def check_zip(self, m, jars=mkset.JARS):
+        """The recovery zip: the donor with the patched jars and a java-patched zip.conf; each patched jar is the
+        device jar with classes.dex and security.properties swapped, every other entry byte for byte."""
+        fp = hashlib.sha256(FINGERPRINT.encode()).hexdigest()
+        name = "kktls-java-patched-4.4.4-%s-%s-%s.zip" % (ABI, REL, fp[:8])
+        self.assertEqual(m["zip"], name)
+        path = os.path.join(self.out, name)
+        with open(path, "rb") as f:
+            self.assertEqual(m["zip_sha256"], hashlib.sha256(f.read()).hexdigest())
+        stage = os.path.join(self.out, "stage")
+        with zipfile.ZipFile(path) as z, zipfile.ZipFile(os.path.join(self.rel, DONOR)) as d:
+            conf = ["kind=java-patched", "release=" + REL, "abi=" + ABI, "android=4.4.4", "tag=android-4.4.4_r2"]
+            conf += ["jar.%s=%s" % (j, m["jars"][j]["sha256"]) for j in jars] + ["fingerprint=" + fp]
+            self.assertEqual(z.read("kktls/zip.conf").decode().splitlines(), conf)
+            self.assertEqual(z.namelist(), [n for n in d.namelist() if n != "system/framework/core-libart.jar" or
+                                            "core-libart" in jars])
+            self.assertEqual(z.read("system/lib/libjavacrypto.so"), d.read("system/lib/libjavacrypto.so"))
+            for j in jars:
+                data = z.read("system/framework/%s.jar" % j)
+                with open(os.path.join(stage, m["jars"][j]["patched"]), "rb") as f:
+                    self.assertEqual(data, f.read())
+                with open(os.path.join(self.sysdir, "framework", j + ".jar"), "rb") as f:
+                    dev = f.read()
+                with zipfile.ZipFile(io.BytesIO(data)) as pj, zipfile.ZipFile(io.BytesIO(dev)) as dj:
+                    self.assertEqual(pj.namelist(), dj.namelist())
+                    with open(os.path.join(stage, j, "classes.dex"), "rb") as f:
+                        self.assertEqual(pj.read("classes.dex"), f.read())
+                    mf = dj.getinfo("META-INF/MANIFEST.MF")
+                    start = mf.header_offset
+                    end = min(i.header_offset for i in dj.infolist() if i.header_offset > start)
+                    self.assertIn(dev[start:end], data)          # the untouched entry's local record, raw
+                    if j in ("core", "core-libart"):
+                        self.assertEqual(pj.read(PROPS), b"a=1\nkktls=1\n")
+
     def test_system(self):
         rc, out = self.patch()
         m = self.check_staged(rc, out)
+        self.check_zip(m)
+        self.assertIn("zip %s sha256 %s" % (m["zip"], m["zip_sha256"]), self.read_report())
         self.assertEqual((m["source"], m["bootclasspath"], m["dalvik_only"]), ("system", BCP.split(":"), False))
         self.assertFalse(os.path.exists(os.path.join(self.out, "work")))
         rep = self.read_report()
@@ -362,6 +398,7 @@ class Patch(Fixture):
         os.remove(os.path.join(self.sysdir, "framework", "core-libart.jar"))
         rc, out = self.patch()
         m = self.check_staged(rc, out, jars=("core", "conscrypt", "okhttp"))
+        self.check_zip(m, jars=("core", "conscrypt", "okhttp"))
         self.assertTrue(m["dalvik_only"])
         self.assertEqual(sorted(m["linkcheck"]), ["dalvik"])
 

@@ -8,17 +8,22 @@
 # Inputs (set by the caller before kk_precheck):
 #   KK_ROOT   prefix of the device tree ("" on a device; a fake root in the tests)
 #   KK_DIR    the unpacked zip: KK_DIR/kktls/zip.conf, KK_DIR/kktls/bin/<abi>/, KK_DIR/system/... (the payload)
-# zip.conf (written by mkzips.sh): kind=openssl|cacerts|java|conscrypt|restore, release=<tag>, abi=armeabi-v7a|x86|any,
+# zip.conf (written by mkzips.sh; java-patched by tools/jarpatch/kktls-jarpatch.py):
+#   kind=openssl|cacerts|java|java-patched|conscrypt|restore, release=<tag>, abi=armeabi-v7a|x86|any,
 #   android= one exact ro.build.version.release (4.4.2, 4.4.4: the 4.4 java zips; 4.1.2: the 4.1 java and conscrypt
 #   zips), 4.N (any 4.N.x: the openssl zips of 4.1 to 4.4, the 4.4 conscrypt zip, the 4.3 and 4.2 java and conscrypt
 #   zips) or a range 4.1-4.4 (any 4.1.x to 4.4.x: cacerts and restore, which carry no code built against one release);
-#   a conscrypt zip also needs the java marker of its own release
+#   a conscrypt zip also needs the java marker of its own release;
+#   java-patched (the device's own jars with the kktls classes, made for one system): jar.<name>=<sha256> of each
+#   /system/framework/<name>.jar it was patched from and fingerprint=<sha256 of ro.build.fingerprint> instead of the
+#   release and AOSP gates (android= is informational); it writes the java marker as the java zip does
 #
 # Properties come from KK_ROOT/system/build.prop, never from getprop: in recovery getprop answers for the recovery's
 # own default.prop, not for the system that is being changed.
 
 KK_CTX=u:object_r:system_file:s0
-# the java zip replaces these boot jars; their .odex files are removed (and backed up) instead of being dex-checked
+# the java and java-patched zips replace these boot jars; their .odex files are removed (and backed up) instead of being
+# dex-checked
 KK_JAVA_JARS="core core-libart conscrypt okhttp"
 # layer D files (the conscrypt zip; libkktls_compat.so only in the Jelly Bean zips whose base and ABI need it); restore
 # removes them together with the markers
@@ -149,6 +154,41 @@ kk_check_symbols() { # our libssl/libcrypto must export everything the device's 
   done
 }
 
+kk_prop_first() { # key -> value of its first definition in build.prop, blanks trimmed: what init gives a ro.* property
+  # (set once) and what kktls-jarpatch.py hashed; kk_prop (last definition) stays for the other gates
+  awk -v k="$1" '{ sub(/\r$/, ""); i = index($0, "="); if (i == 0) next
+      key = substr($0, 1, i - 1); gsub(/^[ \t]+|[ \t]+$/, "", key); if (key != k) next
+      v = substr($0, i + 1); gsub(/^[ \t]+|[ \t]+$/, "", v); print v; exit }' "$KK_ROOT/system/build.prop" 2>/dev/null
+}
+
+kk_check_patched() { # java-patched: this /system must be the one the zip was made from (zip.conf jar.<name>=, fingerprint=)
+  local f j want h n=0 fp=$KK_DIR/kktls/fingerprint.tmp
+  for f in "$KK_DIR"/system/framework/*.jar; do  # every jar of the payload must have been checked
+    [ -f "$f" ] || continue
+    j=${f##*/}; j=${j%.jar}
+    grep -q "^jar\.$j=" "$KK_DIR/kktls/zip.conf" || kk_refuse "zip.conf has no jar.$j= line for the payload's $j.jar"
+  done
+  while IFS='=' read -r j want; do
+    [ -n "$j" ] || continue
+    j=${j#jar.}
+    case $j in ''|*[!a-z0-9-]*) kk_refuse "zip.conf: bad jar name '$j'"; continue ;; esac
+    n=$((n + 1))
+    if [ ! -f "$KK_ROOT/system/framework/$j.jar" ]; then
+      kk_refuse "/system/framework/$j.jar is missing: this zip was made for another system"; continue
+    fi
+    h=$(kk_util sha256 "$KK_ROOT/system/framework/$j.jar")
+    [ -n "$h" ] && [ "$h" = "$want" ] ||
+      kk_refuse "/system/framework/$j.jar is not the jar this zip was made from (sha256 $h): run kktls-jarpatch.py on this system (after the kktls restore zip if kktls is installed)"
+  done <<EOF
+$(grep '^jar\.' "$KK_DIR/kktls/zip.conf")
+EOF
+  [ $n -gt 0 ] || kk_refuse "zip.conf names no jar (jar.<name>=)"
+  printf '%s' "$(kk_prop_first ro.build.fingerprint)" > "$fp" && h=$(kk_util sha256 "$fp") || h=
+  rm -f "$fp"
+  [ -n "$h" ] && [ "$h" = "$(kk_conf fingerprint)" ] ||
+    kk_refuse "ro.build.fingerprint is not the one this zip was made for (sha256 $h)"
+}
+
 kk_check_marker() { # name [required content]
   local m="$KK_ROOT/$KK_MARKER_DIR/$1.version"
   if [ ! -f "$m" ]; then kk_refuse "install the kktls $1 zip first ($KK_MARKER_DIR/$1.version missing)"; return; fi
@@ -186,11 +226,14 @@ kk_precheck() { # all checks of zip.conf's kind; returns 1 (after listing every 
     cacerts) kk_check_version "$android" ;;
     java) kk_check_version "$android"; kk_check_aosp; kk_check_abi "$abi"; kk_check_marker openssl
           [ $KK_FAIL = 1 ] || kk_check_dex ;;
+    java-patched) # no release or AOSP gate: the jar patcher checked the classes, these digests pin the system
+          kk_check_abi "$abi"; kk_check_marker openssl; kk_check_patched
+          [ $KK_FAIL = 1 ] || kk_check_dex ;;
     conscrypt) kk_check_version "$android"; kk_check_aosp; kk_check_abi "$abi"; kk_check_marker java "$rel" ;;
     restore) kk_restore_select ;;
     *) kk_refuse "unknown zip kind '$kind'" ;;
   esac
-  case $kind in openssl|cacerts|java|conscrypt) # the plan (written to KK_DIR only) sizes the space check
+  case $kind in openssl|cacerts|java|java-patched|conscrypt) # the plan (written to KK_DIR only) sizes the space check
     if [ $KK_FAIL = 0 ]; then
       kk_plan "$kind" || kk_refuse "cannot write the plan to $KK_DIR"
       [ $KK_FAIL = 1 ] || kk_check_space

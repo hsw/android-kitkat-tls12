@@ -110,6 +110,7 @@ def jar(name, dex, tag):
 jar("dex.jar", True, "device")
 jar("nodex.jar", False, "device")
 jar("ours.jar", True, "ours")
+jar("patched.jar", True, "patched")
 EOF
 
 # ---- synthetic release output -------------------------------------------------------------------------------------
@@ -638,6 +639,58 @@ check "restore: /system identical to the original" [ "$ORIG" = "$(snap "$R0" sys
 check "restore: dalvik-cache wiped" [ -z "$(ls -A "$R0/data/dalvik-cache")" ]
 check "restore: backups marked done" none "$R0"/data/kktls-backup/[0-9]* "$R0"/sdcard/kktls-backup/[0-9]*
 refused "restore twice" "$R0" "$R"
+
+# java-patched: the java zip as tools/jarpatch/kktls-jarpatch.py rewrites it for one system (its zip.conf and rawzip.py
+# code): installs only where every jar and the fingerprint give the zip.conf digests, writes the java marker
+mkpatched() { # out [fingerprint]: patched jars (fx/patched.jar) for a mkroot system (jars fx/nodex.jar)
+  python3 -I - "$REL_DIR/tools/jarpatch" "$J" "$1" "$T/fx" "${2:-generic/sdk/generic:4.4.2/KK/1:user/test-keys}" <<'EOF'
+import hashlib, importlib.util, os, sys, zipfile
+tool, donor, out, fx, fp = sys.argv[1:6]
+sys.path.insert(0, tool)
+import rawzip
+spec = importlib.util.spec_from_file_location("kktls_jarpatch", os.path.join(tool, "kktls-jarpatch.py"))
+jp = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(jp)
+dev, patched = (open(os.path.join(fx, n), "rb").read() for n in ("nodex.jar", "patched.jar"))
+jars = [(j, hashlib.sha256(dev).hexdigest()) for j in ("core", "core-libart", "conscrypt", "okhttp")]
+with zipfile.ZipFile(donor) as z:
+    conf = jp.read_conf(z)
+payload = {"system/framework/%s.jar" % j: patched for j, _ in jars}
+payload["kktls/zip.conf"] = jp.zip_conf(conf, conf["release"], conf["abi"], "4.4.2", jars,
+                                        hashlib.sha256(fp.encode()).hexdigest()).encode()
+rawzip.rewrite(donor, out, payload)
+EOF
+}
+PJ=$T/kktls-java-patched.zip PJF=$T/kktls-java-patched-fp.zip
+mkpatched "$PJ"; mkpatched "$PJF" generic/sdk/generic:4.4.2/KK/2:user/test-keys
+check "java-patched zip: kind, the donor's release, a jar line per jar, fingerprint" sh -c "unzip -p '$PJ' kktls/zip.conf | grep -c '^kind=java-patched\$\|^release=v9\$\|^jar\.[a-z-]*=[0-9a-f]\{64\}\$\|^fingerprint=[0-9a-f]\{64\}\$' | grep -qx 7"
+mkroot "$R0"; ORIG=$(snap "$R0" system)
+refused "java-patched without the openssl marker" "$R0" "$PJ"
+installs "openssl (java-patched chain)" "$R0" "$O"
+refused "java-patched made for another fingerprint" "$R0" "$PJF"
+check "java-patched, other fingerprint: the refusal says so" grep -q 'ro.build.fingerprint is not the one this zip was made for' "$T/out"
+cp "$R0/system/framework/okhttp.jar" "$T/okhttp.jar"; echo x >> "$R0/system/framework/okhttp.jar"
+refused "java-patched with one jar changed" "$R0" "$PJ"
+check "java-patched, one jar changed: the refusal names it" grep -q 'okhttp.jar is not the jar this zip was made from' "$T/out"
+check "java-patched, one jar changed: only that jar" [ "$(grep -c 'is not the jar this zip was made from' "$T/out")" = 1 ]
+cp "$T/okhttp.jar" "$R0/system/framework/okhttp.jar"
+: > "$LOG"
+installs "java-patched" "$R0" "$PJ"
+check "java-patched: the four jars replaced" sh -c "for j in core core-libart conscrypt okhttp; do cmp -s '$R0/system/framework/'\$j.jar '$T/fx/patched.jar' || exit 1; done"
+check "java-patched: core.odex removed, framework.odex kept" sh -c "[ ! -e '$R0/system/framework/core.odex' ] && [ -f '$R0/system/framework/framework.odex' ]"
+check "java-patched: dalvik-cache wiped" [ -z "$(ls -A "$R0/data/dalvik-cache")" ]
+check "java-patched: the java marker of the donor's release, no java-patched marker" sh -c "[ \"\$(cat '$R0/system/etc/kktls/java.version')\" = v9 ] && [ ! -e '$R0/system/etc/kktls/java-patched.version' ]"
+check "java-patched: label calls for 5 files + marker" [ "$(grep -c '\.kktls-new$' "$LOG")" = 6 ]
+check "java-patched: backup of kind java-patched" grep -lq '^kind java-patched$' "$R0"/data/kktls-backup/0002-*/manifest
+refused "java-patched rerun (the jars are the patched ones now)" "$R0" "$PJ"
+installs "conscrypt over java-patched (java marker)" "$R0" "$D"
+installs "restore after java-patched" "$R0" "$R"
+check "restore after java-patched: /system identical to the original" [ "$ORIG" = "$(snap "$R0" system)" ]
+# no AOSP gate (the patcher decided); the fingerprint is the first definition, as init sets a ro.* property once
+mkroot "$R0" ro.cm.version=11-20140804-NIGHTLY-hammerhead
+mkdir -p "$R0/system/etc/kktls"; echo v9 > "$R0/system/etc/kktls/openssl.version"
+echo "ro.build.fingerprint=a/later/definition:4.4.2/KK/9:user/test-keys" >> "$R0/system/build.prop"
+installs "java-patched on a CM build with a second fingerprint line" "$R0" "$PJ"
 
 # cacerts and restore on Android 4.1-4.3: no SELinux in an AOSP 4.1/4.2 kernel (no label writes), labels on 4.3 and
 # on a 4.1/4.2 kernel that has SELinux

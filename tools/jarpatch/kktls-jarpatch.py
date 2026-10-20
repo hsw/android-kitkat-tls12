@@ -48,9 +48,20 @@ What it does (nothing on the device is changed):
      boot class path, the other framework jars and the app/priv-app dex that resolved before the patch must still
      resolve (a caller of a member the series removes refuses).
 
-Output (exit 0): OUT/stage/<jar>/classes.dex, OUT/stage/<jar>/<entry path> (the donor's bytes of the set's entries)
-and OUT/stage/manifest.json (system, device jar sha256s, sha256 of ro.build.fingerprint, donor, per-jar staged
-files, link check counts). The raw fingerprint is never printed or written. OUT must not exist or be empty.
+  6. the recovery zip (rawzip.py): each patched jar is the device jar with classes.dex and the set's entries swapped,
+     every other entry copied byte for byte; the zip is the donor java zip with these jars in place of its own (a
+     donor jar the device lacks, core-libart.jar on a Dalvik-only ROM, is dropped), the donor's libjavacrypto.so,
+     installer, helpers and notices, and a new kktls/zip.conf:
+       kind=java-patched, release= (the donor's: the java.version marker the conscrypt zip checks), abi=, android=
+       (the device's release), tag= (the donor's), jar.<name>=<sha256 of the device jar it was made from>,
+       fingerprint=<sha256 of ro.build.fingerprint>;
+     the installer (installer/checks.sh) installs it only on a system whose jars and fingerprint give these digests.
+
+Output (exit 0): OUT/kktls-java-patched-<android>-<abi>-<release>-<8 hex of sha256(fingerprint)>.zip (for that
+device only: it holds the device's own classes, not for redistribution), OUT/stage/jars/<jar>.jar (the patched jars),
+OUT/stage/<jar>/classes.dex, OUT/stage/<jar>/<entry path> (the donor's bytes of the set's entries) and
+OUT/stage/manifest.json (system, device jar sha256s, sha256 of ro.build.fingerprint, donor, per-jar staged files,
+link check counts, the zip). The raw fingerprint is never printed or written. OUT must not exist or be empty.
 
 Exit 0 staged, 1 refused (each reason: jar, class, why), 2 usage or tool error. Stdlib only; Java 8+ and the
 smali/baksmali jars of fetch-smali.sh.
@@ -70,6 +81,7 @@ sys.path.insert(0, HERE)   # `python3 -I` leaves the script dir out
 import linkcheck  # noqa: E402
 import mkset  # noqa: E402
 import normalize  # noqa: E402
+import rawzip  # noqa: E402
 
 LINES = {"4.4": "4.4.2", "4.4.1": "4.4.2", "4.4.2": "4.4.2", "4.4.3": "4.4.4", "4.4.4": "4.4.4"}
 ABIS = ("armeabi-v7a", "x86")
@@ -279,6 +291,29 @@ def extract_donor(donor, jars, dst):
             with z.open(n) as src, open(out[j], "wb") as f:
                 shutil.copyfileobj(src, f)
     return out
+
+
+def zip_conf(conf, rel, abi, android, jars, fp_sha):
+    """zip.conf text of a java-patched zip: jars = [(name, sha256 of the device jar)]."""
+    lines = ["kind=java-patched", "release=" + rel, "abi=" + abi, "android=" + android, "tag=" + conf.get("tag", "")]
+    lines += ["jar.%s=%s" % j for j in jars]
+    lines.append("fingerprint=" + fp_sha)
+    return "".join(l + "\n" for l in lines)
+
+
+def read_conf(z):
+    return dict(l.split("=", 1) for l in z.read("kktls/zip.conf").decode("utf-8", "replace").split("\n") if "=" in l)
+
+
+def patched_jar(device, dst, dex, entries):
+    """device jar -> dst with classes.dex = dex and entries {path: bytes | None (removed)}; other entries raw."""
+    try:
+        rawzip.rewrite(device, dst, dict(entries, **{"classes.dex": dex}))
+    except rawzip.ZipError as e:
+        raise ToolError("%s: %s" % (device, e))
+    with zipfile.ZipFile(dst) as z:
+        if z.testzip() is not None or z.read("classes.dex") != dex:
+            raise ToolError("%s: the patched jar does not read back" % dst)
 
 
 def has_dex(path):
@@ -575,6 +610,8 @@ class Patcher(object):
                                    "dex": os.path.relpath(dex, stage), "entries": entries,
                                    "replaced": replaced, "removed": removed, "classes": len(got)}
         manifest["linkcheck"] = self.link_check(staged, replaced_smali, changed, "core-libart" not in jars)
+        manifest["zip"], manifest["zip_sha256"] = self.write_zip(manifest, stage, donor)
+        self.lines.append("zip %s sha256 %s" % (manifest["zip"], manifest["zip_sha256"]))
         tmp = os.path.join(stage, "manifest.json.tmp")
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(manifest, f, indent=1, sort_keys=True)
@@ -582,6 +619,55 @@ class Patcher(object):
         os.replace(tmp, os.path.join(stage, "manifest.json"))
         shutil.rmtree(work, ignore_errors=True)
         return manifest
+
+    def write_zip(self, manifest, stage, donor):
+        """The patched jars (stage/jars/<jar>.jar) and the recovery zip in OUT; returns (zip name, its sha256)."""
+        jars, payload = [], {}
+        for j in mkset.JARS:
+            v = manifest["jars"].get(j)
+            if v is None:
+                payload["system/framework/%s.jar" % j] = None   # dropped when the donor has it (Dalvik-only)
+                continue
+            with open(os.path.join(stage, v["dex"]), "rb") as f:
+                dex = f.read()
+            entries = {}
+            for p, rel in v["entries"].items():
+                if rel is None:
+                    entries[p] = None
+                else:
+                    with open(os.path.join(stage, rel), "rb") as f:
+                        entries[p] = f.read()
+            dst = os.path.join(stage, "jars", j + ".jar")
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            patched_jar(v["device"], dst, dex, entries)
+            v["patched"], v["patched_sha256"] = os.path.relpath(dst, stage), sha256_file(dst)
+            with open(dst, "rb") as f:
+                payload["system/framework/%s.jar" % j] = f.read()
+            jars.append((j, v["sha256"]))
+        with zipfile.ZipFile(donor) as z:
+            conf = read_conf(z)
+            names = set(z.namelist())
+            try:
+                installer = z.read("kktls/checks.sh").decode("utf-8", "replace")
+            except KeyError:
+                installer = ""
+        payload = {n: b for n, b in payload.items() if b is not None or n in names}
+        if "java-patched)" not in installer:
+            log("WARNING: the installer in %s predates the java-patched kind: the device will refuse this zip "
+                "('unknown zip kind'); use the java zip of the jarpatch tool's own release" % os.path.basename(donor))
+        payload["kktls/zip.conf"] = zip_conf(conf, manifest["release"], self.abi, self.android, jars,
+                                             self.fp_sha).encode("utf-8")
+        name = "kktls-java-patched-%s-%s-%s-%s.zip" % (self.android, self.abi, manifest["release"], self.fp_sha[:8])
+        dst = os.path.join(self.out, name)
+        try:
+            rawzip.rewrite(donor, dst, payload)
+        except rawzip.ZipError as e:
+            raise ToolError("%s: %s" % (os.path.basename(donor), e))
+        with zipfile.ZipFile(dst) as z:
+            if z.testzip() is not None:
+                raise ToolError("%s does not read back" % name)
+        log("wrote %s" % dst)
+        return name, sha256_file(dst)
 
     def link_check(self, staged, replaced, changed, dalvik_only):
         s = self.system
@@ -657,6 +743,7 @@ def main(argv):
         write_report(opt["--report"], patcher, "staged", [])
     log("staged %s (%s)" % (os.path.join(out, "stage"), ", ".join(
         "%s %d replaced/%d removed" % (j, v["replaced"], v["removed"]) for j, v in sorted(m["jars"].items()))))
+    log("zip %s (for this device only)" % os.path.join(out, m["zip"]))
     return 0
 
 
