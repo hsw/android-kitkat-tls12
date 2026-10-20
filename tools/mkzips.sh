@@ -38,8 +38,15 @@
 #                                           the java zip of the same release (its marker)
 #   kktls-restore-<rel>.zip                 no payload
 # Each holds META-INF/com/google/android/{update-binary,updater-script}, kktls/{zip.conf,checks.sh,install.sh},
-# kktls/bin/<abi>/ helpers, NOTICE, and the payload under system/. Entries are sorted, with fixed timestamps and modes,
-# so the same inputs give byte-identical zips. Exit 0 ok, 1 bad input, 2 usage.
+# kktls/bin/<abi>/ helpers, NOTICE, and the payload under system/. Not a recovery zip:
+#   kktls-jarpatch-<rel>.zip                kktls-jarpatch-<rel>/: the jar patcher (tools/jarpatch/ without its tests:
+#                                           driver, normalizer, set files, link check, zip writer, native scan,
+#                                           fetch-smali.sh, README.md) and LICENSE; a host tool that makes a
+#                                           device-specific java zip from the 4.4 java zips of the same release. Every
+#                                           4.4 tag of --in needs a set file (sets/*.txt naming the tag); the release
+#                                           build's check step compares its jars with that set (jarpatch/checkset.py)
+# Entries are sorted, with fixed timestamps and modes, so the same inputs give byte-identical zips. Exit 0 ok, 1 bad
+# input, 2 usage.
 set -euo pipefail
 export LC_ALL=C
 
@@ -54,7 +61,7 @@ while [ $# -gt 0 ]; do
         --in) IN=$2 ;; --release) REL=$2 ;; --cacerts) CACERTS=$2 ;; --conscrypt-notice) CNOTICE=$2 ;;
         --out) OUT=$2 ;; --base-tag) BASE=$2 ;; --mtime) MTIME=$2 ;; --jb) JB=$2 ;;
       esac; shift 2 ;;
-    -h|--help) sed -n '3,41p' "$0"; exit 0 ;;
+    -h|--help) sed -n '3,49p' "$0"; exit 0 ;;
     *) die "unknown argument $1" 2 ;;
   esac
 done
@@ -69,6 +76,11 @@ find "$CACERTS" -mindepth 1 ! -name '*.[0-9]' | grep -q . && die "--cacerts $CAC
 INST=$HERE/installer LIC=$HERE/licenses   # next to this script, or one level up (the published layout)
 [ -d "$INST" ] || INST=$HERE/../installer
 [ -d "$LIC" ] || LIC=$HERE/../licenses
+JP=$HERE/jarpatch   # the jar patcher: tools/jarpatch/ next to this script
+[ -d "$JP" ] || JP=$HERE/tools/jarpatch
+# its files in the kktls-jarpatch zip (tests, selftest.sh and caches stay out)
+JP_FILES="README.md kktls-jarpatch.py normalize.py mkset.py checkset.py linkcheck.py rawzip.py nativescan.py
+fetch-smali.sh aosp44-ssl-consumers.txt"
 ABIS="armeabi-v7a x86"
 
 TAGS=$(cd "$IN" && ls -d android-4.4* 2> /dev/null | sort) || true
@@ -115,6 +127,13 @@ jb_android() { # base -> zip.conf android of its java zip, from the gate line. c
     *) die "$JB/$1: gate '$g' cannot be expressed by the installer (one $1.x release, or all of '$all')" ;;
   esac
 }
+
+# the jar patcher ships with a set file for every 4.4 tag of the release
+for f in $JP_FILES; do [ -f "$JP/$f" ] || die "$JP/$f missing (the kktls-jarpatch zip)"; done
+for t in $TAGS; do
+  n=$(grep -lx "tag $t" "$JP"/sets/*.txt 2> /dev/null | wc -l) || true
+  [ "$n" = 1 ] || die "$JP/sets: $n set files name tag $t, want exactly one (the kktls-jarpatch zip)"
+done
 
 # every input directory is checked against its SHA256SUMS first
 for t in $TAGS; do
@@ -305,6 +324,12 @@ pack "$n"
 n=kktls-restore-$REL
 # shellcheck disable=SC2086
 stage "$n" restore any 4.1-4.4 "$BASE" $ABIS
+pack "$n"
+n=kktls-jarpatch-$REL
+mkdir -p "$ST/$n/$n/sets"
+for f in $JP_FILES; do install -m 0644 "$JP/$f" "$ST/$n/$n/$f"; done
+install -m 0644 "$JP"/sets/*.txt "$ST/$n/$n/sets/"
+install -m 0644 "$LIC/Apache-2.0.txt" "$ST/$n/$n/LICENSE"
 pack "$n"
 
 (cd "$OUT" && sha256sum kktls-*.zip > SHA256SUMS)

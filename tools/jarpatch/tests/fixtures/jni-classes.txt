@@ -1,0 +1,4 @@
+# the fixture's names of the donor libjavacrypto.so (mkset.py --jni)
+Ljava/lang/Integer;
+Lcom/android/org/conscrypt/NativeCrypto;
+Lcom/android/org/conscrypt/OpenSSLBIOInputStream;

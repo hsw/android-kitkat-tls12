@@ -14,7 +14,7 @@ D) as 4.4 does. On 4.1.1, Java apps keep the stock protocol list (`SSLv3, TLSv1`
 
 | Android | OpenSSL 1.0.1u | CA store | Java TLS 1.2 (layer A) | TLS 1.3 (layer D) |
 |---|---|---|---|---|
-| 4.4.x | `kktls-openssl-4.4-<abi>` | `kktls-cacerts` | `kktls-java-4.4.2-<abi>` / `kktls-java-4.4.4-<abi>` (exact release) | `kktls-conscrypt-<abi>` |
+| 4.4.x | `kktls-openssl-4.4-<abi>` | `kktls-cacerts` | `kktls-java-4.4.2-<abi>` / `kktls-java-4.4.4-<abi>` (exact release), or a zip from the [jar patcher](#java-layer-for-other-44-roms-jar-patcher) (4.4.1 to 4.4.4) | `kktls-conscrypt-<abi>` |
 | 4.3.x | `kktls-openssl-4.3-<abi>` | `kktls-cacerts` | `kktls-java-4.3-<abi>` (4.3.x) | `kktls-conscrypt-4.3-<abi>` (4.3.x) |
 | 4.2.x | `kktls-openssl-4.2-<abi>` | `kktls-cacerts` | `kktls-java-4.2-<abi>` (4.2.x) | `kktls-conscrypt-4.2-<abi>` (4.2.x) |
 | 4.1.x | `kktls-openssl-4.1-<abi>` | `kktls-cacerts` | `kktls-java-4.1-<abi>` (4.1.2 only) | `kktls-conscrypt-4.1-<abi>` (4.1.2 only) |
@@ -122,11 +122,14 @@ working.
   installer: CyanogenMod and its derivatives, and vendor ROMs that carry vendor properties (MIUI, EMUI, Samsung, HTC,
   Sony, LG, MediaTek and others; the list is in `installer/checks.sh`). Vendors often change the Java and OpenSSL
   sources; the jars built from AOSP would not match, and a matching symbol list does not prove that structs and
-  `#define` values match what a vendor's own native code was compiled against.
+  `#define` values match what a vendor's own native code was compiled against. On such a 4.4 ROM the
+  [jar patcher](#java-layer-for-other-44-roms-jar-patcher) can still write a java zip from the device's own jars, and
+  with `--accept-oem` copies of the openssl and conscrypt zips bound to that one system.
 - ARMv6 devices (`armeabi`) are refused. MIPS is source only: no binaries. Layer D on ARM needs a CPU (and kernel)
   with NEON; without it the conscrypt zip installs, but the default factory stays on layer A.
 - The java zip must match the device's `ro.build.version.release` exactly: `kktls-java-4.4.2-*` for 4.4.2,
-  `kktls-java-4.4.4-*` for 4.4.4. Other 4.4.x releases have no java zip; build from source (below). The 4.3 java zip
+  `kktls-java-4.4.4-*` for 4.4.4. Other 4.4.x releases have no java zip: use the jar patcher (4.4.1, 4.4.3; it
+  refuses 4.4, see "Build from source"), or build from source (below). The 4.3 java zip
   `kktls-java-4.3-*` installs on any 4.3.x (AOSP: 4.3, 4.3.1): libcore of every AOSP 4.3 tag differs from
   `android-4.3_r3` in Java code only (no native or removed API change), and the zip replaces all of `core.jar`. The
   4.2 java zip `kktls-java-4.2-*` installs on any 4.2.x (AOSP: 4.2, 4.2.1, 4.2.2) for the same reason: libcore of
@@ -159,6 +162,7 @@ Each release has these zips and a `SHA256SUMS` file:
 | `kktls-conscrypt-<abi>-<rel>.zip` | layer D | Android 4.4.x; AOSP-like; ABI; the java zip of the same release is installed |
 | `kktls-conscrypt-4.3-<abi>-<rel>.zip`, `-4.2-`, `-4.1-` | layer D: `kktls-conscrypt.jar` (the Jelly Bean dex), `kktls-sslfilter.jar` and `libkktls_conscrypt_jni.so` (edited on 4.2 ARM and 4.1), plus `libkktls_compat.so` on 4.2 ARM and 4.1 | Android 4.3.x, 4.2.x resp. 4.1.2; AOSP-like; ABI; the java zip of the same release is installed |
 | `kktls-restore-<rel>.zip` | none | a backup exists; every backup has an intact copy and was taken on this ROM |
+| `kktls-jarpatch-<rel>.zip` | the [jar patcher](#java-layer-for-other-44-roms-jar-patcher) and its set files; not a recovery zip: it runs on a PC and writes `kktls-java-patched-<ver>-<abi>-<rel>-<fp8>.zip` for one device | the patched zip: ABI; every jar and the build fingerprint are those it was made from; the openssl zip is installed; dex check |
 
 - **Jelly Bean (4.1 to 4.3):** the openssl zip replaces 1.0.1c (4.1, 4.2) or 1.0.1e (4.3). The stock Java layer
   keeps working on it unchanged (its `SSL_MODE_HANDSHAKE_CUTTHROUGH` bit means something else in 1.0.1u, so False
@@ -177,7 +181,8 @@ Each release has these zips and a `SHA256SUMS` file:
   because the Java side sets OpenSSL 1.0.1u `SSL_MODE` bits that mean something else in a stock 1.0.1e.
 - **Dex check:** replacing `core.jar` makes every other pre-optimised `.odex` stale, and Dalvik regenerates them from
   the `classes.dex` inside each jar or apk. The java zip refuses when any jar or apk in `/system/framework`,
-  `/system/app` or `/system/priv-app` has an `.odex` but no `classes.dex`: such a device would not boot. The Jelly
+  `/system/app`, `/system/priv-app` or `/system/vendor/app` (the system code the package manager scans) has an `.odex`
+  but no `classes.dex`: such a device would not boot or would lose that app. The Jelly
   Bean SDK system images are such systems: the Jelly Bean java zips are refused there.
 - **What install does:** mounts `/system` and `/data`, runs all checks and lists every failure, checks that `/system`
   and `/data` have room for the new files and the backup (else it refuses before writing anything), backs up the files
@@ -231,6 +236,82 @@ tools/install-adb.sh [-s SERIAL] --restore kktls-restore-v2.zip
 - On an enforcing SELinux device it runs `setenforce 0` for the duration of the run and `setenforce 1` at the end:
   the 4.4 policy does not let the root shell relabel files to `system_file`.
 
+## Java layer for other 4.4 ROMs (jar patcher)
+
+The 4.4 java zips replace `core.jar`, `core-libart.jar`, `conscrypt.jar` and `okhttp.jar` with AOSP builds of one exact
+release, so they refuse vendor and CyanogenMod ROMs and the releases 4.4, 4.4.1 and 4.4.3. The jar patcher
+(`kktls-jarpatch-<rel>.zip` in each release, [tools/jarpatch/](tools/jarpatch/README.md) here) takes the device's own
+jars instead. It runs on a PC (Python 3, Java 8+), replaces only the classes the kktls series changes, adds or removes
+(and the `security.properties` entry), keeps every other class of the ROM, and writes a recovery zip for that one
+system: `kktls-java-patched-<ver>-<abi>-<rel>-<fp8>.zip`. The new classes and `libjavacrypto.so` come from the java zip
+of the same release (4.4.1 and 4.4.2 use the 4.4.2 one, 4.4.3 and 4.4.4 the 4.4.4 one). Android 4.4
+(`android-4.4_r1`, `r1.2`) is refused: it lacks upstream SSLEngine and okhttp fixes that the series builds on, in
+classes outside the set that the patcher would keep (see "Build from source"). Usage, the set files and the
+checks in detail: [tools/jarpatch/README.md](tools/jarpatch/README.md).
+
+**Workflow.** Download one release: its zips, `SHA256SUMS` and `kktls-jarpatch-<rel>.zip`. Run
+`python3 kktls-jarpatch.py --adb <serial> --release-dir <dir> --out <new dir>` (no root needed; or `--system` with a
+copy of `/system`). Exit 0 means a zip was written, 1 refused (every reason listed: jar, class, why), 2 a usage or tool
+error. Nothing on the device changes until you flash. Then install, from a recovery or with `install-adb.sh`: the
+openssl zip, the CA store zip if wanted, the patched java zip, the conscrypt zip if wanted (on an OEM/CM build the
+`-oem-` copies of the openssl and conscrypt zips, see below). The restore zip of the release takes everything back.
+The same `/system` and release give the same zip, byte for byte, over `adb` or from a copy.
+
+**Gates.** The patcher refuses unless all of these hold:
+
+- Android 4.4.1 to 4.4.4, ABI `armeabi-v7a` or `x86`, a build fingerprint; the four jars present with one `classes.dex`
+  each (`core-libart.jar` may be missing on a Dalvik-only ROM).
+- Reference check: every class the series changes, adds or removes, every class the donor `libjavacrypto.so` looks up
+  by name, and the `security.properties` entry are the stock AOSP version, compared as normalized bytecode (debug info
+  does not count; every instruction, constant, string and reference does).
+- Every class it does not replace comes out of the disassembly and reassembly with the digest it went in with.
+- The release dir and the set file belong together: each donor jar as a whole (every class and entry, listed in the
+  set or not) gives the set's aggregate, else a tool error.
+- No class of the device's `conscrypt.jar` outside the set declares a native method (the donor `libjavacrypto.so`
+  replaces the device's and registers the stock 4.4 natives only).
+- Link check per runtime (Dalvik with `core.jar`, ART with `core-libart.jar`): every reference of the new classes
+  resolves, and no reference of the boot class path, the other framework jars or the apps that resolved before the
+  patch breaks.
+
+The zip's `zip.conf` carries the sha256 of every device jar it was made from and of `ro.build.fingerprint` (the zips,
+the manifest and the report never carry the raw fingerprint; with `--adb` the output directory's copy of `build.prop`
+does). The installer installs it only on that system, after the openssl zip and with the java
+zip's dex check, backup and restore. The conscrypt zip of the same release installs on top of it.
+
+**Refused:**
+
+- `vendor-modified`: the ROM changed a class or entry the series replaces (or one the donor library looks up by name);
+  replacing it would drop the vendor's change. This is the usual answer for a CyanogenMod 11 system: cm-11 changed
+  `NativeCrypto`, `OpenSSLSocketImpl`, `OpenSSLServerSocketImpl`, `TrustManagerImpl` and okhttp's `Platform`, and
+  backported `DefaultHostnameVerifier`, `TrustedCertificateIndex` and okhttp's `OkHostnameVerifier` (equal to the
+  kktls versions, but without a kktls marker the patcher does not take them for an earlier install): 9 lines in all.
+- `missing`, `unexpected-present`: a stock class is not there, or a class the series adds already is.
+- `already-kktls`: kktls classes, the kktls `security.properties` entry or the installer's marker are there: install the
+  restore zip first.
+- A broken link (a caller of a member the series removes), a class that changes in the round trip, a dex over the
+  65536 id limit, a vendor class with native methods in `conscrypt.jar`.
+- Odexed-and-stripped ROMs: an `.odex` in `/system/{framework,app,priv-app,vendor/app}` whose jar or apk has no
+  `classes.dex`.
+- An OEM/CM build (the `build.prop` markers of `installer/checks.sh`) without `--accept-oem`.
+- On the device: a patched zip on any other system (another jar or fingerprint, a ROM update, a second run on the
+  already patched jars).
+
+**`--accept-oem` and its risk.** The openssl and conscrypt zips refuse OEM/CM builds: a matching symbol list does not
+prove that the vendor's native code was built against the same `SSL`/`SSL_CTX` layouts (see Requirements). On such a
+build the patcher lists every ELF in `/system/{lib,bin,xbin,vendor}` and in the apps' native libraries that needs
+`libssl.so` or `libcrypto.so` (`native-consumers.txt`; `extra` = not in AOSP 4.4) and refuses. With `--accept-oem` it
+also writes `kktls-openssl-oem-…` and `kktls-conscrypt-oem-…`: the release zips with `oem_ack=<sha256 of the
+fingerprint>` in `zip.conf`, which skip the OEM/CM gate on that one system and refuse on any other. Read the report
+first. Nothing checks the `extra` consumers: one of them may crash or misbehave with OpenSSL 1.0.1u, and the restore
+zip is the way back. AOSP-like ROMs need no opt-in. What the link check does not compare (access flags, final and
+abstract members, invoke kinds) is listed in [tools/jarpatch/README.md](tools/jarpatch/README.md#not-checked).
+
+**Not supported:** odexed-and-stripped ROMs (no deodex mode yet), Jelly Bean, Android 4.4 (`android-4.4_r1`, `r1.2`),
+method-level patching (a class the vendor changed is refused, not merged), patching on the device.
+
+**Redistribution.** A patched zip holds the device's own vendor classes. It is for that device only: do not publish it,
+nor the `--out` directory (`device/` holds the files copied from the device, `stage/jars/` the patched jars).
+
 ## Tested
 
 | Target | How | Result |
@@ -252,6 +333,8 @@ tools/install-adb.sh [-s SERIAL] --restore kktls-restore-v2.zip
 | AOSP `android-4.3_r3`, `android-4.2.2_r1` and `android-4.1.2_r2` `full-eng` ARM builds (with a kernel that reports NEON: the Jelly Bean SDK ARM kernels do not) and `full_x86-eng` builds (KVM), all without dexpreopt; openssl + CA store + java + conscrypt zips of that version | emulator, `install-adb.sh` | install and restore (the layer A files and the CA store back byte for byte, the layer D files gone); the default factory uses `org.conscrypt.OpenSSLSocketFactoryImpl`; TLS 1.3 (`TLS_CHACHA20_POLY1305_SHA256`) through `getDefault()`, `HttpsURLConnection` and Apache HTTP to a TLS-1.3-only server, and to a server whose only group is X25519 and only suite ChaCha20-Poly1305; ChaCha20 suites, `supported_versions` and an X25519 `key_share` in every ClientHello of the default factory; SSLv3 filtered and weak suites throwing on the default factory's sockets; `SSLContext.getDefault()`, `SSLContext.getInstance(...)`, `SSLCertificateSocketFactory` and server sockets stay on layer A; matrix of 25 TLS test servers as wanted except `wrong.host` as with the java zip; the kill switch `0` and absent layer D files give layer A (TLS 1.2, no Conscrypt library mapped); a process that is not dumpable (as every app of a user build) gets TLS 1.3 too, through the compat library's `/proc/cpuinfo` fallback where it has one; no crash from layer D. 4.2 ARM, 4.1 ARM and 4.1 x86 with `libkktls_compat.so` |
 | The same 4.3, 4.2 and 4.1 ARM builds with the SDK API 18, 17 and 16 ARM kernels (no NEON) and all four zips | emulator | the default factory stays on layer A (TLS 1.2, no Conscrypt library mapped), every probe process exits normally, no tombstone |
 | The recovery path (`update-binary`), 4.4.4 x86 java zip | host tests against fake `/system` trees, plus a real SDK 4.4.2 `/system` | pass |
+| Jar patcher: Android SDK system images 4.4.2 ARM (odexed, jars keep `classes.dex`) and x86, AOSP `android-4.4.4_r2` `aosp_arm-eng` build (not odexed) | emulator, `kktls-jarpatch.py --adb`, `install-adb.sh` after the openssl and CA store zips | patched zip written (11 conscrypt, 3 core, 3 core-libart and 2 okhttp classes replaced) and installed; no `VerifyError`, `NoSuchMethodError` or `NoClassDefFoundError` at boot; the TLS probes and the matrix of 25 TLS test servers give the same results as the release java zip; the conscrypt zip on top gives layer D; restore gives the four jars back byte for byte; the zip made for one image is refused on another (jar sha256, fingerprint) with `/system` unchanged; `--adb` and `--system` give the same zip |
+| Jar patcher on CM: the 4.4.4 build with `ro.cm.version` in `build.prop`, and with cm-11.0's libcore and okhttp built in the same tree | emulator | AOSP jars with the marker: refused without `--accept-oem`; with it the patched java zip and the `-oem-` openssl and conscrypt zips install and pass the same checks, and restore gives the state before back; cm-11.0 jars: refused with and without `--accept-oem`, as `vendor-modified` on the classes cm-11 changed or backported (`NativeCrypto`, `OpenSSLSocketImpl`, `OpenSSLServerSocketImpl`, `TrustManagerImpl`, `TrustedCertificateIndex`, `DefaultHostnameVerifier`, okhttp's `Platform` and `OkHostnameVerifier`) |
 
 **Not tested yet:** a real TWRP or CWM recovery (only host tests run `update-binary`); 4.4.4 on x86 in an emulator; ART
 (all runs used Dalvik); real hardware other than the device below; Android 4.4.0, 4.4.1 and 4.4.3; Jelly Bean on real
@@ -259,7 +342,8 @@ hardware; the Jelly Bean java zips on a system with `.odex` files whose jars kee
 layer D NEON check on a real ARM CPU without NEON (only emulator kernels that hide it); the 4.4 ARM `libcrypto` on a CPU
 without NEON (its scalar code ran in the CVE harness with `OPENSSL_armcap=0`); the 4.4 x86 java zips with the
 NEON-guarded `core.jar` (the same hook source ran on 4.4 ARM and Jelly Bean x86); an app that bundles Conscrypt next to
-layer D on Jelly Bean. Reports welcome.
+layer D on Jelly Bean; the jar patcher on a real vendor or CyanogenMod ROM (only the emulator cases above). Reports
+welcome.
 
 ## Build from source
 
@@ -313,6 +397,14 @@ ABIs, and runs the checks: an ABI comparison of our OpenSSL against the stock li
 helper, and the release file checker. The AOSP-built jars are rewritten with sorted entries and a fixed time
 (`tools/zipnorm.py`; members and compressed data unchanged), so two builds of the same commit give byte-identical
 release files. `tools/mkzips.sh` packs its output into the release zips; the same inputs give byte-identical zips.
+
+The `check` step also runs the jar patcher's drift check (`tools/jarpatch/checkset.py`, row `jarpatch-set`): the four
+built jars against the set file of the tag (`tools/jarpatch/sets/`), line by line and as a whole jar. It needs Java 8+
+(`KKTLS_JAVA`, else the build image's `/opt/kktls/jre17/bin/java`, else `java` on PATH; the image's own `java` is
+Java 6) and the smali jars of
+`tools/jarpatch/fetch-smali.sh` (cached in `WORK/dl/smali`). Any change of the series in those jars, or a new tag,
+needs a new set file: a stock build of the tag without the series and `tools/jarpatch/mkset.py` (see its help);
+`mkzips.sh` refuses a 4.4 tag that has none (the jar patcher zip ships a set for every tag of the release).
 
 ### Jelly Bean (4.1 to 4.3) OpenSSL, Java and layer D
 
@@ -376,6 +468,9 @@ uses neither.
   fortify aborts).
 - `tools/check_44_payload.py`: the 4.4 zips install the files of a published release (`tools/fixtures/`), apart from
   the listed exceptions.
+- The jar patcher: `python3 -I -m unittest discover tools/jarpatch/tests` (unit and fixture tests; the parts that need
+  Java and smali skip without them), `tools/jarpatch/selftest.sh` (the patcher end to end on fixture systems, one run
+  per refusal path) and `tools/jarpatch/fetch-smali.sh --selftest` (the download and cache logic, offline).
 
 ### CA store
 

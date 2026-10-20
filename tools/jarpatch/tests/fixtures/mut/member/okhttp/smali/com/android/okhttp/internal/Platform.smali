@@ -1,0 +1,21 @@
+.class public Lcom/android/okhttp/internal/Platform;
+.super Ljava/lang/Object;
+.source "Platform.java"
+
+
+# direct methods
+.method public static value()I
+    .registers 1
+
+    .prologue
+    .line 3
+    const/4 v0, 0x1
+
+    return v0
+.end method
+
+.method public static extra()V
+    .registers 0
+
+    return-void
+.end method

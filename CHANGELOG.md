@@ -1,5 +1,45 @@
 # Changelog
 
+## Unreleased
+
+Android 4.4 ROMs that the java zips refuse (vendor builds, the releases 4.4.1 and 4.4.3) can get the Java
+TLS layer from a zip made of their own jars, as long as the vendor did not change the classes the series replaces. A
+CyanogenMod 11 system is still refused (cm-11 changed or backported 8 of those classes); Android 4.4 (4.4_r1) is
+refused too. The release zips themselves are unchanged apart from the installer.
+
+### New
+
+- `kktls-jarpatch-<rel>.zip`: the jar patcher (`tools/jarpatch/`, Python 3 and Java 8+ on a PC, smali/baksmali 2.5.2
+  fetched and sha256-checked on the first run). It reads `/system` over `adb` (no root) or from a copy, checks the
+  classes the kktls series changes, adds or removes, the classes the donor `libjavacrypto.so` looks up by name and the
+  `security.properties` entry against stock AOSP (normalized bytecode), replaces only those classes with the release
+  java zip's, checks that every other class survives the round trip unchanged and that every reference still links
+  (Dalvik and ART boot class paths, framework jars, apps), and writes `kktls-java-patched-<ver>-<abi>-<rel>-<fp8>.zip`
+  for that one system. Any vendor change in those classes, a ROM that already carries kktls, an odexed-and-stripped
+  ROM or an OEM/CM build without `--accept-oem` is refused with the full list of reasons. The same `/system` and
+  release give the same zip. A patched zip holds the device's own classes: not for redistribution. See README, "Java
+  layer for other 4.4 ROMs (jar patcher)", and `tools/jarpatch/README.md`.
+- `--accept-oem`: on an OEM/CM build the patcher lists the device's native `libssl`/`libcrypto` consumers that AOSP
+  4.4 does not have (`native-consumers.txt`) and refuses; with the option it also writes copies of the release's
+  openssl and conscrypt zips bound to that system (`oem_ack=` in `zip.conf`).
+
+### Changed
+
+- Installer (`installer/checks.sh`, `install.sh`): new zip kind `java-patched`. Instead of the release and AOSP gates
+  it checks the sha256 of every `/system/framework` jar the zip was made from and of `ro.build.fingerprint` (first
+  `build.prop` definition, as init reads it); the openssl marker, the dex check, the backup, the `.odex` removal and the
+  restore are those of the java zip, and it writes the java marker, so the conscrypt zip of the same release installs
+  on top. The openssl and conscrypt kinds skip the OEM/CM gate only when `zip.conf` has an `oem_ack` equal to the
+  sha256 of the running system's fingerprint; an `oem_ack` for another system refuses.
+- Installer: the dex check of the java (and java-patched) zips covers `/system/vendor/app` too, which the 4.4 package
+  manager scans as system code: an odexed apk there without `classes.dex` refuses.
+- Release build: the `check` step compares the built `core`, `core-libart`, `conscrypt` and `okhttp` jars with the
+  jar patcher's set file of the tag (`tools/jarpatch/checkset.py`), line by line and as whole jars (a per-jar
+  aggregate in the set file, so a class the set does not list counts too), and fails on a difference. `mkzips.sh` adds
+  `kktls-jarpatch-<rel>.zip` and its `SHA256SUMS` line; `check_44_payload.py` skips it (not a recovery zip).
+- CI: `host-tests` runs the smali download checks, the jar patcher's unit tests and its mutation selftest (one fixture
+  run per refusal path).
+
 ## v6
 
 Android 4.4 ARM: OpenSSL uses NEON for AES-GCM, SHA-384/512 and binary-curve EC. The probe and test tools work on

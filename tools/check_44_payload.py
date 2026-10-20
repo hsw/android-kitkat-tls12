@@ -6,7 +6,8 @@
     python3 -I tools/check_44_payload.py ZIPDIR --write              print a baseline of ZIPDIR
     python3 -I tools/check_44_payload.py --selftest
 
-Every kktls-*.zip of ZIPDIR except the Jelly Bean ones (names with -4.1-, -4.2-, -4.3-) is read: its release name from
+Every kktls-*.zip of ZIPDIR except the Jelly Bean ones (names with -4.1-, -4.2-, -4.3-) and the jar patcher
+(kktls-jarpatch-<rel>.zip, a host tool, not a recovery zip) is read: its release name from
 kktls/zip.conf, and the sha256 of each system/ entry. The baseline (default tools/fixtures/v4-44-payload.sha256, made
 with --write from the published v4 zips) has one line per file: "<sha256>  <zip name without -<release>.zip>/<entry>".
 A zip or file missing on either side, or another sha256, fails; only the files in ALLOWED may differ (they are listed
@@ -28,6 +29,7 @@ import zipfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_BASELINE = os.path.join(HERE, "fixtures", "v4-44-payload.sha256")
 JB = re.compile(r"-4\.[0-3]-")
+NOT_RECOVERY = "kktls-jarpatch-"
 ALLOWED = {
     (re.compile(r"kktls-java-4\.4\.[0-9]+-(armeabi-v7a|x86)$"), "system/framework/core.jar"),
     (re.compile(r"kktls-java-4\.4\.[0-9]+-(armeabi-v7a|x86)$"), "system/framework/core-libart.jar"),
@@ -43,7 +45,8 @@ def payload(zipdir):
     """{"<zip key>/<entry>": sha256} of the system/ entries of every 4.4 zip in zipdir."""
     out = {}
     for name in sorted(os.listdir(zipdir)):
-        if not (name.startswith("kktls-") and name.endswith(".zip")) or JB.search(name):
+        if not (name.startswith("kktls-") and name.endswith(".zip")) or JB.search(name) or \
+                name.startswith(NOT_RECOVERY):
             continue
         with zipfile.ZipFile(os.path.join(zipdir, name)) as z:
             conf = z.read("kktls/zip.conf").decode()
@@ -105,6 +108,9 @@ def selftest():
         os.makedirs(d, exist_ok=True)
         for zname, entries in files.items():
             with zipfile.ZipFile(os.path.join(d, "%s-%s.zip" % (zname, rel)), "w") as z:
+                if zname == "kktls-jarpatch":       # the host tool: no zip.conf, nothing under system/
+                    z.writestr("kktls-jarpatch-%s/kktls-jarpatch.py" % rel, "# tool")
+                    continue
                 z.writestr("kktls/zip.conf", "kind=x\nrelease=%s\n" % rel)
                 z.writestr("NOTICE", "notice of %s" % rel)
                 for e, data in entries.items():
@@ -142,6 +148,7 @@ def selftest():
         case("a file more", dict(v4, **{"kktls-restore": {"system/x": "x"}}), False)
         case("a zip less", {k: v for k, v in v4.items() if k != "kktls-restore"}, False)
         case("a zip more", dict(v4, **{"kktls-cacerts": {}}), False)
+        case("the jar patcher zip is not compared", dict(v4, **{"kktls-jarpatch": {}}), True)
         case("allowed arm libcrypto.so change", dict(v4, **{"kktls-openssl-4.4-armeabi-v7a": {
             "system/lib/libssl.so": "s", "system/lib/libcrypto.so": "K"}}), True)
         case("arm libssl.so change", dict(v4, **{"kktls-openssl-4.4-armeabi-v7a": {

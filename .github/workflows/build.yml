@@ -3,7 +3,7 @@
 # partial AOSP build per tag (both ABIs in one out/, every step of tools/kktls-release-build.sh inside the image with
 # --runner direct), one OpenSSL build per Jelly Bean base (tools/kktls-jb-openssl-build.sh, same image; a base with a
 # libcore series, today 4.3, 4.2 and 4.1, also builds core.jar and libjavacore.so in that tree), then the recovery zips
-# (tools/mkzips.sh) with the installer tests on the real output. release.yml calls this workflow for a tag and publishes
+# (tools/mkzips.sh, also the jar patcher's kktls-jarpatch zip) with the installer tests on the real output. release.yml calls this workflow for a tag and publishes
 # the zips.
 # Caches (actions/cache; off with `cold`, which release.yml sets: a release is built from nothing, as a local rebuild):
 #   stock-<tag|base>-<image>-<inputs>   WORK/<tag>/stock-openssl/ + its manifest; the scripts' --reuse-stock keeps it only
@@ -84,6 +84,19 @@ jobs:
           tools/tls-probe.sh selftest
           tools/kktls-release-build.sh --dry-run
           tools/kktls-jb-openssl-build.sh --dry-run
+      - name: smali/baksmali cache (the jar patcher's pinned jars)
+        if: ${{ !inputs.cold }}
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/kktls-cache
+          key: smali-${{ hashFiles('tools/jarpatch/fetch-smali.sh') }}
+      - name: jar patcher (download checks, unit tests, mutation selftest)
+        env:
+          KKTLS_CACHE: ${{ runner.temp }}/kktls-cache
+        run: |
+          tools/jarpatch/fetch-smali.sh --selftest
+          python3 -I -m unittest discover tools/jarpatch/tests
+          tools/jarpatch/selftest.sh
       - name: armcap_probe compiles (host gcc; the device build line is in the file)
         run: gcc -std=c99 -O2 -Wall -Wextra -Werror -o "$RUNNER_TEMP/armcap_probe" tools/probe/armcap_probe.c -ldl
       - name: sslfactory host tests

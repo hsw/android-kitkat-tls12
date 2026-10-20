@@ -110,6 +110,7 @@ def jar(name, dex, tag):
 jar("dex.jar", True, "device")
 jar("nodex.jar", False, "device")
 jar("ours.jar", True, "ours")
+jar("patched.jar", True, "patched")
 EOF
 
 # ---- synthetic release output -------------------------------------------------------------------------------------
@@ -183,8 +184,8 @@ MKA=(--in "$IN" --release v9 --cacerts "$T/cacerts" --conscrypt-notice "$T/cnoti
 "$MK" "${MKA[@]}" --out "$T/z2" --jb "$T/jb" > "$T/mk2.log"
 "$MK" "${MKA[@]}" --out "$T/z44" > "$T/mk44.log"
 Z=$T/z1
-check "mkzips writes 28 zips (10 + 3 JB bases x 2 ABIs x openssl, java and conscrypt)" [ "$(wc -l < "$Z/SHA256SUMS")" = 28 ]
-check "mkzips without --jb writes the 10 4.4 zips" [ "$(wc -l < "$T/z44/SHA256SUMS")" = 10 ]
+check "mkzips writes 29 zips (11 + 3 JB bases x 2 ABIs x openssl, java and conscrypt)" [ "$(wc -l < "$Z/SHA256SUMS")" = 29 ]
+check "mkzips without --jb writes the 10 4.4 zips and the jar patcher" [ "$(wc -l < "$T/z44/SHA256SUMS")" = 11 ]
 check "the 4.4 zips do not depend on --jb" sh -c "grep -v -- '-4\.[123]-' '$Z/SHA256SUMS' | cmp -s - '$T/z44/SHA256SUMS'"
 check "zips are byte-identical across two runs" cmp -s "$T/z1/SHA256SUMS" "$T/z2/SHA256SUMS"
 check "the release set has the java zips of 4.1, 4.2 and 4.3 for both ABIs" sh -c "[ \"\$(ls '$Z' | grep 'java-4\.[123]-' | tr '\n' ' ')\" = 'kktls-java-4.1-armeabi-v7a-v9.zip kktls-java-4.1-x86-v9.zip kktls-java-4.2-armeabi-v7a-v9.zip kktls-java-4.2-x86-v9.zip kktls-java-4.3-armeabi-v7a-v9.zip kktls-java-4.3-x86-v9.zip ' ]"
@@ -194,12 +195,24 @@ else
   check "mkzips refuses the dropped --out-unreleased option" sh -c "grep -q '^mkzips: unknown argument --out-unreleased' '$T/mku.log' && [ ! -e '$T/u' ]"
 fi
 for z in "$Z"/kktls-*.zip; do
+  case $z in */kktls-jarpatch-*) continue ;; esac   # not a recovery zip (below)
   l=$(unzip -Z1 "$z")
   check "$(basename "$z") has NOTICE" sh -c "echo '$l' | grep -qx NOTICE"
   check "$(basename "$z") has update-binary" sh -c "echo '$l' | grep -qx META-INF/com/google/android/update-binary"
   check "$(basename "$z") entries sorted" sh -c "echo '$l' | sort -c"
   check "$(basename "$z") update-binary is 0755" sh -c "unzip -Z '$z' META-INF/com/google/android/update-binary | grep -q '^-rwxr-xr-x'"
 done
+JPZ=$Z/kktls-jarpatch-v9.zip JPD=$REL_DIR/tools/jarpatch
+[ -d "$JPD" ] || JPD=$REL_DIR/jarpatch
+check "jarpatch zip: the patcher files, the set files and LICENSE under kktls-jarpatch-v9/, sorted" sh -c "unzip -Z1 '$JPZ' > '$T/jpl' && sort -c '$T/jpl' && [ \"\$(sed 's#^kktls-jarpatch-v9/##' '$T/jpl' | sort | tr '\n' ' ')\" = 'LICENSE README.md aosp44-ssl-consumers.txt checkset.py fetch-smali.sh kktls-jarpatch.py linkcheck.py mkset.py nativescan.py normalize.py rawzip.py sets/4.4.2.txt sets/4.4.4.txt sets/jni-classes.txt ' ]"
+check "jarpatch zip: files equal the tree's" sh -c "for f in kktls-jarpatch.py sets/4.4.4.txt; do unzip -p '$JPZ' kktls-jarpatch-v9/\$f | cmp -s - '$JPD'/\$f || exit 1; done"
+check "jarpatch zip: no tests, no caches, no installer" sh -c "! grep -qE 'tests/|selftest|__pycache__|\.pyc\$|META-INF/|kktls/zip.conf' '$T/jpl'"
+cp -r "$IN" "$T/in-noset"; mv "$T/in-noset/android-4.4.4_r2" "$T/in-noset/android-4.4.3_r1"
+if "$MK" --in "$T/in-noset" --release v9 --cacerts "$T/cacerts" --conscrypt-notice "$T/cnotice" --out "$T/zn" > "$T/mkn.log" 2>&1; then
+  bad "mkzips accepts a 4.4 tag without a jar patcher set file"
+else
+  check "mkzips refuses a 4.4 tag without a jar patcher set file" grep -q 'set files name tag android-4.4.3_r1, want exactly one' "$T/mkn.log"
+fi
 check "openssl zip carries the allow list" sh -c "unzip -Z1 '$Z/kktls-openssl-4.4-x86-v9.zip' | grep -qx kktls/allow-missing-libssl.txt"
 for b in 4.3 4.2 4.1; do
   for a in armeabi-v7a x86; do
@@ -263,7 +276,7 @@ jbx_java() { # base gate-arm [gate-x86]: give jbx/<base> java files and gate lin
 }
 mkx() { "$MK" "${MKA[@]}" --out "$T/zx" --jb "$T/jbx" > "$T/mkx.log" 2>&1; }
 jbx_java 4.2 4.2.2; jbx_java 4.1 "4.1.2 4.1 4.1.1"
-check "mkzips: gate 4.2.2 -> android=4.2.2, gate of all 4.1 releases -> android=4.1" sh -c "'$MK' --in '$IN' --release v9 --cacerts '$T/cacerts' --conscrypt-notice '$T/cnotice' --out '$T/zx' --jb '$T/jbx' > /dev/null && unzip -p '$T/zx/kktls-java-4.2-armeabi-v7a-v9.zip' kktls/zip.conf | grep -qx android=4.2.2 && unzip -p '$T/zx/kktls-java-4.1-armeabi-v7a-v9.zip' kktls/zip.conf | grep -qx android=4.1 && [ \"\$(wc -l < '$T/zx/SHA256SUMS')\" = 28 ]"
+check "mkzips: gate 4.2.2 -> android=4.2.2, gate of all 4.1 releases -> android=4.1" sh -c "'$MK' --in '$IN' --release v9 --cacerts '$T/cacerts' --conscrypt-notice '$T/cnotice' --out '$T/zx' --jb '$T/jbx' > /dev/null && unzip -p '$T/zx/kktls-java-4.2-armeabi-v7a-v9.zip' kktls/zip.conf | grep -qx android=4.2.2 && unzip -p '$T/zx/kktls-java-4.1-armeabi-v7a-v9.zip' kktls/zip.conf | grep -qx android=4.1 && [ \"\$(wc -l < '$T/zx/SHA256SUMS')\" = 29 ]"
 for g in "4.2" "4.2.1 4.2.2" "4.2.2 4.3" "4.2.x" ""; do
   jbx_java 4.2 "$g"
   if mkx; then bad "mkzips accepts the 4.2 gate '$g'"; else ok; fi
@@ -432,6 +445,14 @@ refused "java with a stripped odexed apk" "$R0" "$J"
 cp "$T/fx/dex.jar" "$R0/system/app/Browser.apk"; echo "junk" > "$R0/system/priv-app/Settings.apk"
 refused "java with an unreadable odexed apk" "$R0" "$J"
 cp "$T/fx/dex.jar" "$R0/system/priv-app/Settings.apk"
+# /system/vendor/app: the package manager scans /vendor/app as system code too
+mkdir -p "$R0/system/vendor/app"; echo odex > "$R0/system/vendor/app/OemIme.odex"
+refused "java with an odexed /system/vendor/app entry and no apk" "$R0" "$J"
+check "java, vendor/app odex without apk: the refusal names it" grep -q '/system/vendor/app/OemIme.odex has no jar/apk next to it' "$T/out"
+cp "$T/fx/nodex.jar" "$R0/system/vendor/app/OemIme.apk"
+refused "java with a stripped odexed /system/vendor/app apk" "$R0" "$J"
+check "java, stripped vendor/app apk: the refusal names it" grep -q '/system/vendor/app/OemIme.apk is odexed without classes.dex' "$T/out"
+rm -r "$R0/system/vendor"
 refused "java 4.4.4 zip on 4.4.2" "$R0" "$J4"
 echo v9 > "$R0/system/etc/kktls/java.version"; echo v8 > "$R0/system/etc/kktls/java.version"
 refused "conscrypt with another release's java marker" "$R0" "$D"
@@ -638,6 +659,134 @@ check "restore: /system identical to the original" [ "$ORIG" = "$(snap "$R0" sys
 check "restore: dalvik-cache wiped" [ -z "$(ls -A "$R0/data/dalvik-cache")" ]
 check "restore: backups marked done" none "$R0"/data/kktls-backup/[0-9]* "$R0"/sdcard/kktls-backup/[0-9]*
 refused "restore twice" "$R0" "$R"
+
+# java-patched: the java zip as tools/jarpatch/kktls-jarpatch.py rewrites it for one system (its zip.conf and rawzip.py
+# code): installs only where every jar and the fingerprint give the zip.conf digests, writes the java marker
+KK_JARS="core core-libart conscrypt okhttp"
+mkpatched() { # out [fingerprint [jar lines [payload jars [extra zip.conf lines]]]]: patched jars (fx/patched.jar) for a
+  # mkroot system (jars fx/nodex.jar); a donor jar not among the payload jars is dropped (Dalvik-only ROM)
+  python3 -I - "$REL_DIR/tools/jarpatch" "$J" "$1" "$T/fx" "${2:-generic/sdk/generic:4.4.2/KK/1:user/test-keys}" \
+    "${3-$KK_JARS}" "${4-$KK_JARS}" "${5-}" <<'EOF'
+import hashlib, importlib.util, os, sys, zipfile
+tool, donor, out, fx, fp, lines, pay, extra = sys.argv[1:9]
+sys.path.insert(0, tool)
+import rawzip
+spec = importlib.util.spec_from_file_location("kktls_jarpatch", os.path.join(tool, "kktls-jarpatch.py"))
+jp = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(jp)
+dev, patched = (open(os.path.join(fx, n), "rb").read() for n in ("nodex.jar", "patched.jar"))
+jars = [(j, hashlib.sha256(dev).hexdigest()) for j in lines.split()]
+with zipfile.ZipFile(donor) as z:
+    conf = jp.read_conf(z)
+payload = {"system/framework/%s.jar" % j: patched if j in pay.split() else None
+           for j in ("core", "core-libart", "conscrypt", "okhttp")}
+text = jp.zip_conf(conf, conf["release"], conf["abi"], "4.4.2", jars, hashlib.sha256(fp.encode()).hexdigest())
+payload["kktls/zip.conf"] = text.replace("fingerprint=", extra + "fingerprint=").encode()
+rawzip.rewrite(donor, out, payload)
+EOF
+}
+PJ=$T/kktls-java-patched.zip PJF=$T/kktls-java-patched-fp.zip
+mkpatched "$PJ"; mkpatched "$PJF" generic/sdk/generic:4.4.2/KK/2:user/test-keys
+check "java-patched zip: kind, the donor's release, a jar line per jar, fingerprint" sh -c "unzip -p '$PJ' kktls/zip.conf | grep -c '^kind=java-patched\$\|^release=v9\$\|^jar\.[a-z-]*=[0-9a-f]\{64\}\$\|^fingerprint=[0-9a-f]\{64\}\$' | grep -qx 7"
+mkroot "$R0"
+mkdir -p "$R0/system/vendor/app"; cp "$T/fx/dex.jar" "$R0/system/vendor/app/OemIme.apk"
+echo odex > "$R0/system/vendor/app/OemIme.odex"; ORIG=$(snap "$R0" system)
+refused "java-patched without the openssl marker" "$R0" "$PJ"
+installs "openssl (java-patched chain)" "$R0" "$O"
+refused "java-patched made for another fingerprint" "$R0" "$PJF"
+check "java-patched, other fingerprint: the refusal says so" grep -q 'ro.build.fingerprint is not the one this zip was made for' "$T/out"
+cp "$R0/system/framework/okhttp.jar" "$T/okhttp.jar"; echo x >> "$R0/system/framework/okhttp.jar"
+refused "java-patched with one jar changed" "$R0" "$PJ"
+check "java-patched, one jar changed: the refusal names it" grep -q 'okhttp.jar is not the jar this zip was made from' "$T/out"
+check "java-patched, one jar changed: only that jar" [ "$(grep -c 'is not the jar this zip was made from' "$T/out")" = 1 ]
+cp "$T/okhttp.jar" "$R0/system/framework/okhttp.jar"
+cp "$T/fx/nodex.jar" "$R0/system/vendor/app/OemIme.apk"
+refused "java-patched with a stripped odexed /system/vendor/app apk" "$R0" "$PJ"
+check "java-patched, stripped vendor/app apk: the refusal names it" grep -q '/system/vendor/app/OemIme.apk is odexed without classes.dex' "$T/out"
+cp "$T/fx/dex.jar" "$R0/system/vendor/app/OemIme.apk"
+# zip.conf and payload that do not belong together (kk_check_patched): each refusal names its reason
+FP1=generic/sdk/generic:4.4.2/KK/1:user/test-keys H64=$(printf %064d 0)
+mkpatched "$T/pj-noline.zip" "$FP1" "core core-libart conscrypt"
+refused "java-patched: a payload jar without a jar line" "$R0" "$T/pj-noline.zip"
+check "java-patched, payload jar without a jar line: the refusal says so" grep -q "zip.conf has no jar.okhttp= line for the payload's okhttp.jar" "$T/out"
+mkpatched "$T/pj-badname.zip" "$FP1" "$KK_JARS" "$KK_JARS" "jar.Bad_Name=$H64
+"
+refused "java-patched: a bad jar name" "$R0" "$T/pj-badname.zip"
+check "java-patched, bad jar name: the refusal says so" grep -q "zip.conf: bad jar name 'Bad_Name'" "$T/out"
+mkpatched "$T/pj-other.zip" "$FP1" "$KK_JARS" "$KK_JARS" "jar.vendorx=$H64
+"
+refused "java-patched: a jar line for a jar this system lacks" "$R0" "$T/pj-other.zip"
+check "java-patched, jar the system lacks: the refusal says so" grep -q '/system/framework/vendorx.jar is missing: this zip was made for another system' "$T/out"
+mkpatched "$T/pj-nojar.zip" "$FP1" "" ""
+refused "java-patched: no jar line and no jar" "$R0" "$T/pj-nojar.zip"
+check "java-patched, no jar line: the refusal says so" grep -q 'zip.conf names no jar (jar.<name>=)' "$T/out"
+: > "$LOG"
+installs "java-patched" "$R0" "$PJ"
+check "java-patched: the dex check counts /system/vendor/app" grep -q 'dex check: 6 odexed jar/apk files carry classes.dex' "$T/out"
+check "java-patched: the four jars replaced" sh -c "for j in core core-libart conscrypt okhttp; do cmp -s '$R0/system/framework/'\$j.jar '$T/fx/patched.jar' || exit 1; done"
+check "java-patched: core.odex removed, framework.odex kept" sh -c "[ ! -e '$R0/system/framework/core.odex' ] && [ -f '$R0/system/framework/framework.odex' ]"
+check "java-patched: dalvik-cache wiped" [ -z "$(ls -A "$R0/data/dalvik-cache")" ]
+check "java-patched: the java marker of the donor's release, no java-patched marker" sh -c "[ \"\$(cat '$R0/system/etc/kktls/java.version')\" = v9 ] && [ ! -e '$R0/system/etc/kktls/java-patched.version' ]"
+check "java-patched: label calls for 5 files + marker" [ "$(grep -c '\.kktls-new$' "$LOG")" = 6 ]
+check "java-patched: backup of kind java-patched" grep -lq '^kind java-patched$' "$R0"/data/kktls-backup/0002-*/manifest
+refused "java-patched rerun (the jars are the patched ones now)" "$R0" "$PJ"
+installs "conscrypt over java-patched (java marker)" "$R0" "$D"
+installs "restore after java-patched" "$R0" "$R"
+check "restore after java-patched: /system identical to the original" [ "$ORIG" = "$(snap "$R0" system)" ]
+# no AOSP gate (the patcher decided); the fingerprint is the first definition, as init sets a ro.* property once
+mkroot "$R0" ro.cm.version=11-20140804-NIGHTLY-hammerhead
+mkdir -p "$R0/system/etc/kktls"; echo v9 > "$R0/system/etc/kktls/openssl.version"
+echo "ro.build.fingerprint=a/later/definition:4.4.2/KK/9:user/test-keys" >> "$R0/system/build.prop"
+installs "java-patched on a CM build with a second fingerprint line" "$R0" "$PJ"
+# a Dalvik-only ROM (no core-libart.jar): the patcher's zip has three jars and leaves core-libart alone
+mkroot "$R0"; rm "$R0/system/framework/core-libart.jar" "$R0/system/framework/core-libart.odex"; ORIG=$(snap "$R0" system)
+installs "openssl (Dalvik-only java-patched chain)" "$R0" "$O"
+mkpatched "$T/pj-dalvik.zip" "$FP1" "core conscrypt okhttp" "core conscrypt okhttp"
+check "java-patched, Dalvik-only: no core-libart.jar in the zip" sh -c "! unzip -l '$T/pj-dalvik.zip' | grep -q core-libart"
+installs "java-patched on a Dalvik-only ROM" "$R0" "$T/pj-dalvik.zip"
+check "java-patched, Dalvik-only: the three jars replaced, no core-libart.jar" sh -c "for j in core conscrypt okhttp; do cmp -s '$R0/system/framework/'\$j.jar '$T/fx/patched.jar' || exit 1; done; [ ! -e '$R0/system/framework/core-libart.jar' ]"
+check "java-patched, Dalvik-only: the java marker" [ "$(cat "$R0/system/etc/kktls/java.version")" = v9 ]
+installs "restore after java-patched on a Dalvik-only ROM" "$R0" "$R"
+check "restore after java-patched on a Dalvik-only ROM: /system identical to the original" [ "$ORIG" = "$(snap "$R0" system)" ]
+
+# --accept-oem copies (kktls-jarpatch.py write_oem_zip: the release zip, its zip.conf with oem_ack= appended): the
+# openssl and conscrypt kinds skip the OEM/CM gate only where the fingerprint gives oem_ack; any other system refuses
+mkoem() { # src out [fingerprint]
+  python3 -I - "$REL_DIR/tools/jarpatch" "$1" "$2" "${3:-generic/sdk/generic:4.4.2/KK/1:user/test-keys}" <<'EOF'
+import hashlib, importlib.util, os, sys, zipfile
+tool, src, out, fp = sys.argv[1:5]
+sys.path.insert(0, tool)
+import rawzip
+spec = importlib.util.spec_from_file_location("kktls_jarpatch", os.path.join(tool, "kktls-jarpatch.py"))
+jp = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(jp)
+with zipfile.ZipFile(src) as z:
+    text = z.read("kktls/zip.conf").decode()
+rawzip.rewrite(src, out, {"kktls/zip.conf": jp.oem_conf(text, hashlib.sha256(fp.encode()).hexdigest()).encode()})
+EOF
+}
+OO=$T/kktls-openssl-oem.zip DO=$T/kktls-conscrypt-oem.zip OOF=$T/kktls-openssl-oem-fp.zip DOF=$T/kktls-conscrypt-oem-fp.zip
+mkoem "$O" "$OO"; mkoem "$D" "$DO"
+mkoem "$O" "$OOF" generic/sdk/generic:4.4.2/KK/2:user/test-keys; mkoem "$D" "$DOF" generic/sdk/generic:4.4.2/KK/2:user/test-keys
+check "oem copy: the release zip.conf plus one oem_ack line" sh -c "[ \"\$(unzip -p '$OO' kktls/zip.conf)\" = \"\$(unzip -p '$O' kktls/zip.conf; echo oem_ack=$(printf %s generic/sdk/generic:4.4.2/KK/1:user/test-keys | sha256sum | cut -d' ' -f1))\" ]"
+mkroot "$R0" ro.cm.version=11-20140804-NIGHTLY-hammerhead; ORIG=$(snap "$R0" system)
+refused "openssl-oem made for another fingerprint on a CM build" "$R0" "$OOF"
+check "openssl-oem, other fingerprint: the refusal says so" grep -q 'oem_ack: this zip was made for another system' "$T/out"
+installs "openssl-oem on its CM build" "$R0" "$OO"
+check "openssl-oem: libssl replaced" cmp -s "$R0/system/lib/libssl.so" "$T/fx/ours.so"
+check "openssl-oem: the gate was skipped and says so" grep -q 'OEM/CM gate skipped' "$T/out"
+installs "java-patched over openssl-oem on a CM build" "$R0" "$PJ"
+refused "conscrypt without oem_ack on a CM build" "$R0" "$D"
+check "conscrypt without oem_ack: the AOSP gate refuses" grep -q 'not an AOSP-like build: build.prop sets ro.cm.version' "$T/out"
+refused "conscrypt-oem made for another fingerprint" "$R0" "$DOF"
+installs "conscrypt-oem on its CM build" "$R0" "$DO"
+check "conscrypt-oem: jni lib" [ -f "$R0/system/lib/libkktls_conscrypt_jni.so" ]
+installs "restore after the OEM chain" "$R0" "$R"
+check "restore after the OEM chain: /system identical to the original" [ "$ORIG" = "$(snap "$R0" system)" ]
+mkroot "$R0" ro.build.fingerprint=generic/sdk/generic:4.4.2/KK/3:user/test-keys
+refused "openssl-oem on an AOSP-like build of another fingerprint" "$R0" "$OO"
+mkroot "$R0"
+installs "openssl-oem on an AOSP-like build of its fingerprint" "$R0" "$OO"
 
 # cacerts and restore on Android 4.1-4.3: no SELinux in an AOSP 4.1/4.2 kernel (no label writes), labels on 4.3 and
 # on a 4.1/4.2 kernel that has SELinux
@@ -1036,12 +1185,12 @@ fi
 
 # ---- real release output --------------------------------------------------------------------------------------------
 if [ ${#REAL[@]} = 4 ]; then
-  jbargs=() nz=10 nj=0 nd=0
+  jbargs=() nz=11 nj=0 nd=0
   if [ ${#RJB[@]} != 0 ]; then
     # per JB base 2 openssl zips; a base with java lines also 2 java zips (ARM and x86), one with layer D 2 conscrypt zips
     nj=$(cat "${RJB[0]}"/4.[1-3]/armeabi-v7a/BUILD-INFO.txt | grep -c '^gate ') || true
     nd=$(cat "${RJB[0]}"/4.[1-3]/armeabi-v7a/BUILD-INFO.txt | grep -c '^conscrypt lib/libkktls_conscrypt_jni.so$') || true
-    jbargs=(--jb "${RJB[0]}"); nz=$((10 + 2 * $(ls -d "${RJB[0]}"/4.[1-3] | wc -l) + 2 * nj + 2 * nd))
+    jbargs=(--jb "${RJB[0]}"); nz=$((11 + 2 * $(ls -d "${RJB[0]}"/4.[1-3] | wc -l) + 2 * nj + 2 * nd))
   fi
   "$MK" --in "${REAL[0]}" --release t1 --cacerts "${REAL[1]}" --conscrypt-notice "${REAL[2]}" --out "$T/r1" "${jbargs[@]}" \
     > "$T/r1.log"
@@ -1066,7 +1215,7 @@ if [ ${#REAL[@]} = 4 ]; then
     sv=$(sed -n 's/^ro.build.version.release=//p' "$R0/system/build.prop")
     sa=$(sed -n 's/^ro.product.cpu.abi=//p' "$R0/system/build.prop")
     echo "  sdk system: release $sv, abi $sa, id $(sed -n 's/^ro.build.id=//p' "$R0/system/build.prop"),"\
-      "$(ls "$R0"/system/framework/*.odex "$R0"/system/app/*.odex "$R0"/system/priv-app/*.odex 2> /dev/null | wc -l) .odex"
+      "$(ls "$R0"/system/framework/*.odex "$R0"/system/app/*.odex "$R0"/system/priv-app/*.odex "$R0"/system/vendor/app/*.odex 2> /dev/null | wc -l) .odex"
     ORIG=$(snap "$R0" system); : > "$LOG"
     for z in kktls-openssl-4.4-$sa-t1 kktls-cacerts-t1 kktls-java-$sv-$sa-t1 kktls-conscrypt-$sa-t1; do
       KK_PATH=$T/chcon installs "sdk: $z" "$R0" "$T/r1/$z.zip"
