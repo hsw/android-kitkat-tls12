@@ -59,7 +59,8 @@ What it does (nothing on the device is changed):
      reference of the replacement classes must resolve on the patched boot class path, and every reference of the
      boot class path, the other framework jars and the app/priv-app dex that resolved before the patch must still
      resolve (a caller of a member the series removes refuses); every patched jar must be on that runtime's
-     BOOTCLASSPATH, and no other BOOTCLASSPATH jar may define a replaced, added or check class.
+     BOOTCLASSPATH, and no other BOOTCLASSPATH jar may define a replaced, added or check class or carry an entry
+     the set writes (java/security/security.properties: the first copy on BOOTCLASSPATH is the one loaded).
 
   6. the recovery zip (rawzip.py): each patched jar is the device jar with classes.dex and the set's entries swapped,
      every other entry copied byte for byte; the zip is the donor java zip with these jars in place of its own (a
@@ -692,7 +693,9 @@ class Patcher(object):
             manifest["jars"][j], staged[j], replaced_smali[j], changed[j] = self.patch_jar(
                 j, st, dev[j], dj[j], work, stage, bak, sma)
         checked = {j: {c for jj, c, _ in st.checks if jj == j} for j in jars}
-        manifest["linkcheck"] = self.link_check(staged, replaced_smali, changed, "core-libart" not in jars, checked)
+        written = {j: {p for jj, p, _, ours in st.entries if jj == j and ours is not None} for j in jars}
+        manifest["linkcheck"] = self.link_check(staged, replaced_smali, changed, "core-libart" not in jars, checked,
+                                                written)
         manifest["zip"], manifest["zip_sha256"] = self.write_zip(manifest, stage, donor, donor_conf)
         self.lines.append("zip %s sha256 %s" % (manifest["zip"], manifest["zip_sha256"]))
         if native is not None:
@@ -902,11 +905,11 @@ class Patcher(object):
         out.append("result " + result)
         rawzip.atomic_write(path, "\n".join(out) + "\n")
 
-    def link_check(self, staged, replaced, changed, dalvik_only, checked):
+    def link_check(self, staged, replaced, changed, dalvik_only, checked, written):
         s = self.system
         try:
             stats, misses = linkcheck.run(s.root, s.bootclasspath, staged, replaced, changed, dalvik_only, log,
-                                          checked)
+                                          checked, written)
         except linkcheck.LinkError as e:
             raise ToolError("link check: %s" % e)
         for rt, v in sorted(stats.items()):

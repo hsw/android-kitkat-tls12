@@ -467,3 +467,49 @@ class Fixture(unittest.TestCase):
         stats, misses = lc.run(root, ["/system/framework/core.jar", "/system/framework/conscrypt.jar"], self.staged,
                                {"conscrypt": {ADDR: p}}, {"conscrypt": {ADDR}}, False)
         self.assertFalse([m for m in misses if "also defined" in m[2]], misses)
+
+    def test_shadowed_resource(self):
+        # a resource the patch writes (security.properties of core.jar and core-libart.jar) that another boot jar
+        # carries too: the boot class loader returns the first copy on BOOTCLASSPATH, so an earlier copy hides the
+        # patched one and a later one is a second copy; both refuse, per runtime
+        props = "java/security/security.properties"
+        root = os.path.join(tempfile.mkdtemp(dir=self.base), "system")
+        os.makedirs(os.path.join(root, "framework"))
+        for n in ("core.jar", "core-libart.jar", "conscrypt.jar"):
+            shutil.copyfile(os.path.join(self.root, "framework", n), os.path.join(root, "framework", n))
+        with zipfile.ZipFile(os.path.join(root, "framework", "vendor.jar"), "w") as z:
+            z.write(os.path.join(self.base, "caller.dex"), "classes.dex")
+            z.writestr("java/security/", b"")
+            z.writestr(props, b"a=1\n")
+        core = os.path.join(root, "framework", "core.jar")
+        staged = {"core": core, "core-libart": core}
+        written = {"core": {props}, "core-libart": {props}}
+        for bcp, where, why in ((["vendor.jar", "core.jar", "conscrypt.jar"], "earlier",
+                                 "the runtime would load that copy, not the patched one"),
+                                (["core.jar", "conscrypt.jar", "vendor.jar"], "later",
+                                 "a second copy the series does not cover")):
+            stats, misses = lc.run(root, ["/system/framework/" + n for n in bcp], staged, {}, {}, False,
+                                   entries=written)
+            self.assertEqual(misses, [(j, props, "also in /system/framework/vendor.jar, %s on BOOTCLASSPATH (%s): %s"
+                                       % (where, rt, why)) for j, rt in (("core", "dalvik"), ("core-libart", "art"))])
+            stats, misses = lc.run(root, ["/system/framework/" + n for n in bcp], staged, {}, {}, True,
+                                   entries=written)
+            self.assertEqual([m[0] for m in misses], ["core"])
+        # off BOOTCLASSPATH the vendor copy is never loaded; core.jar and core-libart.jar (both written) are never on
+        # one runtime's BOOTCLASSPATH; an entry the patch does not write (resources.arsc in every jar) is not checked
+        bcp = ["/system/framework/core.jar", "/system/framework/conscrypt.jar"]
+        self.assertEqual(lc.run(root, bcp, staged, {}, {}, False, entries=written)[1], [])
+        self.assertEqual(lc.run(root, bcp + ["/system/framework/vendor.jar"], staged, {}, {}, False)[1], [])
+        # two patched jars writing the same entry: each sees the other's copy (the patched one, not the device's)
+        staged = dict(staged, conscrypt=os.path.join(root, "framework", "conscrypt.jar"))
+        stats, misses = lc.run(root, bcp, staged, {}, {}, True, entries={"core": {props}, "conscrypt": {props}})
+        self.assertEqual(misses, [
+            ("conscrypt", props, "also in /system/framework/core.jar, earlier on BOOTCLASSPATH (dalvik): the runtime "
+             "would load that copy, not the patched one"),
+            ("core", props, "also in /system/framework/conscrypt.jar, later on BOOTCLASSPATH (dalvik): a second copy "
+             "the series does not cover")])
+        bad = os.path.join(root, "framework", "bad.jar")
+        with open(bad, "wb") as f:
+            f.write(b"not a zip")
+        with self.assertRaises(lc.LinkError):
+            lc.jar_entries(bad)

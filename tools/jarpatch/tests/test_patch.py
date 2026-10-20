@@ -710,6 +710,22 @@ class LinkCheck(Fixture):
                            "earlier on BOOTCLASSPATH (dalvik): the runtime would load that copy, not the checked one"
                            % BIO)
 
+    def test_shadowed_entry(self):
+        # security.properties (the set writes it into core.jar and core-libart.jar: it selects the kktls default
+        # socket factory) carried by another BOOTCLASSPATH jar too: ext.jar before core.jar hides the patched copy,
+        # after it holds a second copy; both refuse, for each core jar on its own runtime
+        self.make_jar(os.path.join(self.sysdir, "framework", "ext.jar"), EXT, {PROPS: b"a=1\n"})
+        ext_first = ":".join("/system/framework/%s.jar" % j for j in ("ext", "core", "conscrypt", "okhttp"))
+        for bcp, where, why in ((ext_first, "earlier", "the runtime would load that copy, not the patched one"),
+                                (BCP, "later", "a second copy the series does not cover")):
+            if os.path.exists(self.out):
+                shutil.rmtree(self.out)
+            rc, out = self.patch(bcp=bcp)
+            self.assertRefused(rc, out, *("REFUSED %s %s: link check: also in /system/framework/ext.jar, %s on "
+                                          "BOOTCLASSPATH (%s): %s" % (j, PROPS, where, rt, why)
+                                          for j, rt in (("core", "dalvik"), ("core-libart", "art"))))
+            self.assertEqual(out.count("REFUSED"), 2, out)
+
     def test_jar_off_bootclasspath(self):
         # okhttp.jar is patched but BOOTCLASSPATH does not name it (a vendor that moved its classes elsewhere): the
         # fix would never load

@@ -18,8 +18,9 @@ dalvik (the device's BOOTCLASSPATH, with core.jar) and art (the same with core.j
             (4.4 system code is single-dex). References that did not resolve before the patch either (optional
             libraries, a vendor's dangling reference) are counted, not refused: the patch did not break them;
   placement every patched jar must be on the runtime's boot class path, and no other boot jar may define a
-            replacement class or a check class (the set's classes the donor's libjavacrypto.so uses): the first
-            definition on BOOTCLASSPATH is the one the runtime loads.
+            replacement class or a check class (the set's classes the donor's libjavacrypto.so uses) or carry a
+            resource the patch writes (java/security/security.properties): the first definition on BOOTCLASSPATH
+            is the one the runtime loads, for classes and resources alike.
 
 Resolution follows the class, its superclasses and all their interfaces (transitively), for fields and methods
 alike; an array type resolves members on java.lang.Object. Members match by name and descriptor; static/instance kind
@@ -53,12 +54,13 @@ HEADER_SIZE = 0x70
 ID_TABLES = (("string", 0x38), ("type", 0x40), ("proto", 0x48), ("field", 0x50), ("method", 0x58), ("class", 0x60))
 # what a reference names; FIELD and METHOD are also the indexes of the member sets in a class tuple of Dex.classes
 TYPE, FIELD, METHOD = 1, 2, 3
-OUT, IN, DUP, OFF = "out", "in", "dup", "off"
+OUT, IN, DUP, RES, OFF = "out", "in", "dup", "res", "off"
 # one failed reference: where and what are the refusal's columns, target the unresolved reference of an outbound miss
 #   OUT: where = jar name, what = replacement class, target = its reference
 #   IN:  where = /system path of the dex, what = its reference, target = None
 #   DUP: where = jar name, what = replacement or check class, target = "earlier"/"later" + the other BOOTCLASSPATH
 #        jar's path
+#   RES: where = jar name, what = resource path the patch writes, target = as for DUP
 #   OFF: where = jar name, what = "-", target = "" (a patched jar this runtime's BOOTCLASSPATH does not name)
 Miss = collections.namedtuple("Miss", "where what target direction")
 
@@ -371,6 +373,15 @@ def duplicates(names, dexes, replaced):
     return res
 
 
+def jar_entries(path):
+    """{name} of a jar's file entries (directories left out)."""
+    try:
+        with zipfile.ZipFile(path) as z:
+            return {n for n in z.namelist() if not n.endswith("/")}
+    except (OSError, zipfile.BadZipFile, zipfile.LargeZipFile, RuntimeError, NotImplementedError) as e:
+        raise LinkError("%s: %s" % (path, e))
+
+
 def ref_text(kind, owner, member=None):
     return owner if kind == TYPE else "%s->%s" % (owner, member)
 
@@ -424,7 +435,7 @@ def runtimes(bootclasspath, dalvik_only):
     return res
 
 
-def run(root, bootclasspath, staged, replaced, changed, dalvik_only, log=None, checked=None):
+def run(root, bootclasspath, staged, replaced, changed, dalvik_only, log=None, checked=None, entries=None):
     """Link check of a staged patch.
 
     root          the /system copy (framework/, app/, priv-app/)
@@ -434,14 +445,18 @@ def run(root, bootclasspath, staged, replaced, changed, dalvik_only, log=None, c
     changed       {jar: {descriptor}} every class of the set (changed, added or removed)
     checked       {jar: {descriptor}} the set's check classes (the device's class must equal stock: the donor's
                   libjavacrypto.so uses them)
+    entries       {jar: {path}} the resources the patch writes (replaced or added non-class entries, such as
+                  java/security/security.properties; removed ones left out, like removed classes)
     Every staged jar must be on each runtime's boot class path (core-libart.jar stands for core.jar on art), and no
-    other boot jar may define a replaced or check class.
+    other boot jar may define a replaced or check class or carry a written resource (the boot class loader returns
+    the first copy on BOOTCLASSPATH).
     Returns (stats {runtime: {...}}, misses [(where, what, why)]); misses empty = the check passed.
     """
     log = log or (lambda m: None)
     checked = checked or {}
+    entries = entries or {}
     fw = os.path.join(root, "framework")
-    cache = {}
+    cache, ecache = {}, {}
 
     def dex_of(path):
         if path not in cache:
@@ -485,6 +500,18 @@ def run(root, bootclasspath, staged, replaced, changed, dalvik_only, log=None, c
         own = {j: set(replaced.get(j, ())) | set(checked.get(j, ())) for j in jars}
         for j, c, where, other in duplicates(names, adex, own):
             misses.setdefault(Miss(j, c, "%s /system/framework/%s" % (where, other), DUP), []).append(rt)
+        # a written resource that another boot jar carries too (a patched jar keeps the device jar's other entries)
+        for n in names:
+            if n not in ecache:
+                ecache[n] = jar_entries(device_jar(n))
+        wrote = [set(entries.get(jar[n], ())) if jar[n] in jars else set() for n in names]
+        held = [ecache[n] | w for n, w in zip(names, wrote)]
+        for i, n in enumerate(names):
+            for p in sorted(wrote[i]):
+                for k, o in enumerate(names):
+                    if k != i and p in held[k]:
+                        misses.setdefault(Miss(jar[n], p, "%s /system/framework/%s" % (
+                            "earlier" if k < i else "later", o), RES), []).append(rt)
         # outbound: the replacement classes
         for j in sorted(jars):
             for c, p in sorted(replaced.get(j, {}).items()):
@@ -520,6 +547,11 @@ def run(root, bootclasspath, staged, replaced, changed, dalvik_only, log=None, c
         if m.direction == OUT:
             res.append((m.where, m.what, "references %s, which does not resolve on the patched boot class path (%s)"
                         % (m.target, ", ".join(rts))))
+        elif m.direction == RES:
+            where, other = m.target.split(" ", 1)
+            res.append((m.where, m.what, "also in %s, %s on BOOTCLASSPATH (%s): %s" % (
+                other, where, ", ".join(rts), "the runtime would load that copy, not the patched one"
+                if where == "earlier" else "a second copy the series does not cover")))
         elif m.direction == DUP:
             where, other = m.target.split(" ", 1)
             check = m.what in checked.get(m.where, ()) and m.what not in replaced.get(m.where, {})
