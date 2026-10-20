@@ -355,6 +355,13 @@ class Fixture(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(lc.main([]), 2)
 
+        class Closed(io.StringIO):
+            def write(self, s):
+                raise BrokenPipeError(32, "Broken pipe")
+        with contextlib.redirect_stdout(Closed()), contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(lc.main(["--dex", os.path.join(self.root, "framework", "core.jar")]), 2)
+        self.assertEqual(err.getvalue(), "linkcheck: error: [Errno 32] Broken pipe\n")
+
     def run_check(self, replaced_text=None, dalvik_only=False):
         rep = {}
         if replaced_text is not None:
@@ -401,6 +408,21 @@ class Fixture(unittest.TestCase):
         self.assertEqual(misses, [])
         self.assertEqual(stats["dalvik"]["regressions"], 0)
 
+    def test_off_bootclasspath(self):
+        # a patched jar that the runtime's BOOTCLASSPATH does not name would never be loaded: refused per runtime;
+        # core.jar is dalvik's, core-libart.jar art's (each the other runtime's core jar, not refused there)
+        why = "/system/framework/conscrypt.jar is patched, but BOOTCLASSPATH does not name it (%s): the runtime " \
+              "would not load the patched classes"
+        stats, misses = lc.run(self.root, ["/system/framework/core.jar"], self.staged, {}, {"conscrypt": {ADDR}},
+                               False)
+        self.assertEqual([m for m in misses if m[0] == "conscrypt"], [("conscrypt", "-", why % "dalvik, art")])
+        stats, misses = lc.run(self.root, ["/system/framework/core.jar"], self.staged, {}, {"conscrypt": {ADDR}},
+                               True)
+        self.assertEqual([m for m in misses if m[0] == "conscrypt"], [("conscrypt", "-", why % "dalvik")])
+        core = os.path.join(self.root, "framework", "core.jar")
+        stats, misses = lc.run(self.root, self.bcp, {"core": core, "core-libart": core}, {}, {}, False)
+        self.assertEqual(misses, [])
+
     def test_outbound(self):
         # the replacement class calls a member the boot class path lacks: refused with the class named
         stats, misses = self.run_check(ADDR_BAD)
@@ -431,6 +453,16 @@ class Fixture(unittest.TestCase):
             self.assertIn(("conscrypt", ADDR, "also defined in /system/framework/vendor.jar, %s on BOOTCLASSPATH "
                            "(dalvik, art): %s" % (where, why)), misses)
             self.assertEqual([m for m in misses if m[0] == "conscrypt"], [m for m in misses if "also defined" in m[2]])
+        # a check class (the native library's, not replaced) is covered the same way, in its own words
+        for bcp, where, why in ((["core.jar", "vendor.jar", "conscrypt.jar"], "earlier",
+                                 "the runtime would load that copy, not the checked one"),
+                                (["core.jar", "conscrypt.jar", "vendor.jar"], "later",
+                                 "a second copy the check does not cover")):
+            stats, misses = lc.run(root, ["/system/framework/" + n for n in bcp], self.staged, {},
+                                   {"conscrypt": {ADDR}}, False, checked={"conscrypt": {ADDR}})
+            self.assertEqual([m for m in misses if m[0] == "conscrypt"], [
+                ("conscrypt", ADDR, "also defined in /system/framework/vendor.jar, %s on BOOTCLASSPATH (dalvik, art): "
+                 "%s" % (where, why))])
         # the vendor jar off BOOTCLASSPATH (an ordinary framework jar) shadows nothing
         stats, misses = lc.run(root, ["/system/framework/core.jar", "/system/framework/conscrypt.jar"], self.staged,
                                {"conscrypt": {ADDR: p}}, {"conscrypt": {ADDR}}, False)

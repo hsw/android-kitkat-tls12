@@ -401,6 +401,12 @@ class Tree(unittest.TestCase):
         self.assertEqual(self.run_cli("--bogus").returncode, 2)
         r = self.run_cli("--dir", os.path.join(self.root, "missing"))
         self.assertEqual((r.returncode, r.stderr.split(": ")[-1]), (2, "not a directory\n"))
+        # a --dump that cannot be written: tool error (exit 2), no traceback
+        self.write("file", "x")
+        r = self.run_cli("--dir", os.path.join(self.root, "smali"), "--dump", os.path.join(self.root, "file", "d"))
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertTrue(r.stderr.startswith("normalize: error: "), r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
 
     def test_jar_without_classes_dex(self):
         jar = os.path.join(self.root, "odexed.jar")

@@ -58,7 +58,8 @@ What it does (nothing on the device is changed):
   5. link check (linkcheck.py), per runtime (dalvik: BOOTCLASSPATH with core.jar; art: with core-libart.jar): every
      reference of the replacement classes must resolve on the patched boot class path, and every reference of the
      boot class path, the other framework jars and the app/priv-app dex that resolved before the patch must still
-     resolve (a caller of a member the series removes refuses).
+     resolve (a caller of a member the series removes refuses); every patched jar must be on that runtime's
+     BOOTCLASSPATH, and no other BOOTCLASSPATH jar may define a replaced, added or check class.
 
   6. the recovery zip (rawzip.py): each patched jar is the device jar with classes.dex and the set's entries swapped,
      every other entry copied byte for byte; the zip is the donor java zip with these jars in place of its own (a
@@ -690,7 +691,8 @@ class Patcher(object):
         for j in jars:
             manifest["jars"][j], staged[j], replaced_smali[j], changed[j] = self.patch_jar(
                 j, st, dev[j], dj[j], work, stage, bak, sma)
-        manifest["linkcheck"] = self.link_check(staged, replaced_smali, changed, "core-libart" not in jars)
+        checked = {j: {c for jj, c, _ in st.checks if jj == j} for j in jars}
+        manifest["linkcheck"] = self.link_check(staged, replaced_smali, changed, "core-libart" not in jars, checked)
         manifest["zip"], manifest["zip_sha256"] = self.write_zip(manifest, stage, donor, donor_conf)
         self.lines.append("zip %s sha256 %s" % (manifest["zip"], manifest["zip_sha256"]))
         if native is not None:
@@ -900,10 +902,11 @@ class Patcher(object):
         out.append("result " + result)
         rawzip.atomic_write(path, "\n".join(out) + "\n")
 
-    def link_check(self, staged, replaced, changed, dalvik_only):
+    def link_check(self, staged, replaced, changed, dalvik_only, checked):
         s = self.system
         try:
-            stats, misses = linkcheck.run(s.root, s.bootclasspath, staged, replaced, changed, dalvik_only, log)
+            stats, misses = linkcheck.run(s.root, s.bootclasspath, staged, replaced, changed, dalvik_only, log,
+                                          checked)
         except linkcheck.LinkError as e:
             raise ToolError("link check: %s" % e)
         for rt, v in sorted(stats.items()):
@@ -929,6 +932,10 @@ def write_report(patcher, path, result, reasons):
 
 
 def main(argv):
+    return rawzip.cli("kktls-jarpatch", _main, argv)
+
+
+def _main(argv):
     usage = ("usage: kktls-jarpatch.py (--adb SERIAL | --system DIR --bootclasspath LIST --build-prop FILE) "
              "--release-dir DIR --out DIR [--accept-oem] [--set FILE] [--report FILE]")
     opt = {}
@@ -953,11 +960,11 @@ def main(argv):
         print(usage, file=sys.stderr)
         return 2
     out = opt["--out"]
-    if os.path.exists(out) and (not os.path.isdir(out) or os.listdir(out)):
-        print("kktls-jarpatch: --out %s exists and is not an empty directory" % out, file=sys.stderr)
-        return 2
     patcher = None
     try:
+        if os.path.exists(out) and (not os.path.isdir(out) or os.listdir(out)):
+            print("kktls-jarpatch: --out %s exists and is not an empty directory" % out, file=sys.stderr)
+            return 2
         os.makedirs(out, exist_ok=True)
         if "--adb" in opt:
             system = from_adb(opt["--adb"], os.path.join(out, "device"))

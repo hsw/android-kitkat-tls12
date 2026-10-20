@@ -224,7 +224,24 @@ def atomic_write(path, data):
     os.replace(tmp, path)
 
 
+def cli(prog, main, argv):
+    """main(argv) of a tool of this directory: an OSError (an unreadable input, an unwritable output, a closed pipe)
+    or an exception nobody foresaw that escaped main is a tool error, exit 2 with one line on stderr, never a
+    traceback with exit 1 (which the tools reserve for "refused", "drift" or "unreadable")."""
+    try:
+        return main(argv)
+    except OSError as e:
+        print("%s: error: %s" % (prog, e), file=sys.stderr)
+    except Exception as e:
+        print("%s: unexpected error: %s: %s" % (prog, type(e).__name__, e), file=sys.stderr)
+    return 2
+
+
 def main(argv):
+    return cli("rawzip", _main, argv)
+
+
+def _main(argv):
     if len(argv) < 2 or argv[0] != "--list":
         print(__doc__.split("\n\n")[1], file=sys.stderr)
         return 2

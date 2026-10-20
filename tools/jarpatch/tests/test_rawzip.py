@@ -5,6 +5,7 @@ encrypted, multi-disk, duplicate names, inconsistent headers, overlapping entrie
 
     python3 -I -m unittest discover tools/jarpatch/tests
 """
+import contextlib
 import io
 import os
 import struct
@@ -137,6 +138,23 @@ class RawZip(unittest.TestCase):
         self.refused(data[:e + 16] + struct.pack("<I", 0xffffffff) + data[e + 20:], "zip64")
         loc = struct.pack("<IIQI", rawzip.Z64_LOC_SIG, 0, 0, 1)
         self.refused(data[:e] + loc + data[e:], "zip64")
+
+    def test_cli(self):
+        # an OSError or an unforeseen exception escaping a tool's main is exit 2 with one stderr line, never a
+        # traceback with exit 1; main's own exit codes pass through
+        def boom(exc):
+            def main(argv):
+                raise exc
+            return main
+        for exc, line in ((PermissionError(13, "Permission denied"), "t: error: [Errno 13] Permission denied\n"),
+                          (BrokenPipeError(32, "Broken pipe"), "t: error: [Errno 32] Broken pipe\n"),
+                          (ValueError("bad"), "t: unexpected error: ValueError: bad\n")):
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(rawzip.cli("t", boom(exc), []), 2)
+            self.assertEqual(err.getvalue(), line)
+        self.assertEqual(rawzip.cli("t", lambda argv: len(argv), ["a"]), 1)
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(rawzip.main(["--list", self.path("missing.zip")]), 2)
 
     def test_bad_input(self):
         data, _ = build([("a", b"a", 8, "sig")])

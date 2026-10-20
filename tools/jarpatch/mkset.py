@@ -221,6 +221,10 @@ def collect(root, baksmali_jar):
 
 
 def main(argv):
+    return rawzip.cli("mkset", _main, argv)
+
+
+def _main(argv):
     usage = "usage: mkset.py STOCK_DIR OURS_DIR --tag AOSP_TAG --jni FILE [--note TEXT]... [--out FILE]"
     pos, opt, notes = [], {}, []
     while argv:
@@ -255,13 +259,13 @@ def main(argv):
                 find_jar(root, j)
         bak = normalize.smali_jars()[0]
         text = make_set(collect(pos[0], bak), collect(pos[1], bak), jni, opt["--tag"], notes)
+        if "--out" in opt:
+            rawzip.atomic_write(opt["--out"], text)
+        else:
+            sys.stdout.write(text)
     except (SetError, normalize.NormalizeError, OSError, zipfile.BadZipFile) as e:
         print("mkset: " + str(e), file=sys.stderr)
         return 2
-    if "--out" in opt:
-        rawzip.atomic_write(opt["--out"], text)
-    else:
-        sys.stdout.write(text)
     return 0
 
 

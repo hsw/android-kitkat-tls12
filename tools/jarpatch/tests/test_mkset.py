@@ -276,6 +276,14 @@ class EndToEnd(unittest.TestCase):
                             os.path.join(self.root, "ours"), "--tag", "android-4.4.2_r2", "--jni", jni, "--out", out],
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
         self.assertEqual(r.returncode, 0, r.stdout)
+        # an --out that cannot be written: tool error (exit 2, no traceback), never exit 1
+        bad = os.path.join(self.root, "no-such-dir", "set.txt")
+        r2 = subprocess.run([sys.executable, "-I", os.path.join(TOOL, "mkset.py"), os.path.join(self.root, "stock"),
+                             os.path.join(self.root, "ours"), "--tag", "android-4.4.2_r2", "--jni", jni, "--out", bad],
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+        self.assertEqual(r2.returncode, 2, r2.stdout)
+        self.assertIn("mkset: [Errno 2] No such file or directory", r2.stdout)
+        self.assertNotIn("Traceback", r2.stdout)
         s = mkset.read_set(out)
         shape = sorted((j, c, st is not None, o is not None) for j, c, st, o in s.classes)
         self.assertEqual(shape, sorted([

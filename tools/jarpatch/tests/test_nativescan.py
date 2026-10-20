@@ -128,6 +128,16 @@ class Scan(unittest.TestCase):
                             lines[0])
             self.assertIn("unreadable vendor/secret/: not listable: Permission denied", lines)
 
+    def test_cli_tool_error(self):
+        # an unreadable --aosp list (or any OSError) is a tool error, exit 2 with no traceback, never exit 1
+        with tempfile.TemporaryDirectory() as t:
+            write(t, "lib/libssl.so", elf(["libcrypto.so"]))
+            with redirect_stdout(io.StringIO()) as out, redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(nativescan.main(["--scan", t, "--aosp", os.path.join(t, "missing.txt")]), 2)
+            self.assertEqual(out.getvalue(), "")
+            self.assertTrue(err.getvalue().startswith("nativescan: error: [Errno 2] No such file or directory"),
+                            err.getvalue())
+
     def test_aosp_list(self):
         names = nativescan.read_list()
         self.assertIn("lib/libssl.so", names)

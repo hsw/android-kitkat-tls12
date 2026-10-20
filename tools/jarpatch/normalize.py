@@ -43,6 +43,9 @@ import sys
 import tempfile
 import zipfile
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # `python3 -I` leaves the script dir out
+import rawzip  # noqa: E402
+
 NORMALIZER_VERSION = 2       # 2: trailing comments dropped, float/double values as bits (digests JVM-independent)
 MODEL = "H"
 SMALI_VERSION = "2.5.2"     # must equal fetch-smali.sh's SMALI_VERSION (tests check it)
@@ -277,6 +280,10 @@ def jar_digests(jar, baksmali_jar=None, dump=None):
 
 
 def main(argv):
+    return rawzip.cli("normalize", _main, argv)
+
+
+def _main(argv):
     usage = "usage: normalize.py (--jar JAR | --dir SMALI_DIR) [--dump DIR]"
     mode = src = dump = None
     while argv:

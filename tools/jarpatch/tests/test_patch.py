@@ -307,7 +307,7 @@ class Fixture(unittest.TestCase):
         self.make_jar(os.path.join(self.sysdir, "framework", j + ".jar"), dc if classes is None else classes,
                       de if entries is None else entries, dex)
 
-    def patch(self, *extra, adb=False, release=None):
+    def patch(self, *extra, adb=False, release=None, bcp=BCP):
         if adb:
             bindir = os.path.join(self.t.name, "bin")
             os.makedirs(bindir, exist_ok=True)
@@ -320,7 +320,7 @@ class Fixture(unittest.TestCase):
             args = ["--adb", "emulator-5554"]
         else:
             env = None
-            args = ["--system", self.dev, "--bootclasspath", BCP, "--build-prop",
+            args = ["--system", self.dev, "--bootclasspath", bcp, "--build-prop",
                     os.path.join(self.sysdir, "build.prop")]
         args += ["--release-dir", release or self.rel, "--out", self.out, "--set", self.set, "--report", self.report]
         r = subprocess.run([sys.executable, "-I", SCRIPT] + args + list(extra), stdout=subprocess.PIPE,
@@ -699,6 +699,24 @@ class LinkCheck(Fixture):
         self.assertRefused(rc, out, "REFUSED okhttp %s: link check: also defined in /system/framework/ext.jar, "
                            "later on BOOTCLASSPATH (dalvik, art): a second copy the series does not cover" % OKP)
 
+    def test_shadowed_check_class(self):
+        # a check class (libjavacrypto.so uses OpenSSLBIOInputStream) that core.jar, before conscrypt.jar, defines
+        # too: the runtime loads that copy, not the one the reference check found equal to stock
+        bio = [c for c in device_jars()["conscrypt"][0] if c[0] == BIO][0]
+        cls, ent = device_jars()["core"]
+        self.device_jar("core", cls + [bio], ent)
+        rc, out = self.patch()
+        self.assertRefused(rc, out, "REFUSED conscrypt %s: link check: also defined in /system/framework/core.jar, "
+                           "earlier on BOOTCLASSPATH (dalvik): the runtime would load that copy, not the checked one"
+                           % BIO)
+
+    def test_jar_off_bootclasspath(self):
+        # okhttp.jar is patched but BOOTCLASSPATH does not name it (a vendor that moved its classes elsewhere): the
+        # fix would never load
+        rc, out = self.patch(bcp=BCP.replace(":/system/framework/okhttp.jar", ""))
+        self.assertRefused(rc, out, "REFUSED okhttp -: link check: /system/framework/okhttp.jar is patched, but "
+                           "BOOTCLASSPATH does not name it (dalvik, art): the runtime would not load the patched classes")
+
     def test_caller_kept_class(self):
         # a caller of a replaced class's kept member links
         self.make_jar(os.path.join(self.sysdir, "app", "Caller.apk"), [(CALLER, 1, "0x1", DHV + "->value()I")], {})
@@ -707,6 +725,19 @@ class LinkCheck(Fixture):
 
 
 class ToolErrors(Fixture):
+    @unittest.skipIf(os.geteuid() == 0, "root lists any directory")
+    def test_out_not_listable(self):
+        # an --out directory that cannot be listed is a tool error (exit 2, no traceback), never "refused"
+        os.makedirs(self.out)
+        os.chmod(self.out, 0)
+        try:
+            rc, out = self.patch()
+        finally:
+            os.chmod(self.out, 0o755)
+        self.assertEqual(rc, 2, out)
+        self.assertIn("kktls-jarpatch: error: [Errno 13] Permission denied", out)
+        self.assertNotIn("Traceback", out)
+
     def test_report_not_writable(self):
         # a --report that cannot be written is a tool error (exit 2, no traceback), never "refused" (exit 1): after a
         # staged run (the zips are there) and after a refusal alike

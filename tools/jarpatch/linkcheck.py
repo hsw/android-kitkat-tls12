@@ -16,7 +16,10 @@ dalvik (the device's BOOTCLASSPATH, with core.jar) and art (the same with core.j
             device's own boot class path must still resolve against the patched one. A jar or apk outside the boot
             class path also sees its own classes (after the boot class path, which wins); only classes.dex is read
             (4.4 system code is single-dex). References that did not resolve before the patch either (optional
-            libraries, a vendor's dangling reference) are counted, not refused: the patch did not break them.
+            libraries, a vendor's dangling reference) are counted, not refused: the patch did not break them;
+  placement every patched jar must be on the runtime's boot class path, and no other boot jar may define a
+            replacement class or a check class (the set's classes the donor's libjavacrypto.so uses): the first
+            definition on BOOTCLASSPATH is the one the runtime loads.
 
 Resolution follows the class, its superclasses and all their interfaces (transitively), for fields and methods
 alike; an array type resolves members on java.lang.Object. Members match by name and descriptor; static/instance kind
@@ -37,6 +40,7 @@ import zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # `python3 -I` leaves the script dir out
 import normalize  # noqa: E402
+import rawzip  # noqa: E402
 
 NO_INDEX = 0xffffffff
 OBJECT = "Ljava/lang/Object;"
@@ -49,11 +53,13 @@ HEADER_SIZE = 0x70
 ID_TABLES = (("string", 0x38), ("type", 0x40), ("proto", 0x48), ("field", 0x50), ("method", 0x58), ("class", 0x60))
 # what a reference names; FIELD and METHOD are also the indexes of the member sets in a class tuple of Dex.classes
 TYPE, FIELD, METHOD = 1, 2, 3
-OUT, IN, DUP = "out", "in", "dup"
+OUT, IN, DUP, OFF = "out", "in", "dup", "off"
 # one failed reference: where and what are the refusal's columns, target the unresolved reference of an outbound miss
 #   OUT: where = jar name, what = replacement class, target = its reference
 #   IN:  where = /system path of the dex, what = its reference, target = None
-#   DUP: where = jar name, what = replacement class, target = "earlier"/"later" + the other BOOTCLASSPATH jar's path
+#   DUP: where = jar name, what = replacement or check class, target = "earlier"/"later" + the other BOOTCLASSPATH
+#        jar's path
+#   OFF: where = jar name, what = "-", target = "" (a patched jar this runtime's BOOTCLASSPATH does not name)
 Miss = collections.namedtuple("Miss", "where what target direction")
 
 
@@ -347,10 +353,10 @@ def boot_classes(dexes):
 
 
 def duplicates(names, dexes, replaced):
-    """[(jar, class, "earlier"|"later", other jar name)] for each replacement class (replaced: {jar without .jar:
-    {descriptor}}) that another jar of the boot class path (names, in order, with their dexes) defines too: the runtime
-    loads the first definition on BOOTCLASSPATH, so an earlier copy shadows the patched one, and a later copy is a
-    vendor's second implementation the series does not cover."""
+    """[(jar, class, "earlier"|"later", other jar name)] for each replacement or check class (replaced: {jar without
+    .jar: {descriptor}}) that another jar of the boot class path (names, in order, with their dexes) defines too: the
+    runtime loads the first definition on BOOTCLASSPATH, so an earlier copy shadows the patched (or checked) one, and
+    a later copy is a vendor's second implementation the series (or the check) does not cover."""
     defs = {}
     for i, (n, dx) in enumerate(zip(names, dexes)):
         for d in dx.classes:
@@ -418,7 +424,7 @@ def runtimes(bootclasspath, dalvik_only):
     return res
 
 
-def run(root, bootclasspath, staged, replaced, changed, dalvik_only, log=None):
+def run(root, bootclasspath, staged, replaced, changed, dalvik_only, log=None, checked=None):
     """Link check of a staged patch.
 
     root          the /system copy (framework/, app/, priv-app/)
@@ -426,9 +432,14 @@ def run(root, bootclasspath, staged, replaced, changed, dalvik_only, log=None):
     staged        {jar name without .jar: patched classes.dex path}
     replaced      {jar: {descriptor: smali path}} the replacement classes (added or changed by the series)
     changed       {jar: {descriptor}} every class of the set (changed, added or removed)
+    checked       {jar: {descriptor}} the set's check classes (the device's class must equal stock: the donor's
+                  libjavacrypto.so uses them)
+    Every staged jar must be on each runtime's boot class path (core-libart.jar stands for core.jar on art), and no
+    other boot jar may define a replaced or check class.
     Returns (stats {runtime: {...}}, misses [(where, what, why)]); misses empty = the check passed.
     """
     log = log or (lambda m: None)
+    checked = checked or {}
     fw = os.path.join(root, "framework")
     cache = {}
 
@@ -455,6 +466,9 @@ def run(root, bootclasspath, staged, replaced, changed, dalvik_only, log=None):
               "unresolved_before": 0, "regressions": 0, "outbound_classes": 0, "outbound_refs": 0, "outbound_misses": 0}
         jar = {n: n[:-len(".jar")] for n in names}
         jars = {jar[n] for n in names if jar[n] in staged}
+        # a patched jar this runtime does not load: its fix would never run (the other runtime's core jar aside)
+        for j in sorted(set(staged) - jars - {"core-libart" if rt == "dalvik" else "core"}):
+            misses.setdefault(Miss(j, "-", "", OFF), []).append(rt)
         ch = set()
         for j in jars:
             ch |= set(changed.get(j, ()))
@@ -467,8 +481,9 @@ def run(root, bootclasspath, staged, replaced, changed, dalvik_only, log=None):
         bmemo, amemo = {}, {}
         before, after = World(bboot, None, ch, bmemo), World(aboot, None, ch, amemo)
         log("link check %s: %d boot jars, %d classes" % (rt, len(names), len(aboot)))
-        # a replacement class defined by another boot jar too (the patched dex for the staged jars)
-        for j, c, where, other in duplicates(names, adex, {j: replaced.get(j, {}) for j in jars}):
+        # a replacement or check class defined by another boot jar too (the patched dex for the staged jars)
+        own = {j: set(replaced.get(j, ())) | set(checked.get(j, ())) for j in jars}
+        for j, c, where, other in duplicates(names, adex, own):
             misses.setdefault(Miss(j, c, "%s /system/framework/%s" % (where, other), DUP), []).append(rt)
         # outbound: the replacement classes
         for j in sorted(jars):
@@ -507,15 +522,26 @@ def run(root, bootclasspath, staged, replaced, changed, dalvik_only, log=None):
                         % (m.target, ", ".join(rts))))
         elif m.direction == DUP:
             where, other = m.target.split(" ", 1)
+            check = m.what in checked.get(m.where, ()) and m.what not in replaced.get(m.where, {})
             res.append((m.where, m.what, "also defined in %s, %s on BOOTCLASSPATH (%s): %s" % (
-                other, where, ", ".join(rts), "the runtime would load that copy, not the patched one"
-                if where == "earlier" else "a second copy the series does not cover")))
+                other, where, ", ".join(rts),
+                ("the runtime would load that copy, not the checked one" if check else
+                 "the runtime would load that copy, not the patched one") if where == "earlier" else
+                ("a second copy the check does not cover" if check else
+                 "a second copy the series does not cover"))))
+        elif m.direction == OFF:
+            res.append((m.where, m.what, "/system/framework/%s.jar is patched, but BOOTCLASSPATH does not name it "
+                        "(%s): the runtime would not load the patched classes" % (m.where, ", ".join(rts))))
         else:
             res.append((m.where, m.what, "resolved before the patch, not after (%s)" % ", ".join(rts)))
     return stats, res
 
 
 def main(argv):
+    return rawzip.cli("linkcheck", _main, argv)
+
+
+def _main(argv):
     if len(argv) < 2 or argv[0] != "--dex":
         print("usage: linkcheck.py --dex FILE...", file=sys.stderr)
         return 2

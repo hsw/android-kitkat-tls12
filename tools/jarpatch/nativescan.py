@@ -13,7 +13,8 @@ headers, so section-stripped vendor blobs are read too) names libssl.so or libcr
 that are not ELF, ELF64 or big-endian files, and ELF32 files without PT_DYNAMIC (static) are no consumers; an ELF32
 file that cannot be read to its end (truncated, offsets outside the file, a strtab outside every PT_LOAD) is listed as
 unreadable, and so is a directory that cannot be listed (as `<dir>/: not listable: <why>`, not counted as a file).
-Names are paths relative to /system.
+Names are paths relative to /system. Exit 0 ok, 1 --list met an unreadable entry (no list), 2 usage or tool error (an
+unreadable --aosp list, an unwritable output).
 
 A name is "aosp" when the AOSP 4.4 list (aosp44-ssl-consumers.txt) has it, else "extra": code the vendor built, maybe
 against its own OpenSSL headers. The test is by name only: a vendor may also have rebuilt a file that keeps an AOSP
@@ -23,6 +24,9 @@ import os
 import struct
 import sys
 import zipfile
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # `python3 -I` leaves the script dir out
+import rawzip  # noqa: E402
 
 SSL_LIBS = ("libcrypto.so", "libssl.so")
 TREES = ("lib", "bin", "xbin", "vendor", "app", "priv-app")
@@ -194,6 +198,10 @@ def report(res, aosp):
 
 
 def main(argv):
+    return rawzip.cli("nativescan", _main, argv)
+
+
+def _main(argv):
     usage = "usage: nativescan.py --list DIR... | --scan DIR [--aosp FILE]"
     if len(argv) >= 2 and argv[0] == "--list":
         names = set()

@@ -61,9 +61,13 @@ are outside the set (the patcher would keep the old code), the same reason the r
 4. Link check per runtime (Dalvik with `core.jar`, ART with `core-libart.jar`, `linkcheck.py`): every reference of the
    replaced classes resolves on the patched boot class path, and no reference of the boot class path, the other
    framework jars or the apps that resolved before the patch breaks (a caller of a member the series removes refuses).
-   Constructors resolve in the named class only (they are not inherited). A replaced or added class that another
-   `BOOTCLASSPATH` jar defines too refuses: an earlier copy is the one the runtime loads, a later one is a second
-   implementation the series does not cover.
+   Constructors resolve in the named class only (they are not inherited). A replaced, added or check class (`check`
+   lines: the classes the donor's `libjavacrypto.so` uses) that another `BOOTCLASSPATH` jar defines too refuses: an
+   earlier copy is the one the runtime loads, a later one is a second implementation the series or the check does not
+   cover (never loaded today, refused all the same). Every patched jar must be on each runtime's `BOOTCLASSPATH`
+   (`core-libart.jar` stands for `core.jar` on ART): a jar the runtime does not load would not carry the fix, so a
+   system that loads its TLS classes from other jars refuses. Stock 4.4 names `core.jar`, `conscrypt.jar` and
+   `okhttp.jar`.
 5. The zip (`rawzip.py`): each patched jar is the device jar with `classes.dex` and `security.properties` swapped,
    every other entry copied byte for byte. Its `zip.conf` (`kind=java-patched`) carries the sha256 of every device
    jar it was made from and of `ro.build.fingerprint`: the installer installs it only on that system (and only over

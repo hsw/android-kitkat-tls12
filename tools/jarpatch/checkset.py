@@ -34,6 +34,7 @@ import zipfile
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # `python3 -I` leaves the script dir out
 import mkset  # noqa: E402
 import normalize  # noqa: E402
+import rawzip  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -86,6 +87,10 @@ def compare(st, jars):
 
 
 def main(argv):
+    return rawzip.cli("checkset", _main, argv)
+
+
+def _main(argv):
     usage = "usage: checkset.py --tag AOSP_TAG [--set FILE] JAR_DIR..."
     opt, dirs = {}, []
     while argv:
