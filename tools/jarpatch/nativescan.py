@@ -12,7 +12,8 @@ DIR/{app,priv-app}/*.apk (named app/<name>.apk!lib/<abi>/<x>.so). A consumer is 
 headers, so section-stripped vendor blobs are read too) names libssl.so or libcrypto.so in a DT_NEEDED entry. Files
 that are not ELF, ELF64 or big-endian files, and ELF32 files without PT_DYNAMIC (static) are no consumers; an ELF32
 file that cannot be read to its end (truncated, offsets outside the file, a strtab outside every PT_LOAD) is listed as
-unreadable. Names are paths relative to /system.
+unreadable, and so is a directory that cannot be listed (as `<dir>/: not listable: <why>`, not counted as a file).
+Names are paths relative to /system.
 
 A name is "aosp" when the AOSP 4.4 list (aosp44-ssl-consumers.txt) has it, else "extra": code the vendor built, maybe
 against its own OpenSSL headers. The test is by name only: a vendor may also have rebuilt a file that keeps an AOSP
@@ -99,14 +100,19 @@ def needed(data):
 
 
 def files(root):
-    """(name, bytes or ElfError) of every file the scan reads under root (a /system copy), sorted by name; each apk is
-    opened once."""
+    """(name, bytes or ElfError) of every file the scan reads under root (a /system copy), sorted by name, and
+    (`<dir>/`, ElfError) of each directory os.walk cannot list; each apk is opened once."""
     items = []          # (name, path, apk member or None, error or None)
+
+    def unlistable(e):
+        rel = os.path.relpath(e.filename, root).replace(os.sep, "/") + "/"
+        items.append((rel, e.filename, None, ElfError("not listable: %s" % (e.strerror or e))))
+
     for t in TREES:
         top = os.path.join(root, t)
         if not os.path.isdir(top) or os.path.islink(top):
             continue
-        for d, dirs, fs in os.walk(top):
+        for d, dirs, fs in os.walk(top, onerror=unlistable):
             dirs.sort()
             for f in fs:
                 p = os.path.join(d, f)
@@ -152,7 +158,7 @@ def scan(root):
     """{"files": n, "elf": n, "consumers": [(name, [ssl libs])], "unreadable": [(name, why)]}"""
     res = {"files": 0, "elf": 0, "consumers": [], "unreadable": []}
     for name, data in files(root):
-        res["files"] += 1
+        res["files"] += not name.endswith("/")
         try:
             if isinstance(data, ElfError):
                 raise data

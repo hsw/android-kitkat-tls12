@@ -110,6 +110,24 @@ class Scan(unittest.TestCase):
                 self.assertEqual(nativescan.main(["--list", t]), 0)
             self.assertEqual(out.getvalue().split(), [c[0] for c in res["consumers"]])
 
+    @unittest.skipIf(os.geteuid() == 0, "root lists any directory")
+    def test_unlistable_directory(self):
+        # a directory os.walk cannot list is reported, never dropped from the scan (not counted as a file)
+        with tempfile.TemporaryDirectory() as t:
+            write(t, "lib/libssl.so", elf(["libcrypto.so"]))
+            write(t, "vendor/secret/libv.so", elf(["libssl.so"]))
+            os.chmod(os.path.join(t, "vendor", "secret"), 0)
+            try:
+                res = nativescan.scan(t)
+            finally:
+                os.chmod(os.path.join(t, "vendor", "secret"), 0o755)
+            self.assertEqual(res["consumers"], [("lib/libssl.so", ["libcrypto.so"])])
+            self.assertEqual(res["unreadable"], [("vendor/secret/", "not listable: Permission denied")])
+            lines, _ = nativescan.report(res, set())
+            self.assertTrue(lines[0].startswith("scanned 1 file(s), 1 ELF32") and lines[0].endswith("; 1 unreadable"),
+                            lines[0])
+            self.assertIn("unreadable vendor/secret/: not listable: Permission denied", lines)
+
     def test_aosp_list(self):
         names = nativescan.read_list()
         self.assertIn("lib/libssl.so", names)

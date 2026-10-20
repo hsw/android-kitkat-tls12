@@ -49,10 +49,11 @@ HEADER_SIZE = 0x70
 ID_TABLES = (("string", 0x38), ("type", 0x40), ("proto", 0x48), ("field", 0x50), ("method", 0x58), ("class", 0x60))
 # what a reference names; FIELD and METHOD are also the indexes of the member sets in a class tuple of Dex.classes
 TYPE, FIELD, METHOD = 1, 2, 3
-OUT, IN = "out", "in"
+OUT, IN, DUP = "out", "in", "dup"
 # one failed reference: where and what are the refusal's columns, target the unresolved reference of an outbound miss
 #   OUT: where = jar name, what = replacement class, target = its reference
 #   IN:  where = /system path of the dex, what = its reference, target = None
+#   DUP: where = jar name, what = replacement class, target = "earlier"/"later" + the other BOOTCLASSPATH jar's path
 Miss = collections.namedtuple("Miss", "where what target direction")
 
 
@@ -308,7 +309,11 @@ class World(object):
 
     def resolve(self, owner, member, kind):
         """The class defining member (`name:type` for kind FIELD, `name(args)ret` for kind METHOD) as seen from owner,
-        or None."""
+        or None. Constructors (`<init>`, and `<clinit>`) are not inherited: owner itself must declare them (Dalvik
+        resolves invoke-direct in the named class only)."""
+        if kind == METHOD and member.startswith("<"):
+            c = None if owner.startswith("[") else self.get(owner)
+            return owner if c is not None and member in c[METHOD] else None
         e = owner if not owner.startswith("[") else (OBJECT if self.has_type(owner) else None)
         if e is None or self.get(e) is None:
             return None
@@ -338,6 +343,25 @@ def boot_classes(dexes):
     for dx in dexes:
         for d, c in dx.classes.items():
             res.setdefault(d, c)
+    return res
+
+
+def duplicates(names, dexes, replaced):
+    """[(jar, class, "earlier"|"later", other jar name)] for each replacement class (replaced: {jar without .jar:
+    {descriptor}}) that another jar of the boot class path (names, in order, with their dexes) defines too: the runtime
+    loads the first definition on BOOTCLASSPATH, so an earlier copy shadows the patched one, and a later copy is a
+    vendor's second implementation the series does not cover."""
+    defs = {}
+    for i, (n, dx) in enumerate(zip(names, dexes)):
+        for d in dx.classes:
+            defs.setdefault(d, []).append(i)
+    res = []
+    for i, n in enumerate(names):
+        j = n[:-len(".jar")]
+        for c in sorted(replaced.get(j, ())):
+            for k in defs.get(c, ()):
+                if k != i:
+                    res.append((j, c, "earlier" if k < i else "later", names[k]))
     return res
 
 
@@ -443,6 +467,9 @@ def run(root, bootclasspath, staged, replaced, changed, dalvik_only, log=None):
         bmemo, amemo = {}, {}
         before, after = World(bboot, None, ch, bmemo), World(aboot, None, ch, amemo)
         log("link check %s: %d boot jars, %d classes" % (rt, len(names), len(aboot)))
+        # a replacement class defined by another boot jar too (the patched dex for the staged jars)
+        for j, c, where, other in duplicates(names, adex, {j: replaced.get(j, {}) for j in jars}):
+            misses.setdefault(Miss(j, c, "%s /system/framework/%s" % (where, other), DUP), []).append(rt)
         # outbound: the replacement classes
         for j in sorted(jars):
             for c, p in sorted(replaced.get(j, {}).items()):
@@ -478,6 +505,11 @@ def run(root, bootclasspath, staged, replaced, changed, dalvik_only, log=None):
         if m.direction == OUT:
             res.append((m.where, m.what, "references %s, which does not resolve on the patched boot class path (%s)"
                         % (m.target, ", ".join(rts))))
+        elif m.direction == DUP:
+            where, other = m.target.split(" ", 1)
+            res.append((m.where, m.what, "also defined in %s, %s on BOOTCLASSPATH (%s): %s" % (
+                other, where, ", ".join(rts), "the runtime would load that copy, not the patched one"
+                if where == "earlier" else "a second copy the series does not cover")))
         else:
             res.append((m.where, m.what, "resolved before the patch, not after (%s)" % ", ".join(rts)))
     return stats, res

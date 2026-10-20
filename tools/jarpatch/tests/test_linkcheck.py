@@ -222,6 +222,40 @@ class Pure(unittest.TestCase):
                                     ({"Lp/I;"}, "[I", False), ({"Lp/I;"}, "Lp/Missing;", False)):
             self.assertEqual(lc.World(boot, own, changed).touches(desc), want, (changed, desc))
 
+    def test_constructors(self):
+        # constructors are not inherited: <init> resolves in the named class only (the donor's
+        # `new IllegalStateException(String)` needs that class's own constructor, RuntimeException's does not do)
+        boot = {"Ljava/lang/Object;": cls(None, methods=["<init>()V", "hashCode()I"]),
+                "Lp/Base;": cls("Ljava/lang/Object;", methods=["<init>(Ljava/lang/String;)V", "<init>()V"]),
+                "Lp/A;": cls("Lp/Base;", methods=["<init>()V"])}
+        w = lc.World(boot)
+        self.assertEqual(w.resolve("Lp/A;", "<init>()V", lc.METHOD), "Lp/A;")
+        self.assertIsNone(w.resolve("Lp/A;", "<init>(Ljava/lang/String;)V", lc.METHOD))
+        self.assertEqual(w.resolve("Lp/Base;", "<init>(Ljava/lang/String;)V", lc.METHOD), "Lp/Base;")
+        self.assertIsNone(w.resolve("Lp/A;", "<clinit>()V", lc.METHOD))
+        self.assertIsNone(w.resolve("[Lp/A;", "<init>()V", lc.METHOD))
+        self.assertIsNone(w.resolve("Lp/Missing;", "<init>()V", lc.METHOD))
+        self.assertEqual(w.resolve("Lp/A;", "hashCode()I", lc.METHOD), "Ljava/lang/Object;")
+        text = (".class public Lq/R;\n.super Ljava/lang/Object;\n.method public static f()V\n    .registers 2\n"
+                "    new-instance v0, Lp/A;\n    const-string v1, \"x\"\n"
+                "    invoke-direct {v0, v1}, Lp/A;-><init>(Ljava/lang/String;)V\n    return-void\n.end method\n")
+        w = lc.World(dict(boot, **{"Ljava/lang/String;": cls("Ljava/lang/Object;")}),
+                     {"Lq/R;": cls("Ljava/lang/Object;")})
+        self.assertEqual(lc.outbound(text, w)[0], ["Lp/A;-><init>(Ljava/lang/String;)V"])
+
+    def test_duplicates(self):
+        class D(object):
+            def __init__(self, *names):
+                self.classes = {n: cls(OBJ) for n in names}
+        OBJ = "Ljava/lang/Object;"
+        names = ["core.jar", "ext.jar", "okhttp.jar", "vendor.jar"]
+        dexes = [D(OBJ, "Lp/V;"), D("Lp/E;"), D("Lp/V;", "Lp/E;", "Lp/L;", "Lp/O;"), D("Lp/L;")]
+        self.assertEqual(lc.duplicates(names, dexes, {"okhttp": {"Lp/V;": "p", "Lp/E;": "p", "Lp/L;": "p",
+                                                                 "Lp/O;": "p"}}),
+                         [("okhttp", "Lp/E;", "earlier", "ext.jar"), ("okhttp", "Lp/L;", "later", "vendor.jar"),
+                          ("okhttp", "Lp/V;", "earlier", "core.jar")])
+        self.assertEqual(lc.duplicates(names, dexes, {"okhttp": {"Lp/O;": "p"}, "gone": {"Lp/V;": "p"}}), [])
+
     def test_runtimes(self):
         bcp = ["/system/framework/core.jar", "/system/framework/ext.jar"]
         self.assertEqual(lc.runtimes(bcp, False), [("dalvik", ["core.jar", "ext.jar"]),
@@ -376,3 +410,28 @@ class Fixture(unittest.TestCase):
                                ("Lcom/vendor/Helper;", "Lcom/vendor/Helper;->gone()V",
                                 "Ljava/lang/String;->NONE:Ljava/lang/String;")])
         self.assertEqual(stats["dalvik"]["outbound_misses"], 3)
+
+    def test_shadowed(self):
+        # another boot jar defines the replaced AddressUtils too: before conscrypt.jar on BOOTCLASSPATH its copy is
+        # the one the runtime loads (the patched one never runs), after it a second copy; both refuse, per runtime
+        root = os.path.join(tempfile.mkdtemp(dir=self.base), "system")
+        os.makedirs(os.path.join(root, "framework"))
+        for n in ("core.jar", "core-libart.jar", "conscrypt.jar"):
+            shutil.copyfile(os.path.join(self.root, "framework", n), os.path.join(root, "framework", n))
+        shutil.copyfile(os.path.join(self.root, "framework", "conscrypt.jar"), os.path.join(root, "framework",
+                                                                                            "vendor.jar"))
+        p = os.path.join(tempfile.mkdtemp(dir=self.base), "AddressUtils.smali")
+        shutil.copyfile(self.addr_smali, p)
+        for bcp, where, why in ((["core.jar", "vendor.jar", "conscrypt.jar"], "earlier",
+                                 "the runtime would load that copy, not the patched one"),
+                                (["core.jar", "conscrypt.jar", "vendor.jar"], "later",
+                                 "a second copy the series does not cover")):
+            stats, misses = lc.run(root, ["/system/framework/" + n for n in bcp], self.staged,
+                                   {"conscrypt": {ADDR: p}}, {"conscrypt": {ADDR}}, False)
+            self.assertIn(("conscrypt", ADDR, "also defined in /system/framework/vendor.jar, %s on BOOTCLASSPATH "
+                           "(dalvik, art): %s" % (where, why)), misses)
+            self.assertEqual([m for m in misses if m[0] == "conscrypt"], [m for m in misses if "also defined" in m[2]])
+        # the vendor jar off BOOTCLASSPATH (an ordinary framework jar) shadows nothing
+        stats, misses = lc.run(root, ["/system/framework/core.jar", "/system/framework/conscrypt.jar"], self.staged,
+                               {"conscrypt": {ADDR: p}}, {"conscrypt": {ADDR}}, False)
+        self.assertFalse([m for m in misses if "also defined" in m[2]], misses)

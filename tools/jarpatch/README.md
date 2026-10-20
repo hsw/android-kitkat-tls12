@@ -61,6 +61,9 @@ are outside the set (the patcher would keep the old code), the same reason the r
 4. Link check per runtime (Dalvik with `core.jar`, ART with `core-libart.jar`, `linkcheck.py`): every reference of the
    replaced classes resolves on the patched boot class path, and no reference of the boot class path, the other
    framework jars or the apps that resolved before the patch breaks (a caller of a member the series removes refuses).
+   Constructors resolve in the named class only (they are not inherited). A replaced or added class that another
+   `BOOTCLASSPATH` jar defines too refuses: an earlier copy is the one the runtime loads, a later one is a second
+   implementation the series does not cover.
 5. The zip (`rawzip.py`): each patched jar is the device jar with `classes.dex` and `security.properties` swapped,
    every other entry copied byte for byte. Its `zip.conf` (`kind=java-patched`) carries the sha256 of every device
    jar it was made from and of `ro.build.fingerprint`: the installer installs it only on that system (and only over
@@ -70,7 +73,8 @@ are outside the set (the patcher would keep the old code), the same reason the r
 
 ## Not checked
 
-- Link check: members resolve by name and descriptor only. A change of a member's static/instance kind or access
+- Link check: members resolve by name and descriptor only (a private method called with invoke-direct resolves
+  through the superclasses like any other method). A change of a member's static/instance kind or access
   flags, a method made final or a new abstract method in a replaced class, and the invoke kind of a reference are
   not compared (the dex reader does not decode instructions, and a vendor subclass would need a device-wide walk of
   every class hierarchy). The reference check makes the replaced classes stock on every device that passes, so this

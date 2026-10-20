@@ -123,9 +123,11 @@ NATIVE_REPORT = "native-consumers.txt"
 # keeps each text in installer/checks.sh): java-patched = kk_precheck's case label of that kind, oem_ack = the
 # zip.conf key kk_check_oem reads. A donor whose installer lacks one predates this tool: the device would refuse.
 INSTALLER_CAPS = {"java-patched": "java-patched)", "oem_ack": "oem_ack"}
-# toolbox `ls -lR` prints "opendir failed, <why>" after the header of a directory it cannot read, busybox
-# "ls: <path>: <why>"; adb shell on 4.4 merges the device's stderr into the output
+# ls error lines (adb shell on 4.4 merges the device's stderr into the output): toolbox prints "opendir failed, <why>"
+# after the header of a directory it cannot read and "<path>: <why>" otherwise, busybox and toybox "ls: <path>: <why>"
+# (newer busybox "ls: can't open '<path>': <why>"); any line holding one of LS_ERRORS is one too
 LS_ERRORS = ("opendir failed", "Permission denied")
+LS_ERROR_RE = re.compile(r"(?:ls: (?:can't open )?)?'?(/.*?)'?: (.+)\Z")
 NO_SUCH_DIR = "No such file or directory"
 
 
@@ -234,14 +236,14 @@ class Adb(object):
         return self.run(["shell", command])
 
     def ls(self, d):
-        """Sorted names in the device directory d; [] when d does not exist; ToolError when ls cannot read it (old
-        adb returns 0 whatever the device command did: the device's stderr, merged into the output, tells)."""
+        """Sorted names in the device directory d; [] when d does not exist; ToolError on any other ls error line
+        (old adb returns 0 whatever the device command did: the device's stderr, merged into the output, tells)."""
         names = [n.strip() for n in self.shell("ls %s 2>&1" % d).split("\n") if n.strip()]
-        bad = [n for n in names if any(e in n for e in LS_ERRORS)]
+        bad = [n for n in names if ls_error(n)]
+        if len(names) == 1 and bad and ls_error(bad[0]) == (d, NO_SUCH_DIR):
+            return []   # toolbox `D: No such file or directory`, busybox `ls: D: No such file or directory`
         if bad:
             raise ToolError("adb: %s is not listable: %s" % (d, bad[0]))
-        if len(names) == 1 and names[0].endswith("%s: %s" % (d, NO_SUCH_DIR)):
-            return []   # toolbox `D: No such file or directory`, busybox `ls: D: No such file or directory`
         return sorted(names)
 
     def pull(self, src, dst):
@@ -280,20 +282,35 @@ def from_adb(serial, stage):
     return System("adb", stage, bp, bcp, odex, libart, marker, adb)
 
 
+def ls_error(line):
+    """(path or None, why) when line is an ls error line (LS_ERRORS, LS_ERROR_RE, or "ls: ..."), else None. An entry
+    of `ls DIR` or `ls -lR DIR` never starts with "/" or "ls: " (a `PATH:` header of -R is no error line)."""
+    if line.startswith("/") and line.endswith(":"):
+        return None
+    m = LS_ERROR_RE.match(line)
+    if m:
+        return m.group(1), m.group(2)
+    if line.startswith("ls: ") or any(e in line for e in LS_ERRORS):
+        return None, line
+    return None
+
+
 def ls_files(listing, top):
     """(sorted paths of the regular files, sorted [(path, why)] of the directories ls could not read) of a
     `ls -lR TOP 2>&1` listing (toolbox or busybox format; directories come as `PATH:` headers, symbolic links and
-    other types are skipped; an error line names its path (busybox `ls: PATH: why`) or follows the header of the
-    directory it is about (toolbox `opendir failed, why`))."""
+    other types are skipped; an error line (ls_error) names its path (busybox `ls: PATH: why`) or follows the header
+    of the directory it is about (toolbox `opendir failed, why`); TOP itself missing is no error)."""
     res, errs, cur = [], set(), None
     for l in listing.split("\n"):
         l = l.rstrip()
         if l.endswith(":") and l.startswith("/"):
             cur = l[:-1]
             continue
-        if any(e in l for e in LS_ERRORS):
-            m = re.match(r"(?:ls: )?(/\S+): (.*)\Z", l)
-            path, why = (m.group(1), m.group(2)) if m else (cur or top, l)
+        e = ls_error(l)
+        if e:
+            path, why = e if e[0] else (cur or top, l)
+            if (path, why) == (top, NO_SUCH_DIR):
+                continue
             if path == top or path.startswith(top + "/"):
                 errs.add((path, why))
             continue
@@ -899,6 +916,18 @@ class Patcher(object):
         return stats
 
 
+def write_report(patcher, path, result, reasons):
+    """Patcher.write_report; False (an error line printed) when it fails: a tool error (exit 2), never "refused"."""
+    try:
+        patcher.write_report(path, result, reasons)
+        return True
+    except OSError as e:
+        print("kktls-jarpatch: error: --report %s: %s" % (path, e), file=sys.stderr)
+    except Exception as e:     # as main's catch-all
+        print("kktls-jarpatch: unexpected error: %s: %s" % (type(e).__name__, e), file=sys.stderr)
+    return False
+
+
 def main(argv):
     usage = ("usage: kktls-jarpatch.py (--adb SERIAL | --system DIR --bootclasspath LIST --build-prop FILE) "
              "--release-dir DIR --out DIR [--accept-oem] [--set FILE] [--report FILE]")
@@ -939,8 +968,8 @@ def main(argv):
     except Refused as e:
         for j, n, why in e.reasons:
             print("kktls-jarpatch: REFUSED %s %s: %s" % (j, n, why), file=sys.stderr)
-        if patcher and "--report" in opt:
-            patcher.write_report(opt["--report"], "refused", e.reasons)
+        if patcher and "--report" in opt and not write_report(patcher, opt["--report"], "refused", e.reasons):
+            return 2
         return 1
     except (ToolError, normalize.NormalizeError, mkset.SetError, linkcheck.LinkError, OSError,
             zipfile.BadZipFile) as e:
@@ -949,8 +978,9 @@ def main(argv):
     except Exception as e:     # a bug or an input nobody foresaw: never the "refused" exit
         print("kktls-jarpatch: unexpected error: %s: %s" % (type(e).__name__, e), file=sys.stderr)
         return 2
-    if "--report" in opt:
-        patcher.write_report(opt["--report"], "staged", [])
+    if "--report" in opt and not write_report(patcher, opt["--report"], "staged", []):
+        print("kktls-jarpatch: the zips in %s are written; the report is not" % out, file=sys.stderr)
+        return 2
     log("staged %s (%s)" % (os.path.join(out, "stage"), ", ".join(
         "%s %d replaced/%d removed" % (j, v["replaced"], v["removed"]) for j, v in sorted(m["jars"].items()))))
     log("zip %s (for this device only)" % os.path.join(out, m["zip"]))

@@ -183,7 +183,8 @@ elif a[:1] == ["shell"]:
         top = c[3:-len(" 2>&1")]
         d = dev(top)
         if top == os.environ.get("FAKE_ADB_DENY_DIR"):
-            sys.stdout.write("opendir failed, Permission denied\r\n")
+            sys.stdout.write(os.environ.get("FAKE_ADB_DENY_MSG", "opendir failed, Permission denied").replace(
+                "{d}", top) + "\r\n")
         elif os.path.isdir(d):
             sys.stdout.write("".join(n + "\r\n" for n in sorted(os.listdir(d))))
         else:
@@ -580,17 +581,24 @@ class Refusals(Fixture):
     def test_adb_unlistable_dir(self):
         # a directory the shell cannot list is a tool error, never an empty directory (its odex and link checks would
         # be skipped); a missing one (here /system/etc/kktls) is empty
-        for d in ("/system/framework", "/system/app", "/system/priv-app", "/system/lib", "/system/etc/kktls"):
-            if d == "/system/etc/kktls":
-                os.makedirs(os.path.join(self.sysdir, "etc", "kktls"))
+        # (toolbox and busybox messages, any reason)
+        os.makedirs(os.path.join(self.sysdir, "etc", "kktls"))
+        for d, msg in (("/system/framework", "opendir failed, Permission denied"),
+                       ("/system/app", "opendir failed, Permission denied"),
+                       ("/system/priv-app", "opendir failed, Permission denied"),
+                       ("/system/lib", "opendir failed, Permission denied"),
+                       ("/system/etc/kktls", "opendir failed, Permission denied"),
+                       ("/system/app", "ls: {d}: Input/output error"),
+                       ("/system/framework", "{d}: Input/output error"),
+                       ("/system/priv-app", "ls: can't open '{d}': Permission denied")):
             shutil.rmtree(self.out, ignore_errors=True)
-            os.environ["FAKE_ADB_DENY_DIR"] = d
+            os.environ.update(FAKE_ADB_DENY_DIR=d, FAKE_ADB_DENY_MSG=msg)
             try:
                 rc, out = self.patch(adb=True)
             finally:
-                del os.environ["FAKE_ADB_DENY_DIR"]
+                del os.environ["FAKE_ADB_DENY_DIR"], os.environ["FAKE_ADB_DENY_MSG"]
             self.assertEqual(rc, 2, out)
-            self.assertIn("kktls-jarpatch: error: adb: %s is not listable: opendir failed, Permission denied" % d, out)
+            self.assertIn("kktls-jarpatch: error: adb: %s is not listable: %s" % (d, msg.replace("{d}", d)), out)
             self.assertFalse([n for n in os.listdir(self.out) if n.endswith(".zip")], d)
             self.assertFalse(os.path.exists(os.path.join(self.out, "stage", "manifest.json")), d)
 
@@ -673,6 +681,24 @@ class LinkCheck(Fixture):
         self.assertRefused(rc, out, "REFUSED core %s: %s (dalvik)" % (DHV, why),
                            "REFUSED core-libart %s: %s (art)" % (DHV, why))
 
+    def test_shadowed_class(self):
+        # a replaced class that another BOOTCLASSPATH jar defines too: core.jar (before okhttp.jar) shadows the
+        # patched Platform; ext.jar (after it) holds a second copy
+        okp = [c for c in device_jars()["okhttp"][0] if c[0] == OKP][0]
+        cls, ent = device_jars()["core"]
+        self.device_jar("core", cls + [okp], ent)
+        rc, out = self.patch()
+        self.assertRefused(rc, out, "REFUSED okhttp %s: link check: also defined in /system/framework/core.jar, "
+                           "earlier on BOOTCLASSPATH (dalvik): the runtime would load that copy, not the patched one"
+                           % OKP)
+        self.assertNotIn("(dalvik, art): the runtime", out)     # core-libart.jar has no copy
+        self.device_jar("core")
+        self.make_jar(os.path.join(self.sysdir, "framework", "ext.jar"), EXT + [okp], {})
+        shutil.rmtree(self.out)
+        rc, out = self.patch()
+        self.assertRefused(rc, out, "REFUSED okhttp %s: link check: also defined in /system/framework/ext.jar, "
+                           "later on BOOTCLASSPATH (dalvik, art): a second copy the series does not cover" % OKP)
+
     def test_caller_kept_class(self):
         # a caller of a replaced class's kept member links
         self.make_jar(os.path.join(self.sysdir, "app", "Caller.apk"), [(CALLER, 1, "0x1", DHV + "->value()I")], {})
@@ -681,6 +707,24 @@ class LinkCheck(Fixture):
 
 
 class ToolErrors(Fixture):
+    def test_report_not_writable(self):
+        # a --report that cannot be written is a tool error (exit 2, no traceback), never "refused" (exit 1): after a
+        # staged run (the zips are there) and after a refusal alike
+        self.report = os.path.join(self.t.name, "no-such-dir", "report.txt")
+        rc, out = self.patch()
+        self.assertEqual(rc, 2, out)
+        self.assertIn("kktls-jarpatch: error: --report %s: " % self.report, out)
+        self.assertIn("the zips in %s are written; the report is not" % self.out, out)
+        self.assertNotIn("Traceback", out)
+        self.assertTrue([n for n in os.listdir(self.out) if n.endswith(".zip")])
+        self.device_jar("core", [(INT, 3, "0x1"), (DHV, 3, "0x5"), (GONE, 3, "0x1")])
+        shutil.rmtree(self.out)
+        rc, out = self.patch()
+        self.assertEqual(rc, 2, out)
+        self.assertIn("REFUSED core %s" % DHV, out)
+        self.assertIn("kktls-jarpatch: error: --report %s: " % self.report, out)
+        self.assertNotIn("Traceback", out)
+
     def test_release_dir(self):
         empty = os.path.join(self.t.name, "empty")
         os.makedirs(empty)
@@ -838,7 +882,10 @@ class Logic(unittest.TestCase):
         for missing in ("/system/app: No such file or directory\n", "ls: /system/app: No such file or directory\n"):
             self.assertEqual(Fake(missing).ls("/system/app"), [])
         for err in ("opendir failed, Permission denied\n", "ls: /system/app: Permission denied\n",
-                    "a.apk\nopendir failed, I/O error\n"):
+                    "a.apk\nopendir failed, I/O error\n", "ls: /system/app: Input/output error\n",
+                    "/system/app: Input/output error\n", "ls: can't open '/system/app': Input/output error\n",
+                    "a.apk\nls: /system/app/b.apk: Input/output error\n", "ls: /system/app: Not a directory\n",
+                    "ls: /system/app: No such file or directory\nls: /system/app: No such file or directory\n"):
             with self.assertRaises(jp.ToolError):
                 Fake(err).ls("/system/app")
 
@@ -862,6 +909,15 @@ class Logic(unittest.TestCase):
         self.assertEqual(jp.ls_files(busybox_err, "/system/bin"), (["/system/bin/netd"], [
             ("/system/bin/secret", "Permission denied"), ("/system/bin/x", "Permission denied")]))
         self.assertEqual(jp.ls_files("ls: /system/vendor: No such file or directory\n", "/system/vendor"), ([], []))
+        self.assertEqual(jp.ls_files("/system/vendor: No such file or directory\n", "/system/vendor"), ([], []))
+        # any other reason is an error line too (busybox, toybox, toolbox texts)
+        other = busybox + ("ls: /system/bin/a: Input/output error\nls: can't open '/system/bin/b': Input/output error\n"
+                           "/system/bin/c: Input/output error\nls: /system/bin/missing: No such file or directory\n")
+        self.assertEqual(jp.ls_files(other, "/system/bin")[1], [
+            ("/system/bin/a", "Input/output error"), ("/system/bin/b", "Input/output error"),
+            ("/system/bin/c", "Input/output error"), ("/system/bin/missing", jp.NO_SUCH_DIR)])
+        self.assertEqual(jp.ls_files("ls: /system/vendor: Input/output error\n", "/system/vendor"),
+                         ([], [("/system/vendor", "Input/output error")]))
 
     def test_lines_map(self):
         self.assertEqual(dict(jp.LINES), {"4.4.1": "4.4.2", "4.4.2": "4.4.2", "4.4.3": "4.4.4", "4.4.4": "4.4.4"})
