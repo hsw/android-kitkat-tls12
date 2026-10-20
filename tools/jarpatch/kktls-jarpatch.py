@@ -1,0 +1,637 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+"""kktls-jarpatch.py: patch a 4.4 device's own core/core-libart/conscrypt/okhttp jars with the kktls Java layer A.
+
+    kktls-jarpatch.py --adb SERIAL --release-dir DIR --out DIR [--set FILE] [--report FILE]
+    kktls-jarpatch.py --system DIR --bootclasspath LIST --build-prop FILE --release-dir DIR --out DIR
+                      [--set FILE] [--report FILE]
+
+Inputs:
+  --adb SERIAL        the device's /system over adb (no root needed: the files are world-readable): every
+                      /system/framework/*.jar, every /system/{app,priv-app}/*.apk, /system/build.prop, the names of the
+                      .odex files, whether /system/lib/libart.so exists, the installer marker /system/etc/kktls/
+                      java.version and the BOOTCLASSPATH of a shell. The files are copied into OUT/device/.
+  --system DIR        a copy of /system (DIR/framework/, or DIR/system/framework/), e.g. a mounted ROM image, with
+  --bootclasspath L   the device's BOOTCLASSPATH (`/system/framework/core.jar:...`, from init.environ.rc) and
+  --build-prop FILE   its build.prop.
+  --release-dir DIR   a directory with the release's SHA256SUMS and the java zip of the device's line and ABI,
+                      kktls-java-<4.4.2|4.4.4>-<armeabi-v7a|x86>-<release>.zip (the donor of the replacement classes);
+                      the line follows ro.build.version.release (4.4, 4.4.1, 4.4.2 -> 4.4.2; 4.4.3, 4.4.4 -> 4.4.4).
+  --set FILE          the set file instead of sets/<line>.txt (tests).
+  --report FILE       write the per-line verdicts and the result there as well.
+
+What it does (nothing on the device is changed):
+  1. gates: Android 4.4.x, ABI armeabi-v7a or x86, a build fingerprint; no .odex in /system/{framework,app,priv-app}
+     whose jar/apk lacks classes.dex (the installer's dex check: after core.jar changes Dalvik must re-dexopt them);
+     the four jars present with exactly one classes.dex (core-libart.jar may be absent when /system/lib/libart.so is,
+     a Dalvik-only ROM);
+  2. reference check, one verdict per line of the set file (sets/<line>.txt, see mkset.py), on the normalized
+     baksmali digests (normalize.py) of the device's classes and the sha256 of its non-dex entries:
+       match               the device has the stock AOSP class/entry the series was applied to (or, for a class the
+                           series adds, does not have it);
+       vendor-modified     the device's class or entry differs from stock: the vendor changed it, and replacing it
+                           would drop that change (also when it equals the kktls version, as some cm-11 classes do,
+                           unless the device carries kktls);
+       missing             the stock class or entry is not there;
+       unexpected-present  a class the series adds is already there (not as kktls);
+       already-kktls       the device already carries kktls: a class of io.github.hsw.kktls, the kktls
+                           security.properties entry, or the installer marker java.version ("restore first");
+     any verdict but match refuses, with the full list;
+  3. the replacement: baksmali (debug info kept) of the device jar and of the donor jar; every class of the set is
+     replaced by the donor's whole .smali file, the classes the series removes are deleted, smali -a 19 reassembles
+     one classes.dex (type, proto, field and method id counts must stay below 65536); the donor's classes and entries
+     must equal the set's ours digests (else the release dir and the set file do not belong together: tool error);
+  4. round-trip invariant: the new classes.dex is disassembled again, every class not in the set must keep the digest
+     it had on the device and every replaced class must have the set's ours digest.
+
+Output (exit 0): OUT/stage/<jar>/classes.dex, OUT/stage/<jar>/<entry path> (the donor's bytes of the set's entries)
+and OUT/stage/manifest.json (system, device jar sha256s, sha256 of ro.build.fingerprint, donor, per-jar staged
+files). The raw fingerprint is never printed or written. OUT must not exist or be empty.
+
+Exit 0 staged, 1 refused (each reason: jar, class, why), 2 usage or tool error. Stdlib only; Java 8+ and the
+smali/baksmali jars of fetch-smali.sh.
+"""
+import hashlib
+import json
+import os
+import re
+import shutil
+import struct
+import subprocess
+import sys
+import zipfile
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)   # `python3 -I` leaves the script dir out
+import mkset  # noqa: E402
+import normalize  # noqa: E402
+
+LINES = {"4.4": "4.4.2", "4.4.1": "4.4.2", "4.4.2": "4.4.2", "4.4.3": "4.4.4", "4.4.4": "4.4.4"}
+ABIS = ("armeabi-v7a", "x86")
+KKTLS_PKG = "Lio/github/hsw/kktls/"
+SUBDIRS = (("framework", ".jar"), ("app", ".apk"), ("priv-app", ".apk"))
+JAVA_MARKER = "etc/kktls/java.version"
+DEX_IDS = (("type", 0x40), ("proto", 0x48), ("field", 0x50), ("method", 0x58))
+ID_LIMIT = 65536
+JOBS = str(min(8, os.cpu_count() or 1))
+
+
+class ToolError(Exception):
+    pass
+
+
+class Refused(Exception):
+    def __init__(self, reasons):
+        Exception.__init__(self, "%d reason(s)" % len(reasons))
+        self.reasons = reasons   # [(jar or "-", name or "-", why)]
+
+
+def log(msg):
+    print("kktls-jarpatch: " + msg, file=sys.stderr)
+
+
+def sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for b in iter(lambda: f.read(1 << 20), b""):
+            h.update(b)
+    return h.hexdigest()
+
+
+def read_props(path):
+    """{key: value} of a build.prop; the first definition of a key wins (ro.* properties are set once)."""
+    props = {}
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for l in f:
+                l = l.strip()
+                if not l or l.startswith("#") or "=" not in l:
+                    continue
+                k, v = l.split("=", 1)
+                props.setdefault(k.strip(), v.strip())
+    except OSError as e:
+        raise ToolError("build.prop: %s" % e)
+    return props
+
+
+class System(object):
+    """What the patcher reads of a device's /system. root mirrors /system for the files that were read: framework/
+    (every .jar), app/ and priv-app/ (every .apk) and, with --system, everything else of the copy."""
+
+    def __init__(self, source, root, props, bootclasspath, odex, libart, java_marker):
+        self.source = source              # "adb" or "system"
+        self.root = root
+        self.props = props
+        self.bootclasspath = bootclasspath   # ["/system/framework/core.jar", ...]
+        self.odex = odex                  # {subdir: sorted .odex names}
+        self.libart = libart              # /system/lib/libart.so exists
+        self.java_marker = java_marker    # contents of /system/etc/kktls/java.version or None
+
+    def path(self, sub, name):
+        return os.path.join(self.root, sub, name)
+
+
+def parse_bootclasspath(text):
+    bcp = [p for p in text.strip().split(":") if p]
+    if not bcp:
+        raise ToolError("empty BOOTCLASSPATH")
+    for p in bcp:
+        if not re.match(r"/system/framework/[^/]+\.jar\Z", p):
+            raise ToolError("BOOTCLASSPATH entry %s is not a /system/framework jar" % p)
+    return bcp
+
+
+def from_system(d, bcp_text, build_prop):
+    root = d
+    if not os.path.isdir(os.path.join(root, "framework")) and os.path.isdir(os.path.join(d, "system", "framework")):
+        root = os.path.join(d, "system")
+    if not os.path.isdir(os.path.join(root, "framework")):
+        raise ToolError("%s: no framework/ (and no system/framework/)" % d)
+    bcp = parse_bootclasspath(bcp_text)
+    for p in bcp:
+        if not os.path.isfile(os.path.join(root, "framework", os.path.basename(p))):
+            raise ToolError("BOOTCLASSPATH names %s, not in %s/framework" % (p, root))
+    odex = {}
+    for sub, _ in SUBDIRS:
+        p = os.path.join(root, sub)
+        odex[sub] = sorted(n for n in os.listdir(p) if n.endswith(".odex")) if os.path.isdir(p) else []
+    marker = None
+    mp = os.path.join(root, JAVA_MARKER)
+    if os.path.isfile(mp):
+        with open(mp, encoding="utf-8", errors="replace") as f:
+            marker = f.read().strip()
+    return System("system", root, read_props(build_prop), bcp, odex,
+                  os.path.isfile(os.path.join(root, "lib", "libart.so")), marker)
+
+
+class Adb(object):
+    def __init__(self, serial):
+        self.cmd = ["adb", "-s", serial]
+
+    def run(self, args):
+        try:
+            r = subprocess.run(self.cmd + args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        except OSError as e:
+            raise ToolError("adb: %s" % e)
+        if r.returncode != 0:
+            raise ToolError("adb %s failed (exit %d): %s" % (" ".join(args), r.returncode,
+                                                             r.stderr.decode("utf-8", "replace").strip()[-300:]))
+        return r.stdout.decode("utf-8", "replace").replace("\r", "")
+
+    def shell(self, command):
+        return self.run(["shell", command])
+
+    def ls(self, d):
+        # a missing directory prints nothing (old adb returns 0 whatever the device command did)
+        return sorted(n.strip() for n in self.shell("ls %s 2>/dev/null" % d).split("\n") if n.strip())
+
+    def pull(self, src, dst):
+        self.run(["pull", src, dst])
+        if not os.path.isfile(dst):
+            raise ToolError("adb pull %s: no file arrived" % src)
+
+
+def from_adb(serial, stage):
+    """Copy what the patcher needs from the device's /system into stage/ (a /system mirror)."""
+    adb = Adb(serial)
+    state = adb.run(["get-state"]).strip()
+    if state != "device":
+        raise ToolError("adb: device %s is %s" % (serial, state or "not available"))
+    odex = {}
+    for sub, ext in SUBDIRS:
+        names = adb.ls("/system/" + sub)
+        if sub == "framework" and not any(n.endswith(".jar") for n in names):
+            raise ToolError("adb: /system/framework lists no jar")
+        odex[sub] = [n for n in names if n.endswith(".odex")]
+        os.makedirs(os.path.join(stage, sub), exist_ok=True)
+        files = [n for n in names if n.endswith(ext)]
+        log("adb: pulling %d %s file(s) of /system/%s" % (len(files), ext, sub))
+        for n in files:
+            adb.pull("/system/%s/%s" % (sub, n), os.path.join(stage, sub, n))
+    adb.pull("/system/build.prop", os.path.join(stage, "build.prop"))
+    libart = "libart.so" in adb.ls("/system/lib")
+    marker = None
+    if os.path.basename(JAVA_MARKER) in adb.ls("/system/" + os.path.dirname(JAVA_MARKER)):
+        marker = adb.shell("cat /system/" + JAVA_MARKER).strip()
+    bcp = parse_bootclasspath(adb.shell("echo $BOOTCLASSPATH"))
+    for p in bcp:
+        if not os.path.isfile(os.path.join(stage, "framework", os.path.basename(p))):
+            raise ToolError("BOOTCLASSPATH names %s, not in /system/framework" % p)
+    return System("adb", stage, read_props(os.path.join(stage, "build.prop")), bcp, odex, libart, marker)
+
+
+def find_donor(release_dir, line, abi):
+    """(path, release) of kktls-java-<line>-<abi>-<release>.zip, checked against the dir's SHA256SUMS and its
+    zip.conf."""
+    pat = re.compile(r"kktls-java-%s-%s-([^/]+)\.zip\Z" % (re.escape(line), re.escape(abi)))
+    try:
+        found = sorted((n, pat.match(n).group(1)) for n in os.listdir(release_dir) if pat.match(n))
+    except OSError as e:
+        raise ToolError("--release-dir: %s" % e)
+    if not found:
+        raise ToolError("%s: no kktls-java-%s-%s-<release>.zip" % (release_dir, line, abi))
+    if len(found) > 1:
+        raise ToolError("%s: several java zips for %s %s (%s): keep one release" %
+                        (release_dir, line, abi, ", ".join(n for n, _ in found)))
+    name, rel = found[0]
+    path = os.path.join(release_dir, name)
+    sums = {}
+    try:
+        with open(os.path.join(release_dir, "SHA256SUMS"), encoding="utf-8") as f:
+            for l in f:
+                p = l.split()
+                if len(p) == 2:
+                    sums[p[1].lstrip("*")] = p[0]
+    except OSError as e:
+        raise ToolError("--release-dir: SHA256SUMS: %s" % e)
+    if name not in sums:
+        raise ToolError("%s is not listed in SHA256SUMS" % name)
+    if sha256_file(path) != sums[name]:
+        raise ToolError("%s: sha256 differs from SHA256SUMS" % name)
+    try:
+        with zipfile.ZipFile(path) as z:
+            conf = z.read("kktls/zip.conf").decode("utf-8", "replace")
+    except (OSError, KeyError, zipfile.BadZipFile) as e:
+        raise ToolError("%s: no readable kktls/zip.conf: %s" % (name, e))
+    conf = dict(l.split("=", 1) for l in conf.split("\n") if "=" in l)
+    want = {"kind": "java", "android": line, "abi": abi, "release": rel}
+    for k, v in want.items():
+        if conf.get(k) != v:
+            raise ToolError("%s: zip.conf %s=%s, expected %s" % (name, k, conf.get(k), v))
+    return path, rel
+
+
+def extract_donor(donor, jars, dst):
+    out = {}
+    os.makedirs(dst, exist_ok=True)
+    with zipfile.ZipFile(donor) as z:
+        names = set(z.namelist())
+        for j in jars:
+            n = "system/framework/%s.jar" % j
+            if n not in names:
+                raise ToolError("%s has no %s" % (os.path.basename(donor), n))
+            out[j] = os.path.join(dst, j + ".jar")
+            with z.open(n) as src, open(out[j], "wb") as f:
+                shutil.copyfileobj(src, f)
+    return out
+
+
+def has_dex(path):
+    """True/False: the zip has a classes.dex entry; None: not a readable zip."""
+    try:
+        with zipfile.ZipFile(path) as z:
+            return "classes.dex" in z.namelist()
+    except (OSError, zipfile.BadZipFile):
+        return None
+
+
+def check_odex(system):
+    """The installer's dex check: every .odex in framework/app/priv-app needs its jar/apk with classes.dex next to it
+    (the four set jars are checked by check_jars)."""
+    reasons = []
+    for sub, _ in SUBDIRS:
+        for o in system.odex[sub]:
+            base = o[:-len(".odex")]
+            if sub == "framework" and base in mkset.JARS:
+                continue
+            f = [n for n in (base + ".jar", base + ".apk") if os.path.isfile(system.path(sub, n))]
+            if not f:
+                reasons.append(("-", "/system/%s/%s" % (sub, o), "odexed, no jar/apk next to it"))
+                continue
+            d = has_dex(system.path(sub, f[-1]))
+            if d is None:
+                reasons.append(("-", "/system/%s/%s" % (sub, f[-1]), "not a readable zip"))
+            elif not d:
+                reasons.append(("-", "/system/%s/%s" % (sub, f[-1]),
+                                "odexed without classes.dex (odexed-and-stripped ROMs are not supported)"))
+    return reasons
+
+
+def check_jars(system):
+    """([jars to patch], reasons): each set jar present with exactly one classes.dex; core-libart.jar may be absent on
+    a Dalvik-only ROM (no /system/lib/libart.so)."""
+    jars, reasons = [], []
+    for j in mkset.JARS:
+        p = system.path("framework", j + ".jar")
+        if not os.path.isfile(p):
+            if j == "core-libart" and not system.libart:
+                log("core-libart.jar absent and no libart.so: Dalvik-only ROM, core-libart lines skipped")
+                continue
+            reasons.append((j, "-", "/system/framework/%s.jar is missing" % j))
+            continue
+        try:
+            normalize.check_dex_jar(p)
+        except normalize.NormalizeError as e:
+            why = str(e).split(": ", 1)[-1]
+            if j + ".odex" in system.odex["framework"]:
+                why = "odexed without classes.dex (%s)" % why
+            reasons.append((j, "-", why))
+            continue
+        jars.append(j)
+    return jars, reasons
+
+
+def index_tree(root):
+    """{descriptor: (smali path, digest)} of a baksmali output tree."""
+    res = {}
+    for d, _, files in os.walk(root):
+        for f in sorted(files):
+            if not f.endswith(".smali"):
+                continue
+            p = os.path.join(d, f)
+            with open(p, encoding="utf-8") as fh:
+                t = fh.read()
+            try:
+                c = normalize.class_descriptor(t)
+                dig = hashlib.sha256(normalize.normalize_text(t).encode("utf-8")).hexdigest()
+            except normalize.NormalizeError as e:
+                raise ToolError("%s: %s" % (p, e))
+            if c in res:
+                raise ToolError("class %s defined twice under %s" % (c, root))
+            res[c] = (p, dig)
+    return res
+
+
+def disassemble(src, out, baksmali_jar):
+    """baksmali d -a 19 (debug info kept) of a jar or dex into out; {descriptor: (path, digest)}."""
+    cmd = ["java", "-jar", baksmali_jar, "d", "-a", normalize.BAKSMALI_API, "-j", JOBS, src, "-o", out]
+    r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+    if r.returncode != 0:
+        raise ToolError("baksmali of %s failed (exit %d): %s" % (src, r.returncode, r.stdout.strip()[-500:]))
+    return index_tree(out)
+
+
+def assemble(tree, dex, smali_jar):
+    os.makedirs(os.path.dirname(dex), exist_ok=True)
+    cmd = ["java", "-jar", smali_jar, "a", "-a", normalize.BAKSMALI_API, "-j", JOBS, "-o", dex, tree]
+    r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+    if r.returncode != 0 or not os.path.isfile(dex):
+        raise ToolError("smali of %s failed (exit %d): %s" % (tree, r.returncode, r.stdout.strip()[-500:]))
+
+
+def dex_id_counts(data):
+    """{type|proto|field|method: count} from a dex header."""
+    if len(data) < 0x70 or not data.startswith(b"dex\n"):
+        raise ToolError("not a dex file")
+    return {k: struct.unpack_from("<I", data, off)[0] for k, off in DEX_IDS}
+
+
+def verdicts(st, jars, dev, dev_entries, system):
+    """[(verdict, kind, jar, name, detail)] for every line of the set file on the active jars, already-kktls
+    resolved."""
+    res = []
+    for j, c, stock, ours in st.classes:
+        if j not in jars:
+            continue
+        d = dev[j].get(c, (None, None))[1]
+        if stock is None:
+            v = "match" if d is None else ("equals-ours" if d == ours else "unexpected-present")
+        elif d is None:
+            v = "missing"
+        else:
+            v = "match" if d == stock else ("equals-ours" if d == ours else "vendor-modified")
+        res.append([v, "class", j, c, ""])
+    for j, c, stock in st.checks:
+        if j not in jars:
+            continue
+        d = dev[j].get(c, (None, None))[1]
+        res.append(["missing" if d is None else "match" if d == stock else "vendor-modified", "check", j, c, ""])
+    for j, p, stock, ours in st.entries:
+        if j not in jars:
+            continue
+        d = dev_entries[j].get(p)
+        if d == stock:
+            v = "match"
+        elif d is None:
+            v = "missing"
+        elif d == ours:
+            v = "equals-ours"
+        else:
+            v = "unexpected-present" if stock is None else "vendor-modified"
+        res.append([v, "entry", j, p, ""])
+    # kktls markers: a class of the kktls package, the kktls security.properties, the installer's java marker
+    marks = []
+    for j in jars:
+        marks += [("class", j, c) for c in sorted(dev[j]) if c.startswith(KKTLS_PKG)]
+    marks += [("entry", r[2], r[3]) for r in res if r[1] == "entry" and r[0] == "equals-ours"]
+    already = bool(marks) or system.java_marker is not None
+    for r in res:
+        if r[0] == "equals-ours":
+            r[0] = "already-kktls" if already else "vendor-modified"
+            r[4] = "equals the kktls version" if already else ("equals the kktls version, but the system carries "
+                                                               "no kktls marker (a vendor backport, or the series "
+                                                               "built into the image)")
+        elif already and r[1] == "class" and r[3].startswith(KKTLS_PKG) and r[0] != "match":
+            r[0], r[4] = "already-kktls", "kktls class present"
+    named = {(r[2], r[3]) for r in res}
+    for kind, j, c in marks:
+        if (j, c) not in named:
+            res.append(["already-kktls", kind, j, c, "kktls class present"])
+    if system.java_marker is not None:
+        res.append(["already-kktls", "marker", "-", "/system/" + JAVA_MARKER, "installed: " + system.java_marker])
+    return [tuple(r) for r in res], already
+
+
+def describe(v, tag):
+    """Reason text of a verdict line without its own detail."""
+    return {"vendor-modified": "differs from stock %s (vendor change)" % tag,
+            "missing": "stock %s has it, the device does not" % tag,
+            "unexpected-present": "the series adds it, but the device already has a different one",
+            "already-kktls": "kktls version present"}[v]
+
+
+class Patcher(object):
+    def __init__(self, system, release_dir, out, set_path=None):
+        self.system, self.release_dir, self.out, self.set_path = system, release_dir, out, set_path
+        self.lines = []        # report lines
+        self.verdicts = []
+
+    def gates(self):
+        p = self.system.props
+        rel, abi, fp = (p.get("ro.build.version.release"), p.get("ro.product.cpu.abi"), p.get("ro.build.fingerprint"))
+        reasons = []
+        if rel not in LINES:
+            reasons.append(("-", "ro.build.version.release", "Android %s: only 4.4 to 4.4.4 are supported" % rel))
+        if abi not in ABIS:
+            reasons.append(("-", "ro.product.cpu.abi", "ABI %s: only %s are supported" % (abi, ", ".join(ABIS))))
+        if not fp:
+            reasons.append(("-", "ro.build.fingerprint", "build.prop has no build fingerprint"))
+        if reasons:
+            raise Refused(reasons)
+        self.android, self.line, self.abi = rel, LINES[rel], abi
+        self.fp_sha = hashlib.sha256(fp.encode("utf-8")).hexdigest()
+
+    def load_set(self):
+        path = self.set_path or os.path.join(HERE, "sets", self.line + ".txt")
+        try:
+            st = mkset.read_set(path)
+        except (OSError, mkset.SetError) as e:
+            raise ToolError("set file: %s" % e)
+        want = {"model": normalize.MODEL, "normalizer": str(normalize.NORMALIZER_VERSION),
+                "smali": normalize.SMALI_VERSION}
+        for k, v in want.items():
+            if st.header[k] != v:
+                raise ToolError("%s: %s %s, this normalizer needs %s" % (path, k, st.header[k], v))
+        return path, st
+
+    def run(self):
+        s = self.system
+        self.gates()
+        set_path, st = self.load_set()
+        donor, rel = find_donor(self.release_dir, self.line, self.abi)
+        self.lines += ["android %s line %s abi %s" % (self.android, self.line, self.abi),
+                       "fingerprint-sha256 " + self.fp_sha,
+                       "donor %s" % os.path.basename(donor), "set %s %s" % (st.header["tag"], set_path)]
+        jars, reasons = check_jars(s)
+        reasons = check_odex(s) + reasons
+        bak, sma = normalize.smali_jars()
+        work = os.path.join(self.out, "work")
+        dev, dev_entries = {}, {}
+        for j in jars:
+            log("baksmali %s.jar (device)" % j)
+            dev[j] = disassemble(s.path("framework", j + ".jar"), os.path.join(work, "device", j), bak)
+            dev_entries[j] = mkset.entry_digests(s.path("framework", j + ".jar"))
+        self.verdicts, already = verdicts(st, jars, dev, dev_entries, s)
+        bad = [v for v in self.verdicts if v[0] != "match"]
+        if already:
+            reasons.insert(0, ("-", "-", "the system already carries kktls: restore it first (kktls-restore zip), "
+                                         "then patch the restored jars"))
+        reasons += [(j, n, d or describe(v, st.header["tag"])) for v, k, j, n, d in bad]
+        if reasons:
+            raise Refused(reasons)
+        log("reference check: %d lines match" % len(self.verdicts))
+
+        dj = extract_donor(donor, jars, os.path.join(work, "donor-jars"))
+        stage = os.path.join(self.out, "stage")
+        manifest = {"source": s.source, "system": os.path.abspath(s.root), "android": self.android,
+                    "line": self.line, "abi": self.abi, "fingerprint_sha256": self.fp_sha,
+                    "bootclasspath": s.bootclasspath, "dalvik_only": "core-libart" not in jars,
+                    "donor": os.path.abspath(donor), "donor_sha256": sha256_file(donor), "release": rel,
+                    "set": os.path.abspath(set_path), "tag": st.header["tag"], "jars": {}}
+        for j in jars:
+            log("baksmali %s.jar (donor)" % j)
+            don = disassemble(dj[j], os.path.join(work, "donor", j), bak)
+            don_entries = mkset.entry_digests(dj[j])
+            tree = os.path.join(work, "device", j)
+            expect = {c: dg for c, (_, dg) in dev[j].items()}
+            replaced = removed = 0
+            for jj, c, _, ours in st.classes:
+                if jj != j:
+                    continue
+                if (don[c][1] if c in don else None) != ours:
+                    raise ToolError("donor %s.jar class %s does not match the set's ours digest (wrong release "
+                                    "dir or set file)" % (j, c))
+                if ours is None:
+                    os.remove(dev[j][c][0])
+                    expect.pop(c)
+                    removed += 1
+                    continue
+                dst = dev[j][c][0] if c in dev[j] else os.path.join(tree, os.path.relpath(
+                    don[c][0], os.path.join(work, "donor", j)))
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                shutil.copyfile(don[c][0], dst)
+                expect[c] = ours
+                replaced += 1
+            dex = os.path.join(stage, j, "classes.dex")
+            log("smali %s.jar: %d class(es) replaced, %d removed" % (j, replaced, removed))
+            assemble(tree, dex, sma)
+            with open(dex, "rb") as f:
+                ids = dex_id_counts(f.read(0x70))
+            over = ["%s ids %d" % (k, n) for k, n in sorted(ids.items()) if n >= ID_LIMIT]
+            if over:
+                raise Refused([(j, "classes.dex", "%s >= %d (single-dex jar)" % (", ".join(over), ID_LIMIT))])
+            log("round-trip check %s.jar" % j)
+            got = {c: dg for c, (_, dg) in disassemble(dex, os.path.join(work, "check", j), bak).items()}
+            diff = sorted(c for c in set(expect) | set(got) if expect.get(c) != got.get(c))
+            if diff:
+                raise Refused([(j, c, "round trip: digest %s, expected %s" % (got.get(c, "-"), expect.get(c, "-")))
+                               for c in diff])
+            entries = {}
+            for jj, p, _, ours in st.entries:
+                if jj != j:
+                    continue
+                if don_entries.get(p) != ours:
+                    raise ToolError("donor %s.jar entry %s does not match the set's ours sha256" % (j, p))
+                entries[p] = None
+                if ours is not None:
+                    dst = os.path.join(stage, j, p)
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
+                    with zipfile.ZipFile(dj[j]) as z, open(dst, "wb") as f:
+                        f.write(z.read(p))
+                    entries[p] = os.path.relpath(dst, stage)
+            manifest["jars"][j] = {"device": os.path.abspath(s.path("framework", j + ".jar")),
+                                   "sha256": sha256_file(s.path("framework", j + ".jar")),
+                                   "odex": j + ".odex" in s.odex["framework"],
+                                   "dex": os.path.relpath(dex, stage), "entries": entries,
+                                   "replaced": replaced, "removed": removed, "classes": len(got)}
+        tmp = os.path.join(stage, "manifest.json.tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(manifest, f, indent=1, sort_keys=True)
+            f.write("\n")
+        os.replace(tmp, os.path.join(stage, "manifest.json"))
+        shutil.rmtree(work, ignore_errors=True)
+        return manifest
+
+
+def write_report(path, patcher, result, reasons):
+    out = ["# kktls-jarpatch report", "source %s" % patcher.system.source] + patcher.lines
+    out += ["%s %s %s %s%s" % (v, k, j, n, (" - " + d) if d else "") for v, k, j, n, d in patcher.verdicts]
+    out += ["refused %s %s: %s" % r for r in reasons]
+    out.append("result " + result)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write("\n".join(out) + "\n")
+    os.replace(tmp, path)
+
+
+def main(argv):
+    usage = ("usage: kktls-jarpatch.py (--adb SERIAL | --system DIR --bootclasspath LIST --build-prop FILE) "
+             "--release-dir DIR --out DIR [--set FILE] [--report FILE]")
+    opt = {}
+    keys = ("--adb", "--system", "--bootclasspath", "--build-prop", "--release-dir", "--out", "--set", "--report")
+    while argv:
+        a = argv.pop(0)
+        if a in ("-h", "--help"):
+            print(__doc__)
+            return 0
+        if a not in keys or not argv or a in opt:
+            print(usage, file=sys.stderr)
+            return 2
+        opt[a] = argv.pop(0)
+    sysopts = ("--system", "--bootclasspath", "--build-prop")
+    if "--release-dir" not in opt or "--out" not in opt or \
+            ("--adb" in opt) == any(k in opt for k in sysopts) or \
+            ("--adb" not in opt and not all(k in opt for k in sysopts)):
+        print(usage, file=sys.stderr)
+        return 2
+    out = opt["--out"]
+    if os.path.exists(out) and (not os.path.isdir(out) or os.listdir(out)):
+        print("kktls-jarpatch: --out %s exists and is not an empty directory" % out, file=sys.stderr)
+        return 2
+    patcher = None
+    try:
+        os.makedirs(out, exist_ok=True)
+        if "--adb" in opt:
+            system = from_adb(opt["--adb"], os.path.join(out, "device"))
+        else:
+            system = from_system(opt["--system"], opt["--bootclasspath"], opt["--build-prop"])
+        patcher = Patcher(system, opt["--release-dir"], out, opt.get("--set"))
+        m = patcher.run()
+    except Refused as e:
+        for j, n, why in e.reasons:
+            print("kktls-jarpatch: REFUSED %s %s: %s" % (j, n, why), file=sys.stderr)
+        if patcher and "--report" in opt:
+            write_report(opt["--report"], patcher, "refused", e.reasons)
+        return 1
+    except (ToolError, normalize.NormalizeError, mkset.SetError, OSError, zipfile.BadZipFile) as e:
+        print("kktls-jarpatch: error: %s" % e, file=sys.stderr)
+        return 2
+    if "--report" in opt:
+        write_report(opt["--report"], patcher, "staged", [])
+    log("staged %s (%s)" % (os.path.join(out, "stage"), ", ".join(
+        "%s %d replaced/%d removed" % (j, v["replaced"], v["removed"]) for j, v in sorted(m["jars"].items()))))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
