@@ -69,6 +69,8 @@ class MakeSet(unittest.TestCase):
         order = lambda l: (("class", "check", "entry").index(l.split()[0]), mkset.JARS.index(l.split()[1]), l.split()[2])
         self.assertEqual(body(text), sorted(EXPECTED, key=order))
         self.assertIn("# a note\n", text)
+        self.assertEqual([l for l in text.split("\n") if l.startswith("ours ")],
+                         ["ours %s %s" % (j, mkset.aggregate(*ours[j])) for j in mkset.JARS])
         for k, v in (("tag", "android-4.4.2_r2"), ("model", normalize.MODEL),
                      ("normalizer", str(normalize.NORMALIZER_VERSION)), ("smali", normalize.SMALI_VERSION)):
             self.assertIn("\n%s %s\n" % (k, v), text)
@@ -95,9 +97,22 @@ class MakeSet(unittest.TestCase):
         self.assertIn(("conscrypt", BIO, B), s.checks)
         self.assertIn(("core", PROPS, A, B), s.entries)
         self.assertEqual((len(s.classes), len(s.checks), len(s.entries)), (7, 5, 2))
+        self.assertEqual(s.ours, {j: mkset.aggregate(*ours[j]) for j in mkset.JARS})
+
+    def test_aggregate(self):
+        # the whole jar: a class or entry no line names changes it too; the order of the tables does not
+        cls, ent = {INT: A, CAL: B}, {PROPS: A}
+        agg = mkset.aggregate(cls, ent)
+        self.assertEqual(agg, mkset.aggregate(dict(reversed(list(cls.items()))), ent))
+        self.assertNotEqual(agg, mkset.aggregate(dict(cls, **{"Lcom/example/Unlisted;": C}), ent))
+        self.assertNotEqual(agg, mkset.aggregate(dict(cls, **{CAL: C}), ent))
+        self.assertNotEqual(agg, mkset.aggregate(cls, dict(ent, **{"x.txt": C})))
+        self.assertNotEqual(agg, mkset.aggregate(cls, {}))
 
     def test_reader_refuses(self):
+        ours = ["ours %s %s" % (j, C) for j in mkset.JARS]
         good = ["tag android-4.4.2_r2", "model H", "normalizer 1", "smali 2.5.2", "class core %s %s %s" % (DHV, A, B)]
+        good += ours
         bad = {
             "unknown jar": good + ["class framework %s %s %s" % (INT, A, B)],
             "both absent": good + ["class core %s - -" % INT],
@@ -110,11 +125,20 @@ class MakeSet(unittest.TestCase):
             "repeated header": good + ["model S"],
             "missing header": good[1:],
             "foreign tag": ["tag android-5.0.0_r1"] + good[1:],
+            "other normalizer": [l.replace("normalizer 1", "normalizer 9") for l in good],
+            "other model": [l.replace("model H", "model S") for l in good],
+            "no ours line": good[:-1],
+            "repeated ours": good + [ours[0]],
+            "short ours": good[:-1] + ["ours okhttp abc"],
+            "ours of an unknown jar": good + ["ours framework %s" % C],
         }
         p = os.path.join(self.tmp.name, "s.txt")
         with open(p, "w") as f:
             f.write("\n".join(good) + "\n")
         mkset.read_set(p)
+        mkset.read_set(p, "android-4.4.2_r2")
+        with self.assertRaisesRegex(mkset.SetError, "tag android-4.4.2_r2, expected android-4.4.4_r2"):
+            mkset.read_set(p, "android-4.4.4_r2")
         for why, lines in bad.items():
             with open(p, "w") as f:
                 f.write("\n".join(lines) + "\n")
@@ -164,13 +188,15 @@ class ShippedSets(unittest.TestCase):
             self.assertEqual(s.header, {"tag": tag, "model": normalize.MODEL,
                                         "normalizer": str(normalize.NORMALIZER_VERSION),
                                         "smali": normalize.SMALI_VERSION})
-            self.assertEqual((len(s.classes), len(s.checks), len(s.entries)), (19, 46, 2))
+            self.assertEqual((len(s.classes), len(s.checks), len(s.entries), len(s.ours)), (19, 46, 2, 4))
             self.assertEqual({e[1] for e in s.entries}, {"java/security/security.properties"})
             named = {c[1] for c in s.classes} | {c[1] for c in s.checks}
             self.assertEqual(set(jni) - named, set())
             with open(p) as f:
                 bodies.append(body(f.read()))
-        self.assertEqual(bodies[0], bodies[1])   # measured: the two lines differ only in libjavacrypto.so
+        # measured: the listed lines are equal (the ours aggregates are not: the 4.4.2 and 4.4.4 jars differ outside
+        # the set, in AOSP code the series does not touch)
+        self.assertEqual(bodies[0], bodies[1])
 
 
 FIXTURE = """\
@@ -193,8 +219,8 @@ FIXTURE = """\
 
 
 def smali_or_skip(test):
-    if not shutil.which("java"):
-        test.skipTest("no java on PATH")
+    if not shutil.which(normalize.JAVA):
+        test.skipTest("no %s on PATH" % normalize.JAVA)
     try:
         return normalize.smali_jars()
     except normalize.NormalizeError as e:
@@ -221,7 +247,7 @@ class EndToEnd(unittest.TestCase):
             with open(p, "w") as f:
                 f.write(FIXTURE % {"desc": desc, "line": line, "const": const})
         dex = os.path.join(self.root, "dex-%s-%s" % (side, name))
-        r = subprocess.run(["java", "-jar", self.jars[1], "a", "-a", "19", "-o", dex, src],
+        r = subprocess.run([normalize.JAVA, "-jar", self.jars[1], "a", "-a", "19", "-o", dex, src],
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
         self.assertEqual(r.returncode, 0, r.stdout)
         out = os.path.join(self.root, side, "system", "framework", name + ".jar")

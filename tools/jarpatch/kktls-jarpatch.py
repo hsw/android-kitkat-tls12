@@ -16,7 +16,9 @@ Inputs:
   --build-prop FILE   its build.prop.
   --release-dir DIR   a directory with the release's SHA256SUMS and the java zip of the device's line and ABI,
                       kktls-java-<4.4.2|4.4.4>-<armeabi-v7a|x86>-<release>.zip (the donor of the replacement classes);
-                      the line follows ro.build.version.release (4.4, 4.4.1, 4.4.2 -> 4.4.2; 4.4.3, 4.4.4 -> 4.4.4).
+                      the line follows ro.build.version.release (4.4.1, 4.4.2 -> 4.4.2; 4.4.3, 4.4.4 -> 4.4.4). Its
+                      installer (kktls/checks.sh) must know the java-patched kind (and oem_ack for --accept-oem),
+                      else tool error: the device would refuse the zips.
   --accept-oem        on an OEM/CM build (a build.prop key of installer/checks.sh KK_OEM_MARKERS, e.g. ro.cm.version):
                       also write device-bound copies of the release's openssl and conscrypt zips (see 7.); the release
                       dir must hold kktls-openssl-4.4-<abi>-<release>.zip and kktls-conscrypt-<abi>-<release>.zip.
@@ -24,7 +26,8 @@ Inputs:
   --report FILE       write the per-line verdicts and the result there as well.
 
 What it does (nothing on the device is changed):
-  1. gates: Android 4.4.x, ABI armeabi-v7a or x86, a build fingerprint; no .odex in /system/{framework,app,priv-app}
+  1. gates: Android 4.4.1 to 4.4.4 (4.4, android-4.4_r1/r1.2, lacks upstream SSLEngine and okhttp fixes that the
+     series builds on and the patcher does not carry: refused), ABI armeabi-v7a or x86, a build fingerprint; no .odex in /system/{framework,app,priv-app}
      whose jar/apk lacks classes.dex (the installer's dex check: after core.jar changes Dalvik must re-dexopt them);
      the four jars present with exactly one classes.dex (core-libart.jar may be absent when /system/lib/libart.so is,
      a Dalvik-only ROM); an OEM/CM build (or --accept-oem): the native-consumer scan (nativescan.py: every ELF of
@@ -45,8 +48,11 @@ What it does (nothing on the device is changed):
      any verdict but match refuses, with the full list;
   3. the replacement: baksmali (debug info kept) of the device jar and of the donor jar; every class of the set is
      replaced by the donor's whole .smali file, the classes the series removes are deleted, smali -a 19 reassembles
-     one classes.dex (type, proto, field and method id counts must stay below 65536); the donor's classes and entries
-     must equal the set's ours digests (else the release dir and the set file do not belong together: tool error);
+     one classes.dex (type, proto, field and method id counts must stay below 65536); each donor jar as a whole must
+     give the set's ours aggregate, and its classes and entries the set's ours digests (else the release dir and the
+     set file do not belong together: tool error); a class of the device's conscrypt.jar that the set does not
+     replace must declare no native method (the donor's libjavacrypto.so replaces the device's and registers only
+     the stock 4.4 natives);
   4. round-trip invariant: the new classes.dex is disassembled again, every class not in the set must keep the digest
      it had on the device and every replaced class must have the set's ours digest;
   5. link check (linkcheck.py), per runtime (dalvik: BOOTCLASSPATH with core.jar; art: with core-libart.jar): every
@@ -57,7 +63,8 @@ What it does (nothing on the device is changed):
   6. the recovery zip (rawzip.py): each patched jar is the device jar with classes.dex and the set's entries swapped,
      every other entry copied byte for byte; the zip is the donor java zip with these jars in place of its own (a
      donor jar the device lacks, core-libart.jar on a Dalvik-only ROM, is dropped), the donor's libjavacrypto.so,
-     installer, helpers and notices, and a new kktls/zip.conf:
+     installer and helpers, a NOTICE that says the jars are the device's own with the set's classes replaced (then
+     the donor's notices), and a new kktls/zip.conf:
        kind=java-patched, release= (the donor's: the java.version marker the conscrypt zip checks), abi=, android=
        (the device's release), tag= (the donor's), jar.<name>=<sha256 of the device jar it was made from>,
        fingerprint=<sha256 of ro.build.fingerprint>;
@@ -72,9 +79,12 @@ device only: it holds the device's own classes, not for redistribution), OUT/sta
 OUT/stage/<jar>/classes.dex, OUT/stage/<jar>/<entry path> (the donor's bytes of the set's entries) and
 OUT/stage/manifest.json (system, device jar sha256s, sha256 of ro.build.fingerprint, donor, per-jar staged files,
 link check counts, the zip, with the scan: oem markers, extra consumers and the oem zips), with --accept-oem the two
-oem zips, and OUT/native-consumers.txt after the scan (also when refused). The raw fingerprint is never printed or written. OUT must not exist or be empty.
+oem zips, and OUT/native-consumers.txt after the scan (also when refused); with --adb, OUT/device/ holds the files
+copied from the device (its build.prop with the raw fingerprint among them). The zips, the manifest and the report
+carry only the sha256 of the fingerprint; nothing prints the raw one. OUT holds the device's own files: do not publish
+it. OUT must not exist or be empty.
 
-Exit 0 staged, 1 refused (each reason: jar, class, why), 2 usage or tool error. Stdlib only; Java 8+ (`java` on PATH,
+Exit 0 staged, 1 refused (each reason: jar, class, why), 2 usage, tool error or an unexpected error. Stdlib only; Java 8+ (`java` on PATH,
 or $KKTLS_JAVA) and the smali/baksmali jars of fetch-smali.sh.
 """
 import hashlib
@@ -95,14 +105,13 @@ import nativescan  # noqa: E402
 import normalize  # noqa: E402
 import rawzip  # noqa: E402
 
-LINES = {"4.4": "4.4.2", "4.4.1": "4.4.2", "4.4.2": "4.4.2", "4.4.3": "4.4.4", "4.4.4": "4.4.4"}
+LINES = {"4.4.1": "4.4.2", "4.4.2": "4.4.2", "4.4.3": "4.4.4", "4.4.4": "4.4.4"}
 ABIS = ("armeabi-v7a", "x86")
 KKTLS_PKG = "Lio/github/hsw/kktls/"
 SUBDIRS = (("framework", ".jar"), ("app", ".apk"), ("priv-app", ".apk"))
 JAVA_MARKER = "etc/kktls/java.version"
 DEX_IDS = (("type", 0x40), ("proto", 0x48), ("field", 0x50), ("method", 0x58))
 ID_LIMIT = 65536
-JOBS = str(min(8, os.cpu_count() or 1))
 # installer/checks.sh KK_OEM_MARKERS (a test keeps the two equal): build.prop keys (prefix match) that only
 # CyanogenMod-family and OEM firmwares set; the openssl and conscrypt zips refuse such a system unless their zip.conf
 # carries oem_ack=<sha256 of its ro.build.fingerprint> (the --accept-oem copies)
@@ -111,7 +120,9 @@ ro.pa. ro.pac. ro.slim. ro.omni. ro.mk. ro.mokee. ro.carbon. ro.rr. ro.dirtyunic
 ro.build.PDA ro.build.hidden_ver ro.build.sense. ro.htc. ro.lge. ro.semc. ro.sony. ro.yunos. ro.vivo.
 ro.build.version.opporom ro.oppo. ro.mediatek. ro.flyme. ro.meizu. ro.coolpad. ro.zte. ro.lenovo. ro.asus.""".split()
 NATIVE_REPORT = "native-consumers.txt"
-NATIVE_DIRS = ("lib", "bin", "xbin", "vendor")
+# toolbox `ls -lR` prints "opendir failed, <why>" after the header of a directory it cannot read, busybox
+# "ls: <path>: <why>"; adb shell on 4.4 merges the device's stderr into the output
+LS_ERRORS = ("opendir failed", "Permission denied")
 
 
 class ToolError(Exception):
@@ -128,12 +139,7 @@ def log(msg):
     print("kktls-jarpatch: " + msg, file=sys.stderr)
 
 
-def sha256_file(path):
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for b in iter(lambda: f.read(1 << 20), b""):
-            h.update(b)
-    return h.hexdigest()
+sha256_file = mkset.sha256_file
 
 
 def read_props(path):
@@ -262,30 +268,40 @@ def from_adb(serial, stage):
 
 
 def ls_files(listing, top):
-    """Regular files of a `ls -lR TOP` listing (toolbox or busybox format; directories come as `PATH:` headers,
-    symbolic links and other types are skipped): sorted paths."""
-    res, cur = [], None
+    """(sorted paths of the regular files, sorted [(path, why)] of the directories ls could not read) of a
+    `ls -lR TOP 2>&1` listing (toolbox or busybox format; directories come as `PATH:` headers, symbolic links and
+    other types are skipped; an error line names its path (busybox `ls: PATH: why`) or follows the header of the
+    directory it is about (toolbox `opendir failed, why`))."""
+    res, errs, cur = [], set(), None
     for l in listing.split("\n"):
         l = l.rstrip()
         if l.endswith(":") and l.startswith("/"):
             cur = l[:-1]
+            continue
+        if any(e in l for e in LS_ERRORS):
+            m = re.match(r"(?:ls: )?(/\S+): (.*)\Z", l)
+            path, why = (m.group(1), m.group(2)) if m else (cur or top, l)
+            if path == top or path.startswith(top + "/"):
+                errs.add((path, why))
             continue
         if cur is None or not l.startswith("-"):
             continue
         name = l.split()[-1]
         if cur == top or cur.startswith(top + "/"):
             res.append(cur + "/" + name)
-    return sorted(res)
+    return sorted(res), sorted(errs)
 
 
 def fetch_native(system):
     """--adb: copy /system/{lib,bin,xbin,vendor} and the *.so files under /system/{app,priv-app} into the mirror for the
-    native-consumer scan; a file that does not arrive (not readable for the shell user) is reported, not fatal."""
+    native-consumer scan; a file that does not arrive or a directory ls cannot read (not readable for the shell user) is
+    reported, not fatal (a directory that does not exist, as /system/vendor on many builds, is not an error line)."""
     failed = []
-    for sub in NATIVE_DIRS + tuple(s for s, ext in SUBDIRS if ext == ".apk"):
+    for sub in nativescan.TREES:
         top = "/system/" + sub
-        paths = ls_files(system.adb.shell("ls -lR %s 2>/dev/null" % top), top)
-        if sub not in NATIVE_DIRS:
+        paths, errs = ls_files(system.adb.shell("ls -lR %s 2>&1" % top), top)
+        failed += [(p[len("/system/"):] + "/", "not listable: %s" % why) for p, why in errs]
+        if sub in nativescan.APK_DIRS:
             paths = [p for p in paths if p.endswith(".so")]
         log("adb: pulling %d file(s) of %s for the native-consumer scan" % (len(paths), top))
         for p in paths:
@@ -312,8 +328,8 @@ def oem_markers(build_prop):
 
 
 def find_donor(release_dir, line, abi):
-    """(path, release) of kktls-java-<line>-<abi>-<release>.zip, checked against the dir's SHA256SUMS and its
-    zip.conf."""
+    """(path, release, zip.conf) of kktls-java-<line>-<abi>-<release>.zip, checked against the dir's SHA256SUMS, its
+    zip.conf and its installer."""
     pat = re.compile(r"kktls-java-%s-%s-([^/]+)\.zip\Z" % (re.escape(line), re.escape(abi)))
     try:
         found = sorted((n, pat.match(n).group(1)) for n in os.listdir(release_dir) if pat.match(n))
@@ -325,19 +341,23 @@ def find_donor(release_dir, line, abi):
         raise ToolError("%s: several java zips for %s %s (%s): keep one release" %
                         (release_dir, line, abi, ", ".join(n for n, _ in found)))
     name, rel = found[0]
-    return release_zip(release_dir, name, {"kind": "java", "android": line, "abi": abi, "release": rel}), rel
+    path, conf = release_zip(release_dir, name, {"kind": "java", "android": line, "abi": abi, "release": rel},
+                             "java-patched)")
+    return path, rel, conf
 
 
 def oem_sources(release_dir, abi, rel):
     """[(kind, path)] of the release's 4.4 openssl and conscrypt zips of this ABI (the sources of the --accept-oem
     copies), checked as the donor is."""
-    return [(k, release_zip(release_dir, n, {"kind": k, "android": "4.4", "abi": abi, "release": rel}))
+    return [(k, release_zip(release_dir, n, {"kind": k, "android": "4.4", "abi": abi, "release": rel}, "oem_ack")[0])
             for k, n in (("openssl", "kktls-openssl-4.4-%s-%s.zip" % (abi, rel)),
                          ("conscrypt", "kktls-conscrypt-%s-%s.zip" % (abi, rel)))]
 
 
-def release_zip(release_dir, name, want):
-    """Path of release_dir/name after its SHA256SUMS line and the zip.conf keys of want are checked."""
+def release_zip(release_dir, name, want, installer_knows):
+    """(path, zip.conf) of release_dir/name after its SHA256SUMS line, the zip.conf keys of want and its installer
+    (kktls/checks.sh must contain installer_knows: an older installer refuses the zips written from it) are
+    checked."""
     path = os.path.join(release_dir, name)
     if not os.path.isfile(path):
         raise ToolError("%s: no %s" % (release_dir, name))
@@ -356,14 +376,19 @@ def release_zip(release_dir, name, want):
         raise ToolError("%s: sha256 differs from SHA256SUMS" % name)
     try:
         with zipfile.ZipFile(path) as z:
-            conf = z.read("kktls/zip.conf").decode("utf-8", "replace")
+            conf = read_conf(z)
+            names = set(z.namelist())
+            installer = z.read("kktls/checks.sh").decode("utf-8", "replace") if "kktls/checks.sh" in names else ""
     except (OSError, KeyError, zipfile.BadZipFile) as e:
         raise ToolError("%s: no readable kktls/zip.conf: %s" % (name, e))
-    conf = dict(l.split("=", 1) for l in conf.split("\n") if "=" in l)
     for k, v in want.items():
         if conf.get(k) != v:
             raise ToolError("%s: zip.conf %s=%s, expected %s" % (name, k, conf.get(k), v))
-    return path
+    if installer_knows not in installer:
+        raise ToolError("%s: its installer predates this tool (no %s in kktls/checks.sh): the device would refuse "
+                        "the zips made from it; use the zips of the jarpatch tool's own release" %
+                        (name, installer_knows.rstrip(")")))
+    return path, conf
 
 
 def extract_donor(donor, jars, dst):
@@ -400,18 +425,39 @@ def oem_conf(text, fp_sha):
 
 
 def read_conf(z):
+    """{key: value} of an open zip's kktls/zip.conf."""
     return dict(l.split("=", 1) for l in z.read("kktls/zip.conf").decode("utf-8", "replace").split("\n") if "=" in l)
 
 
-def patched_jar(device, dst, dex, entries):
-    """device jar -> dst with classes.dex = dex and entries {path: bytes | None (removed)}; other entries raw."""
+def write_checked(src, dst, changes):
+    """rawzip.rewrite(src, dst, changes {path: bytes | None (removed)}), then dst must pass testzip and give back every
+    new entry's bytes."""
     try:
-        rawzip.rewrite(device, dst, dict(entries, **{"classes.dex": dex}))
+        rawzip.rewrite(src, dst, changes)
     except rawzip.ZipError as e:
-        raise ToolError("%s: %s" % (device, e))
+        raise ToolError("%s: %s" % (os.path.basename(src), e))
     with zipfile.ZipFile(dst) as z:
-        if z.testzip() is not None or z.read("classes.dex") != dex:
-            raise ToolError("%s: the patched jar does not read back" % dst)
+        if z.testzip() is not None or any(z.read(n) != b for n, b in changes.items() if b is not None):
+            raise ToolError("%s does not read back" % dst)
+
+
+def patched_notice(donor_notice, donor_name, jars, tag):
+    """NOTICE of a java-patched zip: what its jars are, then the donor java zip's notices."""
+    head = ["Notices for a kktls java-patched zip",
+            "",
+            "This zip was made by kktls-jarpatch.py for one system from %s. Its" % donor_name,
+            "system/framework/{%s}.jar are that system's own jars: every class and entry is the" % ",".join(jars),
+            "vendor's, except the classes and entries listed in the jar patcher's set file, which come from the",
+            "release java zip: AOSP %s libcore and external/okhttp with the kktls patch series" % tag,
+            "(Apache License 2.0). The other files (installer, helpers, lib/libjavacrypto.so) are the release java",
+            "zip's. Its notices follow; what they say about how the jars were built applies to the replaced classes",
+            "only. The vendor's classes keep the vendor's terms.",
+            "",
+            "=" * 77,
+            "Notices of %s" % donor_name,
+            "=" * 77,
+            ""]
+    return "\n".join(head) + "\n" + donor_notice
 
 
 def has_dex(path):
@@ -469,34 +515,16 @@ def check_jars(system):
     return jars, reasons
 
 
-def index_tree(root):
-    """{descriptor: (smali path, digest)} of a baksmali output tree."""
-    res = {}
-    for d, _, files in os.walk(root):
-        for f in sorted(files):
-            if not f.endswith(".smali"):
-                continue
-            p = os.path.join(d, f)
-            with open(p, encoding="utf-8") as fh:
-                t = fh.read()
-            try:
-                c = normalize.class_descriptor(t)
-                dig = hashlib.sha256(normalize.normalize_text(t).encode("utf-8")).hexdigest()
-            except normalize.NormalizeError as e:
-                raise ToolError("%s: %s" % (p, e))
-            if c in res:
-                raise ToolError("class %s defined twice under %s" % (c, root))
-            res[c] = (p, dig)
-    return res
-
-
 def disassemble(src, out, baksmali_jar):
     """baksmali d -a 19 (debug info kept) of a jar or dex into out; {descriptor: (path, digest)}."""
-    cmd = [normalize.JAVA, "-jar", baksmali_jar, "d", "-a", normalize.BAKSMALI_API, "-j", JOBS, src, "-o", out]
-    r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
-    if r.returncode != 0:
-        raise ToolError("baksmali of %s failed (exit %d): %s" % (src, r.returncode, r.stdout.strip()[-500:]))
-    return index_tree(out)
+    normalize.baksmali(src, out, baksmali_jar)
+    return normalize.index_dir(out)
+
+
+def native_methods(path):
+    """The `.method` lines of a smali file that declare a native method."""
+    with open(path, encoding="utf-8") as f:
+        return [l.strip() for l in f if l.startswith(".method ") and " native " in l]
 
 
 def assemble(tree, dex, smali_jar):
@@ -592,8 +620,12 @@ class Patcher(object):
         p = self.system.props
         rel, abi, fp = (p.get("ro.build.version.release"), p.get("ro.product.cpu.abi"), p.get("ro.build.fingerprint"))
         reasons = []
-        if rel not in LINES:
-            reasons.append(("-", "ro.build.version.release", "Android %s: only 4.4 to 4.4.4 are supported" % rel))
+        if rel == "4.4":
+            reasons.append(("-", "ro.build.version.release", "Android 4.4 (android-4.4_r1/r1.2) lacks upstream SSLEngine "
+                            "and okhttp fixes that the series builds on and this tool does not carry: only 4.4.1 to "
+                            "4.4.4 are supported"))
+        elif rel not in LINES:
+            reasons.append(("-", "ro.build.version.release", "Android %s: only 4.4.1 to 4.4.4 are supported" % rel))
         if abi not in ABIS:
             reasons.append(("-", "ro.product.cpu.abi", "ABI %s: only %s are supported" % (abi, ", ".join(ABIS))))
         if not fp:
@@ -606,21 +638,15 @@ class Patcher(object):
     def load_set(self):
         path = self.set_path or os.path.join(HERE, "sets", self.line + ".txt")
         try:
-            st = mkset.read_set(path)
+            return path, mkset.read_set(path)
         except (OSError, mkset.SetError) as e:
             raise ToolError("set file: %s" % e)
-        want = {"model": normalize.MODEL, "normalizer": str(normalize.NORMALIZER_VERSION),
-                "smali": normalize.SMALI_VERSION}
-        for k, v in want.items():
-            if st.header[k] != v:
-                raise ToolError("%s: %s %s, this normalizer needs %s" % (path, k, st.header[k], v))
-        return path, st
 
     def run(self):
         s = self.system
         self.gates()
         set_path, st = self.load_set()
-        donor, rel = find_donor(self.release_dir, self.line, self.abi)
+        donor, rel, donor_conf = find_donor(self.release_dir, self.line, self.abi)
         self.lines += ["android %s line %s abi %s" % (self.android, self.line, self.abi),
                        "fingerprint-sha256 " + self.fp_sha,
                        "donor %s" % os.path.basename(donor), "set %s %s" % (st.header["tag"], set_path)]
@@ -648,6 +674,16 @@ class Patcher(object):
             reasons.insert(0, ("-", "-", "the system already carries kktls: restore it first (kktls-restore zip), "
                                          "then patch the restored jars"))
         reasons += [(j, n, d or describe(v, st.header["tag"])) for v, k, j, n, d in bad]
+        if "conscrypt" in jars:
+            # set classes are replaced, check classes equal stock: only a vendor class can carry other natives
+            listed = {c for jj, c, _, _ in st.classes if jj == "conscrypt"} | \
+                     {c for jj, c, _ in st.checks if jj == "conscrypt"}
+            for c, (p, _) in sorted(dev["conscrypt"].items()):
+                nat = [] if c in listed else native_methods(p)
+                if nat:
+                    reasons.append(("conscrypt", c, "declares %d native method(s) (%s%s): the donor's "
+                                    "libjavacrypto.so replaces the device's and registers only the stock 4.4 ones" %
+                                    (len(nat), "; ".join(nat[:2]), "; ..." if len(nat) > 2 else "")))
         if reasons:
             raise Refused(reasons)
         log("reference check: %d lines match" % len(self.verdicts))
@@ -664,6 +700,9 @@ class Patcher(object):
             log("baksmali %s.jar (donor)" % j)
             don = disassemble(dj[j], os.path.join(work, "donor", j), bak)
             don_entries = mkset.entry_digests(dj[j])
+            if mkset.aggregate({c: dg for c, (_, dg) in don.items()}, don_entries) != st.ours[j]:
+                raise ToolError("donor %s.jar does not give the set's ours aggregate (wrong release dir or set file: "
+                                "the release and the set do not belong together)" % j)
             tree = os.path.join(work, "device", j)
             expect = {c: dg for c, (_, dg) in dev[j].items()}
             replaced = removed = 0
@@ -721,7 +760,7 @@ class Patcher(object):
                                    "dex": os.path.relpath(dex, stage), "entries": entries,
                                    "replaced": replaced, "removed": removed, "classes": len(got)}
         manifest["linkcheck"] = self.link_check(staged, replaced_smali, changed, "core-libart" not in jars)
-        manifest["zip"], manifest["zip_sha256"] = self.write_zip(manifest, stage, donor)
+        manifest["zip"], manifest["zip_sha256"] = self.write_zip(manifest, stage, donor, donor_conf)
         self.lines.append("zip %s sha256 %s" % (manifest["zip"], manifest["zip_sha256"]))
         if native is not None:
             manifest["oem"] = {"markers": self.oem, "native_report": NATIVE_REPORT, "extra": native, "zips": {}}
@@ -737,7 +776,7 @@ class Patcher(object):
         shutil.rmtree(work, ignore_errors=True)
         return manifest
 
-    def write_zip(self, manifest, stage, donor):
+    def write_zip(self, manifest, stage, donor, conf):
         """The patched jars (stage/jars/<jar>.jar) and the recovery zip in OUT; returns (zip name, its sha256)."""
         jars, payload = [], {}
         for j in mkset.JARS:
@@ -756,33 +795,22 @@ class Patcher(object):
                         entries[p] = f.read()
             dst = os.path.join(stage, "jars", j + ".jar")
             os.makedirs(os.path.dirname(dst), exist_ok=True)
-            patched_jar(v["device"], dst, dex, entries)
+            write_checked(v["device"], dst, dict(entries, **{"classes.dex": dex}))
             v["patched"], v["patched_sha256"] = os.path.relpath(dst, stage), sha256_file(dst)
             with open(dst, "rb") as f:
                 payload["system/framework/%s.jar" % j] = f.read()
             jars.append((j, v["sha256"]))
         with zipfile.ZipFile(donor) as z:
-            conf = read_conf(z)
             names = set(z.namelist())
-            try:
-                installer = z.read("kktls/checks.sh").decode("utf-8", "replace")
-            except KeyError:
-                installer = ""
+            notice = z.read("NOTICE").decode("utf-8", "replace") if "NOTICE" in names else ""
         payload = {n: b for n, b in payload.items() if b is not None or n in names}
-        if "java-patched)" not in installer:
-            log("WARNING: the installer in %s predates the java-patched kind: the device will refuse this zip "
-                "('unknown zip kind'); use the java zip of the jarpatch tool's own release" % os.path.basename(donor))
+        payload["NOTICE"] = patched_notice(notice, os.path.basename(donor), [j for j, _ in jars],
+                                           manifest["tag"]).encode("utf-8")
         payload["kktls/zip.conf"] = zip_conf(conf, manifest["release"], self.abi, self.android, jars,
                                              self.fp_sha).encode("utf-8")
         name = "kktls-java-patched-%s-%s-%s-%s.zip" % (self.android, self.abi, manifest["release"], self.fp_sha[:8])
         dst = os.path.join(self.out, name)
-        try:
-            rawzip.rewrite(donor, dst, payload)
-        except rawzip.ZipError as e:
-            raise ToolError("%s: %s" % (os.path.basename(donor), e))
-        with zipfile.ZipFile(dst) as z:
-            if z.testzip() is not None:
-                raise ToolError("%s does not read back" % name)
+        write_checked(donor, dst, payload)
         log("wrote %s" % dst)
         return name, sha256_file(dst)
 
@@ -818,24 +846,11 @@ class Patcher(object):
         """OUT/kktls-<openssl-oem-4.4|conscrypt-oem>-<abi>-<rel>-<fp8>.zip: the release zip with oem_ack= appended to
         its zip.conf, every other entry copied byte for byte; returns (name, sha256)."""
         with zipfile.ZipFile(src) as z:
-            text = z.read("kktls/zip.conf").decode("utf-8")
-            try:
-                installer = z.read("kktls/checks.sh").decode("utf-8", "replace")
-            except KeyError:
-                installer = ""
-        if "oem_ack" not in installer:
-            log("WARNING: the installer in %s predates oem_ack: the device will refuse the copy as an OEM/CM build; "
-                "use the zips of the jarpatch tool's own release" % os.path.basename(src))
+            text = z.read("kktls/zip.conf").decode("utf-8", "replace")
         name = "kktls-%s-oem-%s%s-%s-%s.zip" % (kind, "4.4-" if kind == "openssl" else "", self.abi, rel,
                                                 self.fp_sha[:8])
         dst = os.path.join(self.out, name)
-        try:
-            rawzip.rewrite(src, dst, {"kktls/zip.conf": oem_conf(text, self.fp_sha).encode("utf-8")})
-        except rawzip.ZipError as e:
-            raise ToolError("%s: %s" % (os.path.basename(src), e))
-        with zipfile.ZipFile(dst) as z:
-            if z.testzip() is not None:
-                raise ToolError("%s does not read back" % name)
+        write_checked(src, dst, {"kktls/zip.conf": oem_conf(text, self.fp_sha).encode("utf-8")})
         log("wrote %s (for this system only)" % dst)
         return name, sha256_file(dst)
 
@@ -912,6 +927,9 @@ def main(argv):
     except (ToolError, normalize.NormalizeError, mkset.SetError, linkcheck.LinkError, OSError,
             zipfile.BadZipFile) as e:
         print("kktls-jarpatch: error: %s" % e, file=sys.stderr)
+        return 2
+    except Exception as e:     # a bug or an input nobody foresaw: never the "refused" exit
+        print("kktls-jarpatch: unexpected error: %s: %s" % (type(e).__name__, e), file=sys.stderr)
         return 2
     if "--report" in opt:
         write_report(opt["--report"], patcher, "staged", [])

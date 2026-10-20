@@ -127,8 +127,8 @@ EXT = [(OBJ, 1, None), (HELP, 1, "0x1")]       # /system/framework/ext.jar of th
 
 
 def smali_or_skip(test):
-    if not shutil.which("java"):
-        test.skipTest("no java on PATH")
+    if not shutil.which(normalize.JAVA):
+        test.skipTest("no %s on PATH" % normalize.JAVA)
     try:
         return normalize.smali_jars()
     except normalize.NormalizeError as e:
@@ -160,11 +160,15 @@ elif a[:1] == ["shell"]:
     c = a[1]
     if c == "echo $BOOTCLASSPATH":
         sys.stdout.write(os.environ["FAKE_ADB_BCP"] + "\r\n")
-    elif c.startswith("ls -lR ") and c.endswith(" 2>/dev/null"):     # toolbox format
-        top = c[len("ls -lR "):-len(" 2>/dev/null")]
+    elif c.startswith("ls -lR ") and c.endswith(" 2>&1"):     # toolbox format, its stderr in the stream
+        top = c[len("ls -lR "):-len(" 2>&1")]
         for d, dirs, files in os.walk(dev(top)):
             dirs.sort()
             sys.stdout.write("\r\n/%s:\r\n" % os.path.relpath(d, root))
+            if "/" + os.path.relpath(d, root) == os.environ.get("FAKE_ADB_DENY_DIR"):
+                sys.stdout.write("opendir failed, Permission denied\r\n")
+                dirs[:] = []
+                continue
             for n in sorted(dirs + files):
                 p = os.path.join(d, n)
                 if os.path.islink(p):
@@ -196,7 +200,7 @@ class Fixture(unittest.TestCase):
         cls.tmp = tempfile.TemporaryDirectory()
         cls.base = cls.tmp.name
         cls.jars = None
-        if not shutil.which("java"):
+        if not shutil.which(normalize.JAVA):
             return
         try:
             cls.jars = normalize.smali_jars()
@@ -238,7 +242,7 @@ class Fixture(unittest.TestCase):
                 with open(p, "w") as f:
                     f.write(fixture_smali(*spec))
             d = src + ".dex"
-            r = subprocess.run(["java", "-jar", cls.jars[1], "a", "-a", "19", "-o", d, src],
+            r = subprocess.run([normalize.JAVA, "-jar", cls.jars[1], "a", "-a", "19", "-o", d, src],
                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
             assert r.returncode == 0 and os.path.isfile(d), r.stdout   # smali exits 0 on some errors
             cls.cache[key] = d
@@ -251,13 +255,17 @@ class Fixture(unittest.TestCase):
                 z.writestr(n, data)
 
     @classmethod
-    def make_release(cls, rel, ours, conf=None):
-        """The donor java zip and the openssl and conscrypt zips the --accept-oem copies are made from."""
+    def make_release(cls, rel, ours, conf=None, installer="# java-patched) oem_ack\n"):
+        """The donor java zip and the openssl and conscrypt zips the --accept-oem copies are made from; installer:
+        their kktls/checks.sh (None: none, an installer older than the jar patcher)."""
         os.makedirs(rel, exist_ok=True)
         c = {"kind": "java", "release": REL, "abi": ABI, "android": LINE, "tag": "android-4.4.4_r2"}
         c.update(conf or {})
         with zipfile.ZipFile(os.path.join(rel, DONOR), "w", zipfile.ZIP_DEFLATED) as zf:
             zf.writestr("kktls/zip.conf", "".join("%s=%s\n" % kv for kv in c.items()))
+            zf.writestr("NOTICE", "donor notices\n")
+            if installer is not None:
+                zf.writestr("kktls/checks.sh", installer)
             for j in mkset.JARS:
                 zf.write(os.path.join(ours, "system", "framework", j + ".jar"), "system/framework/%s.jar" % j)
             zf.writestr("system/lib/libjavacrypto.so", b"\x7fELF fixture")
@@ -266,7 +274,8 @@ class Fixture(unittest.TestCase):
             with zipfile.ZipFile(os.path.join(rel, name), "w", zipfile.ZIP_DEFLATED) as zf:
                 zf.writestr("kktls/zip.conf", "kind=%s\nrelease=%s\nabi=%s\nandroid=4.4\ntag=android-4.4.2_r2\n" %
                             (kind, REL, ABI))
-                zf.writestr("kktls/checks.sh", "# oem_ack\n", zipfile.ZIP_STORED)
+                if installer is not None:
+                    zf.writestr("kktls/checks.sh", installer, zipfile.ZIP_STORED)
                 zf.writestr(payload, kind.encode() * 50)
         with open(os.path.join(rel, "SHA256SUMS"), "w") as f:
             for n in (DONOR, OPENSSL, CONSCRYPT):
@@ -376,6 +385,10 @@ class Patch(Fixture):
             self.assertEqual(z.namelist(), [n for n in d.namelist() if n != "system/framework/core-libart.jar" or
                                             "core-libart" in jars])
             self.assertEqual(z.read("system/lib/libjavacrypto.so"), d.read("system/lib/libjavacrypto.so"))
+            notice = z.read("NOTICE").decode()
+            self.assertTrue(notice.startswith("Notices for a kktls java-patched zip\n"), notice)
+            self.assertIn("system/framework/{%s}.jar are that system's own jars" % ",".join(jars), notice)
+            self.assertTrue(notice.endswith("Notices of %s\n%s\n\ndonor notices\n" % (DONOR, "=" * 77)), notice)
             for j in jars:
                 data = z.read("system/framework/%s.jar" % j)
                 with open(os.path.join(stage, m["jars"][j]["patched"]), "rb") as f:
@@ -451,11 +464,14 @@ class Patch(Fixture):
     def test_oem_refused_adb(self):
         # without --accept-oem: refused after the scan, the report is there; a file the shell cannot read is listed
         self.oem_system()
-        os.environ["FAKE_ADB_DENY"] = "/system/bin/static"
+        os.makedirs(os.path.join(self.sysdir, "vendor", "secret"))
+        with open(os.path.join(self.sysdir, "vendor", "secret", "libhidden.so"), "wb") as f:
+            f.write(elf(["libssl.so"]))
+        os.environ.update(FAKE_ADB_DENY="/system/bin/static", FAKE_ADB_DENY_DIR="/system/vendor/secret")
         try:
             rc, out = self.patch(adb=True)
         finally:
-            del os.environ["FAKE_ADB_DENY"]
+            del os.environ["FAKE_ADB_DENY"], os.environ["FAKE_ADB_DENY_DIR"]
         self.assertRefused(rc, out, "REFUSED - ro.cm.version: OEM/CM build: rerun with --accept-oem after reading "
                                     "the report " + os.path.join(self.out, "native-consumers.txt"))
         with open(os.path.join(self.out, "native-consumers.txt")) as f:
@@ -463,6 +479,8 @@ class Patch(Fixture):
         self.assertIn("extra vendor/lib/libvendorssl.so libcrypto.so", rep)
         self.assertIn("aosp lib/libjavacrypto.so libssl.so", rep)
         self.assertTrue(any(l.startswith("unreadable bin/static: adb pull failed") for l in rep), rep)
+        self.assertIn("unreadable vendor/secret/: not listable: opendir failed, Permission denied", rep)
+        self.assertFalse([l for l in rep if "libhidden" in l], rep)
         self.assertIn("native extra vendor/lib/libvendorssl.so libcrypto.so", self.read_report())
         self.assertIn("oem-marker ro.cm.version", self.read_report())
         self.assertEqual(sorted(n for n in os.listdir(self.out) if n.endswith(".zip")), [])
@@ -492,7 +510,6 @@ class Patch(Fixture):
                     end = min([j.header_offset for j in o.infolist() if j.header_offset > start] + [cd])
                     self.assertIn(orig[start:end], data, i.filename)
             self.assertIn("zip %s sha256 %s" % (names[kind], m["oem"]["zips"][kind]["sha256"]), self.read_report())
-        self.assertNotIn("predates oem_ack", out)
 
 
 class Refusals(Fixture):
@@ -569,7 +586,8 @@ class Refusals(Fixture):
         self.assertNotIn("restore", out)
 
     def test_gates(self):
-        for over, needle in (({"ro.build.version.release": "4.3"}, "Android 4.3: only 4.4"),
+        for over, needle in (({"ro.build.version.release": "4.3"}, "Android 4.3: only 4.4.1 to 4.4.4"),
+                             ({"ro.build.version.release": "4.4"}, "Android 4.4 (android-4.4_r1/r1.2) lacks upstream"),
                              ({"ro.product.cpu.abi": "armeabi"}, "ABI armeabi"),
                              ({"ro.build.fingerprint": None}, "no build fingerprint")):
             write_prop(os.path.join(self.sysdir, "build.prop"), **over)
@@ -673,7 +691,35 @@ class ToolErrors(Fixture):
         self.make_release(rel, other)
         rc, out = self.patch(release=rel)
         self.assertEqual(rc, 2, out)
-        self.assertIn("donor core.jar class %s does not match the set's ours digest" % DHV, out)
+        self.assertIn("donor core.jar does not give the set's ours aggregate", out)
+
+    def test_donor_class_outside_set(self):
+        # a donor that also changes a class the set does not list (a newer series than the set): the aggregate sees it
+        other = os.path.join(self.t.name, "other")
+        shutil.copytree(os.path.join(self.base, "ours"), other)
+        cls, ent = OURS["conscrypt"]
+        self.make_jar(os.path.join(other, "system", "framework", "conscrypt.jar"),
+                      cls + [("Lcom/android/org/conscrypt/Unlisted;", 1, "0x1")], ent)
+        rel = os.path.join(self.t.name, "rel5")
+        self.make_release(rel, other)
+        rc, out = self.patch(release=rel)
+        self.assertEqual(rc, 2, out)
+        self.assertIn("donor conscrypt.jar does not give the set's ours aggregate", out)
+
+    def test_installer_too_old(self):
+        # release zips from before the jar patcher: the device would refuse the zips, so nothing is written
+        rel = os.path.join(self.t.name, "rel6")
+        self.make_release(rel, os.path.join(self.base, "ours"), installer=None)
+        rc, out = self.patch(release=rel)
+        self.assertEqual(rc, 2, out)
+        self.assertIn("%s: its installer predates this tool (no java-patched in kktls/checks.sh)" % DONOR, out)
+        self.assertFalse(os.path.exists(os.path.join(self.out, "work")))
+        rel = os.path.join(self.t.name, "rel7")
+        self.make_release(rel, os.path.join(self.base, "ours"), installer="# java-patched)\n")
+        shutil.rmtree(self.out)
+        rc, out = self.patch("--accept-oem", release=rel)
+        self.assertEqual(rc, 2, out)
+        self.assertIn("%s: its installer predates this tool (no oem_ack in kktls/checks.sh)" % OPENSSL, out)
 
     def test_zip_conf(self):
         rel = os.path.join(self.t.name, "rel4")
@@ -753,14 +799,42 @@ class Logic(unittest.TestCase):
                    "-rw-r--r-- root root 7 2014-01-01 00:00 keystore.default.so\n")
         busybox = ("/system/bin:\n-rwxr-xr-x    1 0        2000        5 Jan  1  2014 netd\n"
                    "lrwxrwxrwx    1 0        2000        7 Jan  1  2014 ls -> toolbox\n")
-        self.assertEqual(jp.ls_files(toolbox, "/system/lib"), ["/system/lib/hw/keystore.default.so",
-                                                               "/system/lib/libssl.so"])
-        self.assertEqual(jp.ls_files(busybox, "/system/bin"), ["/system/bin/netd"])
-        self.assertEqual(jp.ls_files(busybox, "/system/lib"), [])
+        self.assertEqual(jp.ls_files(toolbox, "/system/lib"), (["/system/lib/hw/keystore.default.so",
+                                                                "/system/lib/libssl.so"], []))
+        self.assertEqual(jp.ls_files(busybox, "/system/bin"), (["/system/bin/netd"], []))
+        self.assertEqual(jp.ls_files(busybox, "/system/lib"), ([], []))
+        # the shell's stderr in the stream: toolbox names no path (the header before it does), busybox does; a missing
+        # directory is no error line
+        toolbox_err = toolbox + "\n/system/lib/drm:\nopendir failed, Permission denied\n"
+        self.assertEqual(jp.ls_files(toolbox_err, "/system/lib")[1],
+                         [("/system/lib/drm", "opendir failed, Permission denied")])
+        busybox_err = busybox + "ls: /system/bin/secret: Permission denied\n/system/bin/x: Permission denied\n"
+        self.assertEqual(jp.ls_files(busybox_err, "/system/bin"), (["/system/bin/netd"], [
+            ("/system/bin/secret", "Permission denied"), ("/system/bin/x", "Permission denied")]))
+        self.assertEqual(jp.ls_files("ls: /system/vendor: No such file or directory\n", "/system/vendor"), ([], []))
 
     def test_lines_map(self):
-        self.assertEqual(dict(jp.LINES),
-                         {"4.4": "4.4.2", "4.4.1": "4.4.2", "4.4.2": "4.4.2", "4.4.3": "4.4.4", "4.4.4": "4.4.4"})
+        self.assertEqual(dict(jp.LINES), {"4.4.1": "4.4.2", "4.4.2": "4.4.2", "4.4.3": "4.4.4", "4.4.4": "4.4.4"})
+
+    def test_unexpected_error(self):
+        # an exception nobody foresaw is a tool error (exit 2), never the "refused" exit 1
+        with tempfile.TemporaryDirectory() as t, contextlib.redirect_stderr(io.StringIO()) as err:
+            orig = jp.from_system
+            jp.from_system = lambda *a: b"\xff".decode("utf-8")
+            try:
+                rc = jp.main(["--system", t, "--bootclasspath", "/system/framework/core.jar", "--build-prop",
+                              os.path.join(t, "b"), "--release-dir", t, "--out", os.path.join(t, "out")])
+            finally:
+                jp.from_system = orig
+        self.assertEqual(rc, 2)
+        self.assertIn("kktls-jarpatch: unexpected error: UnicodeDecodeError", err.getvalue())
+
+    def test_patched_notice(self):
+        n = jp.patched_notice("donor text\n", "kktls-java-4.4.2-x86-v9.zip", ["core", "okhttp"], "android-4.4.2_r2")
+        self.assertIn("from kktls-java-4.4.2-x86-v9.zip", n)
+        self.assertIn("system/framework/{core,okhttp}.jar are that system's own jars", n)
+        self.assertIn("AOSP android-4.4.2_r2 libcore", n)
+        self.assertTrue(n.endswith("\ndonor text\n"))
 
     def test_verdicts(self):
         A, B, C = "a" * 64, "b" * 64, "c" * 64

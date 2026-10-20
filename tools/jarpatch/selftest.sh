@@ -29,9 +29,11 @@
 #   member         1  an extra method in a class the series replaces: vendor-modified
 #   stripped       1  core.jar without classes.dex next to core.odex: odexed without classes.dex
 #   release        1  ro.build.version.release 4.3: not a 4.4 release
+#   release44      1  ro.build.version.release 4.4 (android-4.4_r1): refused, 4.4.1 or later only
 #   line           2  a 4.4.2 device with only the 4.4.4 donor in the release dir: no java zip of its line (tool error)
 #   dangling       1  a vendor framework jar calls a class the series removes: link check
 #   already        1  a kktls class already in core.jar: restore first
+#   natives        1  a vendor class in conscrypt.jar declares a native method (the donor libjavacrypto.so lacks it)
 #   oem            1  an OEM/CM build.prop marker (ro.cm.version) without --accept-oem: rerun with --accept-oem
 #   oem-accepted   0  the same with --accept-oem: java-patched and the two device-bound oem zips are written
 # Every refused run must leave no zip. The cases run in parallel. Exit 0 all pass, 1 a case failed, 2 a missing tool.
@@ -125,13 +127,14 @@ EOF
 
 # device DIR [OVERLAY...]: the device's /system in DIR/system (stock + vendor + device overlay + OVERLAYs)
 device() {
-  local d=$1/system j ps=(); shift
+  local d=$1/system j ps=() rc=0; shift
   mkdir -p "$d/framework" "$d/lib" "$d/app"
   for j in $JARS; do mkjar "$d/framework/$j.jar" "$(src_jar "$j")" "$FX/stock" "$FX/vendor" "$FX/device" "$@" & ps+=($!); done
   cp "$T/ext.jar" "$d/framework/ext.jar"
   printf '%s\n' '# selftest' ro.build.version.release=4.4.4 ro.product.cpu.abi=$ABI \
     ro.build.fingerprint=selftest/fixture/fixture:4.4.4/SELFTEST/1:user/test-keys > "$d/build.prop"
-  for j in "${ps[@]}"; do wait "$j"; done
+  for j in "${ps[@]}"; do wait "$j" || rc=1; done   # every jar job, not only the last one, decides
+  return $rc
 }
 setprop() { sed -i "s|^$2=.*|$2=$3|" "$1/system/build.prop"; }
 
@@ -143,17 +146,19 @@ CASES=(
   "missing|1|REFUSED conscrypt Lcom/android/org/conscrypt/NativeCrypto;: stock $TAG has it, the device does not"
   "member|1|REFUSED okhttp Lcom/android/okhttp/internal/Platform;: differs from stock $TAG (vendor change)"
   "stripped|1|REFUSED core -: odexed without classes.dex"
-  "release|1|REFUSED - ro.build.version.release: Android 4.3: only 4.4 to 4.4.4 are supported"
+  "release|1|REFUSED - ro.build.version.release: Android 4.3: only 4.4.1 to 4.4.4 are supported"
+  "release44|1|REFUSED - ro.build.version.release: Android 4.4 (android-4.4_r1/r1.2) lacks upstream"
   "line|2|no kktls-java-4.4.2-$ABI-<release>.zip"
   "dangling|1|REFUSED /system/framework/vendor.jar Lcom/example/Gone;: link check: resolved before the patch, not after"
   "already|1|the system already carries kktls: restore it first"
+  "natives|1|REFUSED conscrypt Lcom/vendor/NativeHelper;: declares 1 native method(s)"
   "oem|1|OEM/CM build: rerun with --accept-oem"
   "oem-accepted|0|/out/kktls-openssl-oem-4.4-$ABI-$REL-"
 )
 case_setup() { # NAME DIR
   local n=$1 d=$2
   case $n in
-    body|const|member|already) device "$d" "$FX/mut/$n" ;;
+    body|const|member|already|natives) device "$d" "$FX/mut/$n" ;;
     missing) device "$d"   # then conscrypt.jar again, without NativeCrypto
       local w; w=$(mktemp -d "$T/miss.XXXXXX"); cp -r "$FX/stock/conscrypt" "$w/conscrypt"
       rm "$w/conscrypt/smali/com/android/org/conscrypt/NativeCrypto.smali"
@@ -170,6 +175,7 @@ with zipfile.ZipFile(p, "w", zipfile.ZIP_DEFLATED) as z:
 EOF
       echo "odex placeholder" > "$d/system/framework/core.odex" ;;
     release) device "$d"; setprop "$d" ro.build.version.release 4.3 ;;
+    release44) device "$d"; setprop "$d" ro.build.version.release 4.4 ;;
     line) device "$d"; setprop "$d" ro.build.version.release 4.4.2 ;;
     dangling) device "$d"; mkjar "$d/system/framework/vendor.jar" - "$FX/mut/dangling/vendor" ;;
     oem|oem-accepted) device "$d"; echo ro.cm.version=11-selftest >> "$d/system/build.prop" ;;

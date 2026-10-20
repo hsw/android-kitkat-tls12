@@ -654,22 +654,26 @@ refused "restore twice" "$R0" "$R"
 
 # java-patched: the java zip as tools/jarpatch/kktls-jarpatch.py rewrites it for one system (its zip.conf and rawzip.py
 # code): installs only where every jar and the fingerprint give the zip.conf digests, writes the java marker
-mkpatched() { # out [fingerprint]: patched jars (fx/patched.jar) for a mkroot system (jars fx/nodex.jar)
-  python3 -I - "$REL_DIR/tools/jarpatch" "$J" "$1" "$T/fx" "${2:-generic/sdk/generic:4.4.2/KK/1:user/test-keys}" <<'EOF'
+KK_JARS="core core-libart conscrypt okhttp"
+mkpatched() { # out [fingerprint [jar lines [payload jars [extra zip.conf lines]]]]: patched jars (fx/patched.jar) for a
+  # mkroot system (jars fx/nodex.jar); a donor jar not among the payload jars is dropped (Dalvik-only ROM)
+  python3 -I - "$REL_DIR/tools/jarpatch" "$J" "$1" "$T/fx" "${2:-generic/sdk/generic:4.4.2/KK/1:user/test-keys}" \
+    "${3-$KK_JARS}" "${4-$KK_JARS}" "${5-}" <<'EOF'
 import hashlib, importlib.util, os, sys, zipfile
-tool, donor, out, fx, fp = sys.argv[1:6]
+tool, donor, out, fx, fp, lines, pay, extra = sys.argv[1:9]
 sys.path.insert(0, tool)
 import rawzip
 spec = importlib.util.spec_from_file_location("kktls_jarpatch", os.path.join(tool, "kktls-jarpatch.py"))
 jp = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(jp)
 dev, patched = (open(os.path.join(fx, n), "rb").read() for n in ("nodex.jar", "patched.jar"))
-jars = [(j, hashlib.sha256(dev).hexdigest()) for j in ("core", "core-libart", "conscrypt", "okhttp")]
+jars = [(j, hashlib.sha256(dev).hexdigest()) for j in lines.split()]
 with zipfile.ZipFile(donor) as z:
     conf = jp.read_conf(z)
-payload = {"system/framework/%s.jar" % j: patched for j, _ in jars}
-payload["kktls/zip.conf"] = jp.zip_conf(conf, conf["release"], conf["abi"], "4.4.2", jars,
-                                        hashlib.sha256(fp.encode()).hexdigest()).encode()
+payload = {"system/framework/%s.jar" % j: patched if j in pay.split() else None
+           for j in ("core", "core-libart", "conscrypt", "okhttp")}
+text = jp.zip_conf(conf, conf["release"], conf["abi"], "4.4.2", jars, hashlib.sha256(fp.encode()).hexdigest())
+payload["kktls/zip.conf"] = text.replace("fingerprint=", extra + "fingerprint=").encode()
 rawzip.rewrite(donor, out, payload)
 EOF
 }
@@ -686,6 +690,22 @@ refused "java-patched with one jar changed" "$R0" "$PJ"
 check "java-patched, one jar changed: the refusal names it" grep -q 'okhttp.jar is not the jar this zip was made from' "$T/out"
 check "java-patched, one jar changed: only that jar" [ "$(grep -c 'is not the jar this zip was made from' "$T/out")" = 1 ]
 cp "$T/okhttp.jar" "$R0/system/framework/okhttp.jar"
+# zip.conf and payload that do not belong together (kk_check_patched): each refusal names its reason
+FP1=generic/sdk/generic:4.4.2/KK/1:user/test-keys H64=$(printf %064d 0)
+mkpatched "$T/pj-noline.zip" "$FP1" "core core-libart conscrypt"
+refused "java-patched: a payload jar without a jar line" "$R0" "$T/pj-noline.zip"
+check "java-patched, payload jar without a jar line: the refusal says so" grep -q "zip.conf has no jar.okhttp= line for the payload's okhttp.jar" "$T/out"
+mkpatched "$T/pj-badname.zip" "$FP1" "$KK_JARS" "$KK_JARS" "jar.Bad_Name=$H64
+"
+refused "java-patched: a bad jar name" "$R0" "$T/pj-badname.zip"
+check "java-patched, bad jar name: the refusal says so" grep -q "zip.conf: bad jar name 'Bad_Name'" "$T/out"
+mkpatched "$T/pj-other.zip" "$FP1" "$KK_JARS" "$KK_JARS" "jar.vendorx=$H64
+"
+refused "java-patched: a jar line for a jar this system lacks" "$R0" "$T/pj-other.zip"
+check "java-patched, jar the system lacks: the refusal says so" grep -q '/system/framework/vendorx.jar is missing: this zip was made for another system' "$T/out"
+mkpatched "$T/pj-nojar.zip" "$FP1" "" ""
+refused "java-patched: no jar line and no jar" "$R0" "$T/pj-nojar.zip"
+check "java-patched, no jar line: the refusal says so" grep -q 'zip.conf names no jar (jar.<name>=)' "$T/out"
 : > "$LOG"
 installs "java-patched" "$R0" "$PJ"
 check "java-patched: the four jars replaced" sh -c "for j in core core-libart conscrypt okhttp; do cmp -s '$R0/system/framework/'\$j.jar '$T/fx/patched.jar' || exit 1; done"
@@ -703,6 +723,16 @@ mkroot "$R0" ro.cm.version=11-20140804-NIGHTLY-hammerhead
 mkdir -p "$R0/system/etc/kktls"; echo v9 > "$R0/system/etc/kktls/openssl.version"
 echo "ro.build.fingerprint=a/later/definition:4.4.2/KK/9:user/test-keys" >> "$R0/system/build.prop"
 installs "java-patched on a CM build with a second fingerprint line" "$R0" "$PJ"
+# a Dalvik-only ROM (no core-libart.jar): the patcher's zip has three jars and leaves core-libart alone
+mkroot "$R0"; rm "$R0/system/framework/core-libart.jar" "$R0/system/framework/core-libart.odex"; ORIG=$(snap "$R0" system)
+installs "openssl (Dalvik-only java-patched chain)" "$R0" "$O"
+mkpatched "$T/pj-dalvik.zip" "$FP1" "core conscrypt okhttp" "core conscrypt okhttp"
+check "java-patched, Dalvik-only: no core-libart.jar in the zip" sh -c "! unzip -l '$T/pj-dalvik.zip' | grep -q core-libart"
+installs "java-patched on a Dalvik-only ROM" "$R0" "$T/pj-dalvik.zip"
+check "java-patched, Dalvik-only: the three jars replaced, no core-libart.jar" sh -c "for j in core conscrypt okhttp; do cmp -s '$R0/system/framework/'\$j.jar '$T/fx/patched.jar' || exit 1; done; [ ! -e '$R0/system/framework/core-libart.jar' ]"
+check "java-patched, Dalvik-only: the java marker" [ "$(cat "$R0/system/etc/kktls/java.version")" = v9 ]
+installs "restore after java-patched on a Dalvik-only ROM" "$R0" "$R"
+check "restore after java-patched on a Dalvik-only ROM: /system identical to the original" [ "$ORIG" = "$(snap "$R0" system)" ]
 
 # --accept-oem copies (kktls-jarpatch.py write_oem_zip: the release zip, its zip.conf with oem_ack= appended): the
 # openssl and conscrypt kinds skip the OEM/CM gate only where the fingerprint gives oem_ack; any other system refuses

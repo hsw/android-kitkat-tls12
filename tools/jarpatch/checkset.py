@@ -13,17 +13,19 @@ stock build made once per tag, see mkset.py):
   check <jar> <desc> <stock>          the class must be present with the stock digest (the series does not change the
                                       classes the donor libjavacrypto.so names; a change must become a class line)
   entry <jar> <path> <stock> <ours>   ours `-`: the entry must be absent; else its sha256 must equal ours
+  ours <jar> <sha256>                 the aggregate of the whole built jar (mkset.aggregate: every class and entry,
+                                      listed or not) must equal it: a class the series starts to change that the set
+                                      does not list fails here, and only here
 
 A difference means the series and the committed set file no longer belong together: the patcher would refuse every
-device with this release's donor zips (tool error), so the release must not ship. Regenerate the set (mkset.py) from a
-stock build of the tag and this build's jars. A class the series starts to change that the set does not list is not
-seen here (that needs the stock build too). Jars with the same sha256 in several JAR_DIRs are disassembled once.
+device with this release's donor zips (tool error), or keep the device's stock copy of a class the series now
+changes, so the release must not ship. Regenerate the set (mkset.py) from a stock build of the tag and this build's
+jars.
 
 Exit 0 every line matches, 1 drift (each differing line listed), 2 usage or tool error. Stdlib only (Java 8+ and the
 jars of fetch-smali.sh, see normalize.py).
 """
 import glob
-import hashlib
 import os
 import sys
 import zipfile
@@ -55,17 +57,9 @@ def set_for_tag(tag, sets_dir=None):
 
 def load(path, tag=None):
     try:
-        st = mkset.read_set(path)
+        return mkset.read_set(path, tag)
     except (OSError, mkset.SetError) as e:
         raise CheckError("set file: %s" % e)
-    want = {"model": normalize.MODEL, "normalizer": str(normalize.NORMALIZER_VERSION),
-            "smali": normalize.SMALI_VERSION}
-    if tag is not None:
-        want["tag"] = tag
-    for k, v in want.items():
-        if st.header[k] != v:
-            raise CheckError("%s: %s %s, expected %s" % (path, k, st.header[k], v))
-    return st
 
 
 def compare(st, jars):
@@ -83,15 +77,11 @@ def compare(st, jars):
         got = jars[j][1].get(p)
         if got != ours:
             bad.append((j, "entry " + p, got or "-", ours or "-"))
+    for j in mkset.JARS:
+        got = mkset.aggregate(*jars[j])
+        if got != st.ours[j]:
+            bad.append((j, "ours (whole jar)", got, st.ours[j]))
     return bad
-
-
-def sha256_file(path):
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for b in iter(lambda: f.read(1 << 20), b""):
-            h.update(b)
-    return h.hexdigest()
 
 
 def main(argv):
@@ -117,18 +107,13 @@ def main(argv):
         st = load(path, opt["--tag"])
         jar_paths = {d: {j: mkset.find_jar(d, j) for j in mkset.JARS} for d in dirs}
         bak = normalize.smali_jars()[0]
-        cache, rc = {}, 0
+        rc = 0
         for d in dirs:
-            jars = {}
-            for j, p in jar_paths[d].items():
-                h = sha256_file(p)
-                if h not in cache:
-                    cache[h] = (normalize.jar_digests(p, bak), mkset.entry_digests(p))
-                jars[j] = cache[h]
+            jars = {j: (normalize.jar_digests(p, bak), mkset.entry_digests(p)) for j, p in jar_paths[d].items()}
             bad = compare(st, jars)
             for j, what, got, want in bad:
                 print("checkset: DRIFT %s %s.jar %s: built %s, set %s" % (d, j, what, got, want))
-            n = len(st.classes) + len(st.checks) + len(st.entries)
+            n = len(st.classes) + len(st.checks) + len(st.entries) + len(st.ours)
             print("checkset: %s %s: %d/%d lines of %s match" % ("FAIL" if bad else "ok", d, n - len(bad), n,
                                                                os.path.basename(path)))
             rc = rc or (1 if bad else 0)

@@ -26,7 +26,15 @@ https://curl.se/ca/cacert.pem) and is licensed under the Mozilla Public License 
 The static helpers kktls-symcheck and kktls-util in the recovery zips link the bionic C library of AOSP 4.4 (BSD-style
 licences; see its NOTICE in AOSP).
 
-Every release zip carries a NOTICE file with the full licence texts for the files it installs.
+Every recovery zip of a release carries a NOTICE file with the full licence texts for the files it installs; a
+java-patched zip written by the jar patcher carries the donor java zip's NOTICE behind a note that its jars are the
+device's own with the set's classes replaced. The jar patcher zip (kktls-jarpatch-<rel>.zip) is a host tool, not a
+recovery zip: it carries this repository's LICENSE.
+
+The jar patcher (tools/jarpatch/) runs smali and baksmali 2.5.2 (https://github.com/JesusFreke/smali, BSD-3-Clause;
+the fat jars also bundle Guava and JCommander, Apache-2.0, ANTLR, BSD, and StringTemplate, BSD). They are not part of
+this repository or the release zips: tools/jarpatch/fetch-smali.sh downloads them at run time from the upstream
+author's downloads and checks their pinned sha256.
 
 busybox (GPL-2.0) is not part of this repository or the release zips. tools/install-adb.sh downloads a static
 upstream build from busybox.net at run time (source: https://busybox.net/downloads/busybox-1.31.0.tar.bz2), pushes

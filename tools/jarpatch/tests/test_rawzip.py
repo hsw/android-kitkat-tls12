@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Unit tests of rawzip.py: untouched entries are copied byte for byte (data descriptors with and without their
 signature included), swapped entries read back with their new content, removals and appends, and the refusals (zip64,
-encrypted, inconsistent headers).
+encrypted, multi-disk, duplicate names, inconsistent headers, overlapping entries).
 
     python3 -I -m unittest discover tools/jarpatch/tests
 """
@@ -150,6 +150,43 @@ class RawZip(unittest.TestCase):
         data, _ = build([("a", b"a", 12, None)])     # bzip2: copied as is, cannot be swapped
         rawzip.rewrite(self.path("bz.zip", data), self.path("bz-out.zip"), {})
         self.refused(data, "compression method 12", {"a": b"b"})
+
+    def test_inconsistent_layout(self):
+        def cen_off(data, i):
+            """Offset of the i-th central record of a build() zip (names of one byte, no extra, no comment)."""
+            return struct.unpack_from("<I", data, len(data) - rawzip.EOCD.size + 16)[0] + i * (rawzip.CEN.size + 1)
+
+        data, _ = build([("a", b"aa", 0, None), ("b", b"bb", 0, None)])
+        # the local header names another entry than the central record
+        bad = bytearray(data)
+        bad[rawzip.LOC.size] = ord("x")
+        self.refused(bytes(bad), "local header names")
+        # local CRC/sizes (no data descriptor) differ from the central record
+        bad = bytearray(data)
+        struct.pack_into("<I", bad, 14, 0)
+        self.refused(bytes(bad), "local header CRC/sizes differ from the central record")
+        # multi-disk: in the end record, and in an entry
+        bad = bytearray(data)
+        struct.pack_into("<H", bad, len(data) - rawzip.EOCD.size + 4, 1)
+        self.refused(bytes(bad), "multi-disk archive")
+        bad = bytearray(data)
+        struct.pack_into("<H", bad, cen_off(data, 1) + 34, 1)
+        self.refused(bytes(bad), "b: multi-disk archive")
+        # the same name twice
+        self.refused(build([("a", b"1", 0, None), ("a", b"2", 0, None)])[0], "duplicate entry a")
+        # overlapping entries: b's central record points at a copy of b's local record inside a's data
+        _, recs = build([("b", b"bb", 0, None)])
+        data, _ = build([("a", recs["b"], 0, None), ("b", b"bb", 0, None)])
+        bad = bytearray(data)
+        struct.pack_into("<I", bad, cen_off(data, 1) + 42, rawzip.LOC.size + 1)
+        self.refused(bytes(bad), "entries a and b overlap")
+        # the last entry's data runs into the central directory (local and central sizes agree, both too big)
+        data, _ = build([("a", b"aa", 0, None), ("b", b"bb", 0, None)])
+        bad = bytearray(data)
+        b_loc = struct.unpack_from("<I", data, cen_off(data, 1) + 42)[0]
+        struct.pack_into("<I", bad, b_loc + 18, 10)
+        struct.pack_into("<I", bad, cen_off(data, 1) + 20, 10)
+        self.refused(bytes(bad), "b runs into the central directory")
 
 
 if __name__ == "__main__":

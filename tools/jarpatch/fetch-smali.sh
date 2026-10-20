@@ -4,8 +4,6 @@
 #
 #   fetch-smali.sh                prints the paths of the checked jars on stdout (baksmali, then smali), exit 0
 #   fetch-smali.sh --selftest     offline checks of the download/cache logic (file:// URLs, synthetic files)
-#   . fetch-smali.sh              defines the pin (SMALI_VERSION, SMALI_URL_BASE, *_SHA256), the cache dir and
-#                                 fetch_pinned
 #
 # Cache dir: $KKTLS_CACHE, default ${XDG_CACHE_HOME:-$HOME/.cache}/kktls. A cached jar with the pinned sha256 is reused
 # without network access; one with another sha256 is deleted and downloaded again. A download goes to a per-process
@@ -50,8 +48,6 @@ fetch_pinned() {
   printf '%s\n' "$f"
 }
 
-# Sourced: only the pin and the functions.
-[ "${BASH_SOURCE[0]}" = "$0" ] || return 0
 set -uo pipefail
 
 selftest() {
@@ -109,7 +105,7 @@ selftest() {
 while [ $# -gt 0 ]; do
   case $1 in
     --selftest) selftest; exit ;;
-    -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
     *) echo "fetch-smali: unknown argument $1 (usage: fetch-smali.sh [--selftest])" >&2; exit 2 ;;
   esac
 done

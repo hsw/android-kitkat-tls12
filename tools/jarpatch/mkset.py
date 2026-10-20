@@ -17,12 +17,18 @@ fetch-smali.sh) and normalized (normalize.py, model H); the set is the dex diff,
   entry <jar> <path> <stock-sha256|-> <ours-sha256|->          a non-dex jar entry whose bytes differ (sha256 of the
                                                                uncompressed bytes); META-INF/ is ignored (the manifest
                                                                carries the build tool, not content)
+  ours <jar> <sha256>                                          one per jar: aggregate() of the whole ours jar (every
+                                                               class digest and entry sha256, listed or not), so that
+                                                               any change of the series outside the listed lines, or a
+                                                               donor of another release, is seen (checkset.py, the
+                                                               patcher)
 
 The header names the stock AOSP tag, the reference model, the normalizer version and the smali version; lines starting
 with `#` are comments (--note adds some). A --jni name that no stock jar defines is an error (a typo would silently drop
 a check). Exit 0 written, 1 error, 2 usage.
 
-read_set(path) parses and validates a set file (used by the patcher and the tests). Stdlib only.
+read_set(path, tag) parses and validates a set file (used by the patcher, checkset.py and the tests): its header must
+name this normalizer's model and versions (and tag, when given). Stdlib only.
 """
 import hashlib
 import os
@@ -42,6 +48,25 @@ TAG = re.compile(r"android-4\.4(\.[1-4])?_r[0-9.]+\Z")
 
 class SetError(Exception):
     pass
+
+
+def sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for b in iter(lambda: f.read(1 << 20), b""):
+            h.update(b)
+    return h.hexdigest()
+
+
+def aggregate(classes, entries):
+    """sha256 of one jar as the set sees it: `class <desc> <digest>` for every class, then `entry <path> <sha256>`
+    for every non-dex entry (META-INF/ excluded), each sorted, one line each."""
+    h = hashlib.sha256()
+    for k in sorted(classes):
+        h.update(("class %s %s\n" % (k, classes[k])).encode("utf-8"))
+    for k in sorted(entries):
+        h.update(("entry %s %s\n" % (k, entries[k])).encode("utf-8"))
+    return h.hexdigest()
 
 
 def find_jar(root, name):
@@ -109,6 +134,7 @@ def make_set(stock, ours, jni, tag, notes=()):
     out += ["tag " + tag, "model " + normalize.MODEL, "normalizer %d" % normalize.NORMALIZER_VERSION,
             "smali " + normalize.SMALI_VERSION]
     out += [" ".join(t) for t in classes + sorted(checks, key=lambda t: (JARS.index(t[1]), t[2])) + entries]
+    out += ["ours %s %s" % (j, aggregate(*ours[j])) for j in JARS]
     return "\n".join(out) + "\n"
 
 
@@ -118,11 +144,13 @@ class SetFile(object):
         self.classes = []   # (jar, descriptor, stock|None, ours|None)
         self.checks = []    # (jar, descriptor, stock)
         self.entries = []   # (jar, path, stock|None, ours|None)
+        self.ours = {}      # {jar: aggregate of the ours jar}
 
 
-def read_set(path):
-    """SetFile from path; SetError on any malformed line, a missing or repeated header key, a duplicate line key, a
-    class or entry line that is `-` on both sides, or a check line for a replaced class."""
+def read_set(path, tag=None):
+    """SetFile from path; SetError on any malformed line, a missing or repeated header key, a header that is not this
+    normalizer's (or not tag, when given), a duplicate line key, a class or entry line that is `-` on both sides, or
+    an ours line missing or repeated for a jar."""
     s = SetFile()
     seen = set()
     with open(path, encoding="utf-8") as f:
@@ -136,6 +164,11 @@ def read_set(path):
                 if len(p) != 2 or p[0] in s.header:
                     raise SetError("%s: bad or repeated header line" % where)
                 s.header[p[0]] = p[1]
+                continue
+            if p[0] == "ours":
+                if len(p) != 3 or p[1] not in JARS or not HEX64.match(p[2]) or p[1] in s.ours:
+                    raise SetError("%s: bad or repeated ours line" % where)
+                s.ours[p[1]] = p[2]
                 continue
             if p[0] not in ("class", "check", "entry") or len(p) != (4 if p[0] == "check" else 5):
                 raise SetError("%s: unknown line or wrong field count" % where)
@@ -164,6 +197,16 @@ def read_set(path):
         raise SetError("%s: header lacks %s" % (path, ", ".join(missing)))
     if not TAG.match(s.header["tag"]):
         raise SetError("%s: tag %s is not a 4.4 AOSP tag" % (path, s.header["tag"]))
+    want = {"model": normalize.MODEL, "normalizer": str(normalize.NORMALIZER_VERSION),
+            "smali": normalize.SMALI_VERSION}
+    if tag is not None:
+        want["tag"] = tag
+    for k in HEADER_KEYS:
+        if k in want and s.header[k] != want[k]:
+            raise SetError("%s: %s %s, expected %s" % (path, k, s.header[k], want[k]))
+    missing = [j for j in JARS if j not in s.ours]
+    if missing:
+        raise SetError("%s: no ours line for %s (regenerate the set with this mkset.py)" % (path, ", ".join(missing)))
     return s
 
 

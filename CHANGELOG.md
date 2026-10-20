@@ -2,9 +2,10 @@
 
 ## Unreleased
 
-Android 4.4 ROMs that the java zips refuse (vendor and CyanogenMod builds, the releases 4.4, 4.4.1 and 4.4.3) can get
-the Java TLS layer from a zip made of their own jars. The release zips themselves are unchanged apart from the
-installer.
+Android 4.4 ROMs that the java zips refuse (vendor builds, the releases 4.4.1 and 4.4.3) can get the Java
+TLS layer from a zip made of their own jars, as long as the vendor did not change the classes the series replaces. A
+CyanogenMod 11 system is still refused (cm-11 changed or backported 8 of those classes); Android 4.4 (4.4_r1) is
+refused too. The release zips themselves are unchanged apart from the installer.
 
 ### New
 
@@ -31,7 +32,8 @@ installer.
   on top. The openssl and conscrypt kinds skip the OEM/CM gate only when `zip.conf` has an `oem_ack` equal to the
   sha256 of the running system's fingerprint; an `oem_ack` for another system refuses.
 - Release build: the `check` step compares the built `core`, `core-libart`, `conscrypt` and `okhttp` jars with the
-  jar patcher's set file of the tag (`tools/jarpatch/checkset.py`) and fails on a difference. `mkzips.sh` adds
+  jar patcher's set file of the tag (`tools/jarpatch/checkset.py`), line by line and as whole jars (a per-jar
+  aggregate in the set file, so a class the set does not list counts too), and fails on a difference. `mkzips.sh` adds
   `kktls-jarpatch-<rel>.zip` and its `SHA256SUMS` line; `check_44_payload.py` skips it (not a recovery zip).
 - CI: `host-tests` runs the smali download checks, the jar patcher's unit tests and its mutation selftest (one fixture
   run per refusal path).

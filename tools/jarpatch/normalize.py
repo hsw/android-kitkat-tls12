@@ -41,6 +41,7 @@ SMALI_VERSION = "2.5.2"     # must equal fetch-smali.sh's SMALI_VERSION (tests c
 BAKSMALI_API = "19"
 HERE = os.path.dirname(os.path.abspath(__file__))
 JAVA = os.environ.get("KKTLS_JAVA") or "java"   # Java 8+ for smali/baksmali 2.5.2
+JOBS = str(min(8, os.cpu_count() or 1))         # baksmali threads (its output does not depend on them)
 
 DEBUG_PREFIX = (".source ", ".line ", ".local ", ".end local", ".restart local")
 DEBUG_EXACT = (".prologue", ".epilogue")
@@ -119,8 +120,8 @@ def digest_text(text):
     return hashlib.sha256(normalize_text(text).encode("utf-8")).hexdigest()
 
 
-def normalize_dir(root, dump=None):
-    """{descriptor: digest} over the .smali files under root."""
+def index_dir(root, dump=None):
+    """{descriptor: (smali path, digest)} over the .smali files under root."""
     res = {}
     for d, _, files in os.walk(root):
         for f in sorted(files):
@@ -135,13 +136,18 @@ def normalize_dir(root, dump=None):
                 raise NormalizeError("%s: %s" % (p, e))
             if c in res:
                 raise NormalizeError("class %s defined twice under %s" % (c, root))
-            res[c] = hashlib.sha256(n.encode("utf-8")).hexdigest()
+            res[c] = (p, hashlib.sha256(n.encode("utf-8")).hexdigest())
             if dump:
                 q = os.path.join(dump, c[1:-1] + ".nsmali")
                 os.makedirs(os.path.dirname(q), exist_ok=True)
                 with open(q, "w", encoding="utf-8") as fh:
                     fh.write(n)
     return res
+
+
+def normalize_dir(root, dump=None):
+    """{descriptor: digest} over the .smali files under root."""
+    return {c: dg for c, (_, dg) in index_dir(root, dump).items()}
 
 
 def smali_jars():
@@ -165,14 +171,12 @@ def check_dex_jar(jar):
         raise NormalizeError("%s: expected exactly classes.dex, found %s" % (jar, ", ".join(dex) or "no dex"))
 
 
-def baksmali(jar, out_dir, baksmali_jar):
-    """baksmali d -a 19 (debug info kept) of jar into out_dir."""
-    check_dex_jar(jar)
-    cmd = [JAVA, "-jar", baksmali_jar, "d", "-a", BAKSMALI_API, "-j", str(min(8, os.cpu_count() or 1)),
-           jar, "-o", out_dir]
+def baksmali(src, out_dir, baksmali_jar):
+    """baksmali d -a 19 (debug info kept) of a jar (check_dex_jar it first) or a dex into out_dir."""
+    cmd = [JAVA, "-jar", baksmali_jar, "d", "-a", BAKSMALI_API, "-j", JOBS, src, "-o", out_dir]
     r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
     if r.returncode != 0:
-        raise NormalizeError("baksmali of %s failed (exit %d): %s" % (jar, r.returncode, r.stdout.strip()[-500:]))
+        raise NormalizeError("baksmali of %s failed (exit %d): %s" % (src, r.returncode, r.stdout.strip()[-500:]))
 
 
 def jar_digests(jar, baksmali_jar=None, dump=None):

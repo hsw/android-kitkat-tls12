@@ -67,8 +67,12 @@ and by OpenSSL's own `make test`.
 symbol is removed. 32 internal `libssl` symbols (`ssl2_*`, `dtls1_clear_record_buffer`, ...) are gone; nothing in
 AOSP 4.4 imports them. The recovery zip checks on the device that every symbol the device's library exports is
 exported by ours, apart from those 32. A matching symbol list does not prove that a vendor's own
-native code was compiled against the same structs and `#define` values; that is why the installer accepts only
-AOSP-like builds.
+native code was compiled against the same structs and `#define` values; that is why the openssl and conscrypt zips
+refuse OEM and CyanogenMod builds by default. The opt-in is the jar patcher's `--accept-oem` (`tools/jarpatch/`): it
+lists every ELF of the system that needs `libssl.so` or `libcrypto.so` (`native-consumers.txt`, `extra` = not in AOSP
+4.4) and writes copies of the two zips whose `zip.conf` carries `oem_ack=<sha256 of ro.build.fingerprint>`; the
+installer skips the OEM/CM gate only on the system with that fingerprint. The `extra` consumers are listed, not checked:
+one built against other OpenSSL headers may crash or misbehave, and the restore zip is the way back.
 
 **Android 4.1 to 4.3.** The Jelly Bean openssl zips carry the same OpenSSL 1.0.1u with the same backports, the same
 configuration and the same conditions; the table applies to them as to 4.4 (the platform itself is older and equally

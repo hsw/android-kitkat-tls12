@@ -242,7 +242,7 @@ class Fixture(unittest.TestCase):
         cls.tmp = tempfile.TemporaryDirectory()
         cls.base = cls.tmp.name
         cls.ok = False
-        if not shutil.which("java"):
+        if not shutil.which(normalize.JAVA):
             return
         try:
             jars = normalize.smali_jars()
@@ -262,7 +262,7 @@ class Fixture(unittest.TestCase):
                 with open(os.path.join(src, n + ".smali"), "w") as f:
                     f.write(text)
             dex = os.path.join(cls.base, name + ".dex")
-            procs.append((dex, subprocess.Popen(["java", "-jar", jars[1], "a", "-a", "19", "-o", dex, src],
+            procs.append((dex, subprocess.Popen([normalize.JAVA, "-jar", jars[1], "a", "-a", "19", "-o", dex, src],
                                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT)))
         for dex, p in procs:
             out = p.communicate()[0]
@@ -349,7 +349,11 @@ class Fixture(unittest.TestCase):
     def test_dalvik_only(self):
         stats, misses = self.run_check(dalvik_only=True)
         self.assertEqual(sorted(stats), ["dalvik"])
-        self.assertTrue(all("(dalvik)" in m[2] for m in misses), misses)
+        # the same callers as test_removed_member, minus core-libart.jar (no art runtime), dalvik only
+        why = "resolved before the patch, not after (dalvik)"
+        ref = ADDR + "->" + ISLIT
+        self.assertEqual(misses, [("/system/app/Caller.apk", ref, why), ("/system/framework/caller.jar", ref, why),
+                                  ("/system/framework/core.jar", ref, why)])
 
     def test_unchanged_links(self):
         # the device's own conscrypt as the "patched" dex: nothing changes, nothing breaks

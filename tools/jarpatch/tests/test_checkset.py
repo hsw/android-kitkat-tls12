@@ -58,10 +58,21 @@ class Logic(unittest.TestCase):
         ours["core"][0][tm.INT] = tm.C                               # a check class changed by the series
         ours["core-libart"][1][tm.PROPS] = tm.C                      # the entry changed
         got = sorted(checkset.compare(st, ours))
+        whole = [(j, "ours (whole jar)", mkset.aggregate(*ours[j]), st.ours[j]) for j in ("conscrypt", "core",
+                                                                                          "core-libart")]
         self.assertEqual(got, sorted([
             ("conscrypt", "class " + tm.NAT, tm.A, tm.C), ("core", "class " + tm.GONE, tm.C, "-"),
             ("core-libart", "class " + tm.ADDED, "-", tm.C), ("core", "check " + tm.INT, tm.C, tm.A),
-            ("core-libart", "entry " + tm.PROPS, tm.C, tm.B)]))
+            ("core-libart", "entry " + tm.PROPS, tm.C, tm.B)] + whole))
+
+    def test_drift_outside_the_set(self):
+        # the series starts to change a class no line names (or adds one): only the whole-jar aggregate sees it
+        st = checkset.load(self.path)
+        ours = {j: (dict(c), dict(e)) for j, (c, e) in self.ours.items()}
+        ours["okhttp"][0]["Lcom/android/okhttp/Unlisted;"] = tm.B
+        ours["conscrypt"][1]["x.properties"] = tm.A
+        self.assertEqual(sorted(checkset.compare(st, ours)), sorted(
+            (j, "ours (whole jar)", mkset.aggregate(*ours[j]), st.ours[j]) for j in ("okhttp", "conscrypt")))
 
     def test_set_for_tag(self):
         self.write("b.txt", self.text.replace("tag android-4.4.2_r2", "tag android-4.4.4_r2"))
@@ -123,7 +134,7 @@ class Command(tm.EndToEnd):
         ours = os.path.join(self.root, "ours")
         rc, out = run("--tag", "android-4.4.2_r2", "--set", self.set, ours, ours)
         self.assertEqual(rc, 0, out)
-        self.assertEqual(out.count(": 14/14 lines of set.txt match"), 2, out)
+        self.assertEqual(out.count(": 18/18 lines of set.txt match"), 2, out)
         rc, out = run("--tag", "android-4.4.2_r2", "--set", self.set, ours, os.path.join(self.root, "stock"))
         self.assertEqual(rc, 1, out)
         self.assertIn("checkset: ok %s:" % ours, out)
@@ -135,7 +146,15 @@ class Command(tm.EndToEnd):
         rc, out = run("--tag", "android-4.4.2_r2", "--set", self.set, ours)
         self.assertEqual(rc, 1, out)
         self.assertIn("conscrypt.jar check %s" % tm.BIO, out)
-        self.assertIn("13/14 lines", out)
+        self.assertIn("conscrypt.jar ours (whole jar)", out)
+        self.assertIn("16/18 lines", out)
+        # a class outside the set: only the aggregate line fails
+        shutil.rmtree(os.path.join(self.root, "src", "ours", "conscrypt"))
+        self.jar("ours", "conscrypt", [(tm.NAT, 3, "0x3"), (tm.BIO, 3, "0x1"), ("Lcom/example/New;", 3, "0x1")], {})
+        rc, out = run("--tag", "android-4.4.2_r2", "--set", self.set, ours)
+        self.assertEqual(rc, 1, out)
+        self.assertEqual(out.count("DRIFT"), 1, out)
+        self.assertIn("conscrypt.jar ours (whole jar)", out)
 
 
 if __name__ == "__main__":

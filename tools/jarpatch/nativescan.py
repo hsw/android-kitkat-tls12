@@ -99,8 +99,9 @@ def needed(data):
 
 
 def files(root):
-    """(name, read()) of every file the scan reads under root (a /system copy), sorted by name."""
-    out = []
+    """(name, bytes or ElfError) of every file the scan reads under root (a /system copy), sorted by name; each apk is
+    opened once."""
+    items = []          # (name, path, apk member or None, error or None)
     for t in TREES:
         top = os.path.join(root, t)
         if not os.path.isdir(top) or os.path.islink(top):
@@ -114,43 +115,49 @@ def files(root):
                 rel = os.path.relpath(p, root).replace(os.sep, "/")
                 if t in APK_DIRS:
                     if f.endswith(".apk") and d == top:
-                        out.extend(apk_libs(p, rel))
+                        try:
+                            with zipfile.ZipFile(p) as z:
+                                items += [("%s!%s" % (rel, n), p, n, None) for n in z.namelist()
+                                          if n.startswith("lib/") and n.endswith(".so")]
+                        except (OSError, zipfile.BadZipFile) as e:
+                            items.append((rel, p, None, ElfError("not a readable zip: %s" % e)))
                     if not f.endswith(".so"):
                         continue
-                out.append((rel, lambda p=p: read_file(p)))
-    return sorted(out, key=lambda x: x[0])
-
-
-def read_file(p):
-    with open(p, "rb") as f:
-        return f.read()
-
-
-def apk_libs(path, rel):
+                items.append((rel, p, None, None))
+    items.sort(key=lambda x: x[0])
+    z = None
     try:
-        with zipfile.ZipFile(path) as z:
-            libs = [n for n in z.namelist() if n.startswith("lib/") and n.endswith(".so")]
-    except (OSError, zipfile.BadZipFile) as e:
-        return [(rel, lambda e=e: _raise(ElfError("not a readable zip: %s" % e)))]
-
-    def reader(n):
-        with zipfile.ZipFile(path) as z:
-            return z.read(n)
-    return [("%s!%s" % (rel, n), lambda n=n: reader(n)) for n in sorted(libs)]
-
-
-def _raise(e):
-    raise e
+        for name, p, member, err in items:
+            if err is None:
+                try:
+                    if member is None:
+                        with open(p, "rb") as f:
+                            data = f.read()
+                    else:
+                        if z is None or z.filename != p:
+                            if z is not None:
+                                z.close()
+                            z = None
+                            z = zipfile.ZipFile(p)
+                        data = z.read(member)
+                except (OSError, zipfile.BadZipFile, KeyError) as e:
+                    err = ElfError(str(e))
+            yield name, err if err is not None else data
+    finally:
+        if z is not None:
+            z.close()
 
 
 def scan(root):
     """{"files": n, "elf": n, "consumers": [(name, [ssl libs])], "unreadable": [(name, why)]}"""
     res = {"files": 0, "elf": 0, "consumers": [], "unreadable": []}
-    for name, read in files(root):
+    for name, data in files(root):
         res["files"] += 1
         try:
-            n = needed(read())
-        except (OSError, zipfile.BadZipFile, ElfError) as e:
+            if isinstance(data, ElfError):
+                raise data
+            n = needed(data)
+        except ElfError as e:
             res["unreadable"].append((name, str(e)))
             continue
         if n is None:
