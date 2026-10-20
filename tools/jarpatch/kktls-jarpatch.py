@@ -501,7 +501,9 @@ def disassemble(src, out, baksmali_jar):
 
 def assemble(tree, dex, smali_jar):
     os.makedirs(os.path.dirname(dex), exist_ok=True)
-    cmd = [normalize.JAVA, "-jar", smali_jar, "a", "-a", normalize.BAKSMALI_API, "-j", JOBS, "-o", dex, tree]
+    # one job: smali's parallel assembly writes the dex items in thread completion order, so the same tree gives
+    # a different (equivalent) dex from run to run; the zip must be reproducible from the same /system and release
+    cmd = [normalize.JAVA, "-jar", smali_jar, "a", "-a", normalize.BAKSMALI_API, "-j", "1", "-o", dex, tree]
     r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
     if r.returncode != 0 or not os.path.isfile(dex):
         raise ToolError("smali of %s failed (exit %d): %s" % (tree, r.returncode, r.stdout.strip()[-500:]))

@@ -795,6 +795,29 @@ class Logic(unittest.TestCase):
         self.assertEqual(v, {})
 
 
+class Assemble(unittest.TestCase):
+    def test_reproducible(self):
+        """The same smali tree assembles to the same bytes every time (smali -j N does not: thread order)."""
+        smali = smali_or_skip(self)[1]
+        with tempfile.TemporaryDirectory() as d:
+            tree = os.path.join(d, "t")
+            os.makedirs(tree)
+            for i in range(600):
+                meth = "".join(".method public static m%d()Ljava/lang/String;\n    .registers 2\n"
+                               "    const-string v0, \"s%d_%d\"\n    const v1, 0x%x\n    return-object v0\n"
+                               ".end method\n" % (k, i, k, i * 7 + k) for k in range(4))
+                with open(os.path.join(tree, "C%03d.smali" % i), "w") as f:
+                    f.write(".class public Lp/C%03d;\n.super Ljava/lang/Object;\n"
+                            ".field public static f:I = 0x%x\n%s" % (i, i, meth))
+            got = set()
+            for n in range(3):
+                out = os.path.join(d, "%d.dex" % n)
+                jp.assemble(tree, out, smali)
+                with open(out, "rb") as f:
+                    got.add(hashlib.sha256(f.read()).hexdigest())
+            self.assertEqual(len(got), 1, "smali gave %d different dex files for one tree" % len(got))
+
+
 @unittest.skipUnless(os.environ.get("KKTLS_JARPATCH_ORACLE_SYSTEM") and os.environ.get("KKTLS_JARPATCH_ORACLE_RELEASE"),
                      "local oracle: set KKTLS_JARPATCH_ORACLE_SYSTEM and KKTLS_JARPATCH_ORACLE_RELEASE")
 class Oracle(unittest.TestCase):
