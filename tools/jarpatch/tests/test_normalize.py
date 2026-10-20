@@ -1,0 +1,286 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Unit tests of normalize.py (model H): what must not and what must change a class digest.
+
+    python3 -I -m unittest discover tools/jarpatch/tests
+"""
+import io
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import unittest
+import zipfile
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(HERE))
+import normalize  # noqa: E402
+
+# baksmali 2.5.2 style text of a class built with debug info
+BASE = """\
+.class public Lcom/example/Foo;
+.super Ljava/lang/Object;
+.source "Foo.java"
+
+
+# instance fields
+.field private count:I
+
+
+# direct methods
+.method public constructor <init>()V
+    .registers 1
+
+    .prologue
+    .line 3
+    invoke-direct {p0}, Ljava/lang/Object;-><init>()V
+
+    return-void
+.end method
+
+
+# virtual methods
+.method public check(Ljava/lang/String;I)Z
+    .registers 5
+    .param p1, "host"    # Ljava/lang/String;
+    .param p2, "port"    # I
+    .annotation system Ldalvik/annotation/Throws;
+        value = {
+            Ljava/io/IOException;
+        }
+    .end annotation
+
+    .prologue
+    const/4 v0, 0x1
+
+    .line 10
+    .local v0, "ok":Z
+    if-eqz p1, :cond_0
+
+    .line 11
+    const-string v1, "a :cond_9 label in a string"
+
+    invoke-virtual {p1, v1}, Ljava/lang/String;->equals(Ljava/lang/Object;)Z
+
+    move-result v1
+
+    if-nez v1, :cond_1
+
+    .line 12
+    :cond_0
+    const/4 v0, 0x0
+
+    .end local v0    # "ok":Z
+    :cond_1
+    .line 14
+    return v0
+.end method
+"""
+
+# the same class from a dex without debug info: no .source/.line/.local/.prologue and no .param lines at all
+STRIPPED = """\
+.class public Lcom/example/Foo;
+.super Ljava/lang/Object;
+
+.field private count:I
+
+.method public constructor <init>()V
+    .registers 1
+    invoke-direct {p0}, Ljava/lang/Object;-><init>()V
+    return-void
+.end method
+
+.method public check(Ljava/lang/String;I)Z
+    .registers 5
+    .annotation system Ldalvik/annotation/Throws;
+        value = {
+            Ljava/io/IOException;
+        }
+    .end annotation
+    const/4 v0, 0x1
+    if-eqz p1, :cond_0
+    const-string v1, "a :cond_9 label in a string"
+    invoke-virtual {p1, v1}, Ljava/lang/String;->equals(Ljava/lang/Object;)Z
+    move-result v1
+    if-nez v1, :cond_1
+    :cond_0
+    const/4 v0, 0x0
+    :cond_1
+    return v0
+.end method
+"""
+
+PARAM_ANN = """\
+.class public Lcom/example/Bar;
+.super Ljava/lang/Object;
+
+.method public run(Ljava/lang/String;)V
+    .registers 2
+    .param p1, "%s"    # Ljava/lang/String;
+    .annotation runtime Lcom/example/NonNull;
+    .end annotation
+    .end param
+
+    .prologue
+    .line 5
+    return-void
+.end method
+"""
+
+
+def d(text):
+    return normalize.digest_text(text)
+
+
+def sub(text, old, new, count=1):
+    assert text.count(old) >= count, old
+    return text.replace(old, new, count)
+
+
+class DigestUnchanged(unittest.TestCase):
+    def test_debug_lines_and_comments(self):
+        t = re.sub(r"^\s*(\.line \d+|\.prologue|\.source .*|\.local .*|\.end local.*|#.*)\n", "", BASE, flags=re.M)
+        self.assertNotEqual(t, BASE)
+        self.assertEqual(d(t), d(BASE))
+
+    def test_other_line_numbers_and_restart_local(self):
+        t = sub(BASE, ".line 10", ".line 110")
+        t = sub(t, ":cond_1\n", ":cond_1\n    .restart local v0    # \"ok\":Z\n    .epilogue\n")
+        self.assertEqual(d(t), d(BASE))
+
+    def test_param_names(self):
+        t = sub(BASE, '"host"', '"h"')
+        t = sub(t, '.param p2, "port"    # I', '.param p2    # I')
+        self.assertEqual(d(t), d(BASE))
+
+    def test_no_debug_info_at_all(self):
+        # a parameter without annotations before a method annotation is not a .param block
+        self.assertEqual(d(STRIPPED), d(BASE))
+
+    def test_labels_renamed(self):
+        t = BASE.replace(":cond_0", ":cond_a").replace(":cond_1", ":goto_7")
+        self.assertEqual(d(t), d(BASE))
+
+    def test_whitespace_and_blank_lines(self):
+        t = "\n".join("  " + l.strip() + "  " for l in BASE.split("\n") if l.strip())
+        self.assertEqual(d(t), d(BASE))
+
+    def test_annotated_param_name(self):
+        self.assertEqual(d(PARAM_ANN % "s"), d(PARAM_ANN % "other"))
+        stripped = PARAM_ANN.replace('.param p1, "%s"    # Ljava/lang/String;', ".param p1    # Ljava/lang/String;")
+        self.assertEqual(d(stripped), d(PARAM_ANN % "s"))
+
+
+class DigestChanged(unittest.TestCase):
+    def assertChanges(self, old, new, text=BASE):
+        self.assertNotEqual(d(sub(text, old, new)), d(text), "%r -> %r" % (old, new))
+
+    def test_opcode(self):
+        self.assertChanges("if-nez v1", "if-eqz v1")
+
+    def test_constant(self):
+        self.assertChanges("const/4 v0, 0x1", "const/4 v0, 0x2")
+
+    def test_string(self):
+        self.assertChanges('"a :cond_9 label in a string"', '"a :cond_8 label in a string"')
+
+    def test_member_reference(self):
+        self.assertChanges("Ljava/lang/String;->equals(", "Ljava/lang/String;->contentEquals(")
+        self.assertChanges("Ljava/lang/Object;)Z", "Ljava/lang/CharSequence;)Z")
+        self.assertChanges("Ljava/lang/Object;-><init>", "Ljava/lang/Number;-><init>")
+
+    def test_register(self):
+        self.assertChanges("move-result v1", "move-result v0")
+
+    def test_branch_target(self):
+        self.assertChanges("if-eqz p1, :cond_0", "if-eqz p1, :cond_1")
+
+    def test_field_access_signature_super_annotation(self):
+        self.assertChanges(".field private count:I", ".field private count:J")
+        self.assertChanges(".field private count:I", ".field public count:I")
+        self.assertChanges(".method public check", ".method public final check")
+        self.assertChanges(".super Ljava/lang/Object;", ".super Ljava/lang/Number;")
+        self.assertChanges("Ljava/io/IOException;\n", "Ljava/io/EOFException;\n")
+
+    def test_parameter_annotation(self):
+        t = PARAM_ANN % "s"
+        self.assertChanges("Lcom/example/NonNull;", "Lcom/example/Nullable;", t)
+        no_ann = sub(t, "    .annotation runtime Lcom/example/NonNull;\n    .end annotation\n    .end param\n", "")
+        self.assertNotEqual(d(no_ann), d(t))
+
+    def test_member_type_is_not_a_label(self):
+        a = sub(BASE, "move-result v1\n", "move-result v1\n    sget-object v2, Lcom/example/Foo;->f:La_1;\n")
+        b = sub(BASE, "move-result v1\n", "move-result v1\n    sget-object v2, Lcom/example/Foo;->f:Lb_2;\n")
+        self.assertNotEqual(d(a), d(b))
+
+
+class Tree(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = self.tmp.name
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def write(self, rel, text):
+        p = os.path.join(self.root, rel)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(text)
+
+    def test_dir_and_dump(self):
+        self.write("smali/com/example/Foo.smali", BASE)
+        self.write("smali/com/example/Bar.smali", PARAM_ANN % "s")
+        dump = os.path.join(self.root, "dump")
+        res = normalize.normalize_dir(os.path.join(self.root, "smali"), dump)
+        self.assertEqual(res, {"Lcom/example/Foo;": d(BASE), "Lcom/example/Bar;": d(PARAM_ANN % "s")})
+        with open(os.path.join(dump, "com/example/Foo.nsmali"), encoding="utf-8") as f:
+            self.assertEqual(f.read(), normalize.normalize_text(STRIPPED))
+
+    def test_duplicate_class(self):
+        self.write("smali/a/Foo.smali", BASE)
+        self.write("smali/b/Foo.smali", BASE)
+        with self.assertRaises(normalize.NormalizeError):
+            normalize.normalize_dir(os.path.join(self.root, "smali"))
+
+    def test_no_class_line(self):
+        self.write("smali/x.smali", ".super Ljava/lang/Object;\n")
+        with self.assertRaises(normalize.NormalizeError):
+            normalize.normalize_dir(os.path.join(self.root, "smali"))
+
+    def run_cli(self, *args):
+        return subprocess.run([sys.executable, "-I", os.path.join(os.path.dirname(HERE), "normalize.py")] + list(args),
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+
+    def test_cli(self):
+        self.write("smali/com/example/Foo.smali", BASE)
+        r = self.run_cli("--dir", os.path.join(self.root, "smali"))
+        self.assertEqual((r.returncode, r.stdout), (0, "Lcom/example/Foo;\t%s\n" % d(BASE)))
+        self.assertEqual(self.run_cli().returncode, 2)
+        self.assertEqual(self.run_cli("--dir", "a", "--jar", "b").returncode, 2)
+        self.assertEqual(self.run_cli("--bogus").returncode, 2)
+        self.assertEqual(self.run_cli("--dir", os.path.join(self.root, "missing")).returncode, 1)
+
+    def test_jar_without_classes_dex(self):
+        jar = os.path.join(self.root, "odexed.jar")
+        with zipfile.ZipFile(jar, "w") as z:
+            z.writestr("META-INF/MANIFEST.MF", "Manifest-Version: 1.0\n")
+        r = self.run_cli("--jar", jar)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("no dex", r.stderr)
+        with zipfile.ZipFile(jar, "a") as z:
+            z.writestr("classes.dex", b"dex\n035\0")
+            z.writestr("classes2.dex", b"dex\n035\0")
+        with self.assertRaises(normalize.NormalizeError):
+            normalize.check_dex_jar(jar)
+
+
+class Pins(unittest.TestCase):
+    def test_smali_version_matches_fetch_script(self):
+        with io.open(os.path.join(os.path.dirname(HERE), "fetch-smali.sh"), encoding="utf-8") as f:
+            m = re.search(r"^SMALI_VERSION=(\S+)$", f.read(), re.M)
+        self.assertEqual(m.group(1), normalize.SMALI_VERSION)
+
+
+if __name__ == "__main__":
+    unittest.main()

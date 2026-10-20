@@ -1,0 +1,29 @@
+# Classes that libjavacrypto.so of the 4.4 java zips looks up by name: FindClass targets, jniThrowException classes,
+# GetMethodID/GetStaticMethodID targets and the classes named in the RegisterNatives signatures (no GetFieldID).
+# The same 25 names for both lines (4.4.2, 4.4.4) and both ABIs. mkset.py --jni input: a name that the series does
+# not replace becomes a `check` line (the device's class must equal stock, or the native side may break).
+Lcom/android/org/conscrypt/NativeCrypto;
+Lcom/android/org/conscrypt/NativeCrypto$SSLHandshakeCallbacks;
+Lcom/android/org/conscrypt/OpenSSLBIOInputStream;
+Ljava/io/FileDescriptor;
+Ljava/io/InputStream;
+Ljava/io/IOException;
+Ljava/io/OutputStream;
+Ljava/lang/ArrayIndexOutOfBoundsException;
+Ljava/lang/IllegalArgumentException;
+Ljava/lang/IndexOutOfBoundsException;
+Ljava/lang/Integer;
+Ljava/lang/Object;
+Ljava/lang/OutOfMemoryError;
+Ljava/lang/String;
+Ljava/net/SocketException;
+Ljava/net/SocketTimeoutException;
+Ljava/security/cert/CertificateParsingException;
+Ljava/security/InvalidKeyException;
+Ljava/security/NoSuchAlgorithmException;
+Ljava/security/SignatureException;
+Ljava/util/Calendar;
+Ljavax/crypto/BadPaddingException;
+Ljavax/crypto/IllegalBlockSizeException;
+Ljavax/net/ssl/SSLException;
+Ljavax/net/ssl/SSLProtocolException;
