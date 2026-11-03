@@ -397,6 +397,9 @@ ABIs, and runs the checks: an ABI comparison of our OpenSSL against the stock li
 helper, and the release file checker. The AOSP-built jars are rewritten with sorted entries and a fixed time
 (`tools/zipnorm.py`; members and compressed data unchanged), so two builds of the same commit give byte-identical
 release files. `tools/mkzips.sh` packs its output into the release zips; the same inputs give byte-identical zips.
+The x86 helpers (`kktls/bin/x86/` in every zip, not `/system` payload) are stripped with the `strip` of the build
+image, as CI does, not with the one on the host: the two write a different `sh_entsize` into the array section headers,
+three bytes per helper.
 
 The `check` step also runs the jar patcher's drift check (`tools/jarpatch/checkset.py`, row `jarpatch-set`): the four
 built jars against the set file of the tag (`tools/jarpatch/sets/`), line by line and as a whole jar. It needs Java 8+

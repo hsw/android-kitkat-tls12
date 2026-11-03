@@ -32,7 +32,9 @@
 #   symcheck device/kktls/symcheck/ <- release/symcheck/{Android.mk,kktls-symcheck.c,kktls-util.c}; per ABI
 #            `make kktls-symcheck kktls-util` (static binaries, the recovery zips' symbol, label and zip-entry helpers)
 #            into WORK/out/kktls/<tag>/helpers/<abi>/, with
-#            allow-missing-libssl.txt and SHA256SUMS (helpers/ is not a release file dir: nothing of it goes to /system)
+#            allow-missing-libssl.txt and SHA256SUMS (helpers/ is not a release file dir: nothing of it goes to /system);
+#            the x86 helpers are stripped in the build image (run_strip), as CI does: the host's strip writes three
+#            bytes more into the array section headers and a local --runner docker build would not match the CI files
 #   check    per target: check_artifacts.py --layer release, openssl-abi-check.py symbols against stock-openssl (0 removed
 #            public exports), kktls-symcheck of our libssl/libcrypto against stock-openssl (SKIP when this host cannot
 #            run the helper's ABI), jarpatch/checkset.py: the built core, core-libart, conscrypt and okhttp jars
@@ -195,7 +197,10 @@ fi
 
 # ---------------------------------------------------------------- tools and images
 for f in "$D8" "$DEXDUMP"; do [ -x "$f" ] || die "missing tool $f (--d8/--dexdump)" 3; done
-command -v readelf >/dev/null && command -v strip >/dev/null || die "missing tool readelf or strip (GNU binutils)" 3
+command -v readelf >/dev/null || die "missing tool readelf (GNU binutils)" 3
+# strip: the helpers are stripped in the build image (run_strip), so only --runner direct needs it on PATH (there PATH is
+# the image's)
+[ $RUNNER = docker ] || command -v strip >/dev/null || die "--runner direct: missing tool strip (GNU binutils)" 3
 if [ $RUNNER = docker ]; then
   if [ -n "$IMAGE" ]; then docker image inspect "$IMAGE" >/dev/null 2>&1 || die "image '$IMAGE' not found" 3
   else IMAGE=$(sh "$REPO_ROOT/tools/docker-image.sh" aosp-build) || die "docker-image.sh aosp-build failed" 3; fi
@@ -255,6 +260,19 @@ run_make() {
   if [ "${rc:-1}" != 0 ]; then
     grep -m5 -E 'error:|Error [0-9]|No rule to make' "$tree/logs/$label.log" >&2 || true
     return 1
+  fi
+}
+# run_strip FILES...: strip --strip-all of FILES (all under WORK, mounted at /w) with the build image's binutils, as CI
+# does; with --runner direct that is the strip on PATH, which is the image's too. Never the host's: binutils 2.46 writes
+# sh_entsize 4 into the .preinit_array/.init_array/.fini_array section headers where 2.24 (Ubuntu 14.04, the image and
+# CI) writes 0, three bytes in every x86 helper, so a --runner docker build would not match the CI files
+run_strip() {
+  local f args=()
+  for f in "$@"; do args+=("${f#"$WORK"/}"); done
+  if [ $RUNNER = docker ]; then
+    docker run --rm --cpus="$CPUS" -v "$WORK:/w" -w /w "$IMAGE" strip --strip-all "${args[@]}"
+  else
+    (cd "$WORK" && strip --strip-all "${args[@]}")
   fi
 }
 
@@ -493,10 +511,10 @@ do_symcheck() {
       [ "$m" = "$want" ] || { echo "[$t] $abi: $n machine '$m', want '$want'" >&2; return 1; }
       ! LC_ALL=C readelf -lW "$b" | grep -qE 'INTERP|DYNAMIC' || { echo "[$t] $abi: $n is not static" >&2; return 1; }
       install -D -m 0755 "$b" "$h/$abi/$n"
-      # the x86 binary leaves the AOSP build with its symbol table (ARM is stripped): halve it with the host strip
-      # (GNU binutils knows elf32-i386; the synced prebuilt toolchain is not run on the host)
+      # the x86 binary leaves the AOSP build with its symbol table (ARM is stripped): halve it with the build image's
+      # strip, so that a --runner docker build gives the CI bytes (the host's strip differs in the array sh_entsize)
       if LC_ALL=C readelf -SW "$h/$abi/$n" | grep -q '\.symtab'; then
-        strip --strip-all "$h/$abi/$n" || { echo "[$t] $abi: strip $n failed" >&2; return 1; }
+        run_strip "$h/$abi/$n" || { echo "[$t] $abi: strip $n failed" >&2; return 1; }
       fi
     done
   done < <(rows_of "$t")

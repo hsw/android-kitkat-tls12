@@ -25,6 +25,12 @@ refused too. The release zips themselves are unchanged apart from the installer.
 
 ### Changed
 
+- Release build (`tools/kktls-release-build.sh`): the x86 helpers (`kktls/bin/x86/` in every zip, not `/system` payload)
+  are stripped with the `strip` of the build image, as CI does, instead of the one on `PATH`. With `--runner docker`
+  that was the host's binutils (2.46 on the build host), which writes `sh_entsize` 4 into the
+  `.preinit_array`/`.init_array`/`.fini_array` section headers where the image's 2.24 writes 0: three bytes per helper,
+  so a local docker build did not match the CI files of the same commit. `--runner docker` needs no host `strip` any
+  more.
 - Installer (`installer/checks.sh`, `install.sh`): new zip kind `java-patched`. Instead of the release and AOSP gates
   it checks the sha256 of every `/system/framework` jar the zip was made from and of `ro.build.fingerprint` (first
   `build.prop` definition, as init reads it); the openssl marker, the dex check, the backup, the `.odex` removal and the
